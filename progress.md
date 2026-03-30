@@ -131,3 +131,9 @@
 - 驗證完成：
 - `npm test` 通過，Node 端 4 個 test files / 23 tests 全部通過，recording worker 4 個 test files / 7 tests 全部通過，Python 端 6 tests 通過
 - `npm run build` 通過，Node TypeScript build 與 Python compile script 均成功
+- 嘗試使用 `git-pushing` 技能腳本時遇到兩個邊界：
+- WSL 需使用 `/mnt/c/...` 路徑而非 `C:/...`
+- 腳本在空倉庫首次提交場景會因 `HEAD` 尚不存在而失敗
+- 因此改以原生 Git 命令完成首次發布
+- 已建立 root commit `f18737c feat: publish initial AI NoteTacker project`
+- 已成功推送到 `origin/main`

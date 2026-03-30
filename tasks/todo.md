@@ -86,5 +86,15 @@
 
 - [x] 確認本地目錄的 Git 狀態與遠端預設分支
 - [x] 整理本次需要提交的 Markdown 檔案範圍
-- [ ] 完成 commit / push
-- [ ] 補上本次 review 與驗證結果
+- [x] 完成 commit / push
+- [x] 補上本次 review 與驗證結果
+
+## Review
+
+- GitHub `andys0919/AI_NoteTacker` 原先是空倉庫，本次已初始化本地 Git 並推送 `main`
+- 首次發布 commit：`f18737c` `feat: publish initial AI NoteTacker project`
+- 已補 `.gitignore`，確認 `_inspect_meeting_bot/`、`node_modules/`、`dist/`、`__pycache__/` 未被納入版本控制
+- 驗證結果：
+- `npm test` 通過
+- `npm run build` 通過
+- `git push -u origin main` 通過
