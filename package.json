@@ -1,0 +1,18 @@
+{
+  "name": "ai-notetacker",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "workers/*"
+  ],
+  "scripts": {
+    "build": "npm run build:node && npm run build:python",
+    "build:node": "npm run build --workspaces --if-present",
+    "build:python": "python scripts/compile_transcription_worker.py",
+    "dev": "npm exec --workspace @ai-notetacker/control-plane -- tsx watch src/server.ts",
+    "test": "npm run test:node && npm run test:python",
+    "test:node": "npm run test --workspaces --if-present",
+    "test:python": "python scripts/run_transcription_worker_tests.py"
+  }
+}

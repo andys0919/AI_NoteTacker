@@ -1,0 +1,17 @@
+{
+  "name": "@ai-notetacker/recording-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm exec -- tsc -p tsconfig.json",
+    "dev": "npm exec -- tsx watch src/main.ts",
+    "test": "npm exec -- vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

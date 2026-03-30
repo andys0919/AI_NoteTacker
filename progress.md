@@ -1,0 +1,133 @@
+# Progress
+
+## 2026-03-26
+- 初始化研究工作檔案。
+- 確認目前工作目錄為空目錄，非 git repository。
+- 下一步：搜尋 GitHub 上與 meeting bot / meeting recorder / AI note taker 相關專案。
+- 已完成第一輪 GitHub 搜尋，找到 bot API 與 captions 擷取兩大方向。
+- 下一步：逐一核對候選 repo 是否需要登入/帳密，以及是否能靠 meeting URL 加入。
+- 已核對主要候選 repo 的 readme 與限制條件。
+- 目前最符合需求的是：
+- `screenappai/meeting-bot`：最明確支援 guest/anonymous direct-link join。
+- `Vexa-ai/vexa`：Meet / Teams 很強，但 Zoom 有官方限制 caveat。
+- `joinly-ai/joinly`：可用 link 加入，但偏 agent middleware。
+- `Zerg00s/Live-Captions-Saver` / `google-meet-transcripts`：若接受 captions 路線，最簡單。
+- `hstr0100/LiveCaptionsLogger`：若只想留住所有語音內容，Windows 11 captions logger 是最輕量的旁路方案。
+- 已完成研究整理，準備輸出最終建議與 repo 清單。
+- 使用者確認不要本機系統音訊擷取，必須是完全獨立的會議 worker。
+- 已初始化 OpenSpec，建立 `add-autonomous-meeting-recorder` change。
+- 已開始撰寫 OpenSpec project context、proposal、design、specs、tasks。
+- 已完成 OpenSpec artifacts 並通過 `openspec validate add-autonomous-meeting-recorder`。
+- 已建立 monorepo skeleton：`apps/control-plane`、`workers/recording-worker`、`workers/transcription-worker`。
+- 已以 TDD 完成 control plane MVP：
+- `POST /recording-jobs`
+- `GET /recording-jobs/:id`
+- in-memory recording job repository
+- meeting link support-matrix validation
+- 已補 `.env.example`、`docker-compose.yml`、control-plane Dockerfile。
+- 驗證結果：
+- `npm test` 通過
+- `npm run build` 通過
+- `openspec validate add-autonomous-meeting-recorder --strict --no-interactive` 通過
+- `docker compose config` 通過
+- 已補 control plane phase 2/3 能力：
+- `POST /recording-jobs/:id/events`
+- worker lifecycle callbacks：`joining`、`recording`
+- worker artifact callbacks：recording artifact、transcript artifact、failed
+- `GET /recording-jobs/:id` 會回傳 artifact metadata
+- repository 介面已改為 async
+- 已新增 PostgreSQL repository 與 schema bootstrap
+- server 可透過 `PERSISTENCE_DRIVER=postgres` 切換到 PostgreSQL persistence
+- 最新驗證結果：
+- `npm test` 通過，10 tests passed
+- `npm run build` 通過
+- `openspec validate add-autonomous-meeting-recorder --strict --no-interactive` 通過
+- `docker compose config` 通過
+- 已補 worker dispatch 能力：
+- `POST /recording-workers/claims`
+- queued job 可被 recording worker claim，claim 後進入 `joining`
+- job 會保存 `assignedWorkerId`
+- 已建立 `@ai-notetacker/recording-worker` stub package
+- worker stub 可透過 HTTP client claim job、回報 `recording`、回報 recording artifact
+- `docker-compose.yml` 已加入 `recording-worker` service
+- 最新全量驗證結果：
+- `npm test` 通過，17 tests passed
+- `npm run build` 通過
+- `openspec validate add-autonomous-meeting-recorder --strict --no-interactive` 通過
+- `docker compose config` 通過
+- 已把 transcription 從 recording worker 拆成獨立 worker 流程：
+- `POST /transcription-workers/claims`
+- transcribing job 可被 transcription worker claim，並保存 `assignedTranscriptionWorkerId`
+- recording worker 現在只負責回報 recording artifact，不再直接回報 transcript artifact
+- 已建立 Python `transcription-worker` package，包含：
+- control plane client
+- artifact downloader
+- Faster-Whisper adapter
+- transcription worker loop
+- transcription worker main entrypoint
+- `docker-compose.yml` 已加入 `transcription-worker` service
+- root `npm test` / `npm run build` 現在同時驗 Node 與 Python worker
+- 最新全量驗證結果：
+- `npm test` 通過，Node 19 tests + Python 5 tests
+- `npm run build` 通過，Node build + Python compileall 通過
+- `openspec validate add-autonomous-meeting-recorder --strict --no-interactive` 通過
+- `docker compose config` 通過
+- 已補 transcription retry / failure handling：
+- transcription job 現在有 lease 概念，已被 transcriber claim 的 job 不會再被第二個 transcriber claim
+- transcription job 會記錄 `transcriptionAttemptCount`
+- `transcription-failed` event 會在未達上限時釋放 lease 並保留 `transcribing` 狀態供 retry
+- 達到上限後 job 會進入 `failed`
+- Python transcription worker 會在下載或 Whisper 轉錄失敗時回報 `transcription-failed`
+- 最新全量驗證結果：
+- `npm test` 通過，Node 24 tests + Python 6 tests
+- `npm run build` 通過，Node build + Python compileall 通過
+- `openspec validate add-autonomous-meeting-recorder --strict --no-interactive` 通過
+- `docker compose config` 通過
+- 已補 compose startup resilience：
+- control plane 會 retry PostgreSQL schema bootstrap
+- control plane / postgres 都有 healthcheck
+- recording worker / transcription worker 會等 control plane healthy 再啟動
+- recording worker / transcription worker 的 main loop 在 iteration error 時不會直接退出
+- 已完成 docker compose smoke：
+- `docker compose build` 通過
+- `docker compose up -d` 通過
+- 實際送入一筆 meeting job 後，recording worker 會 claim 並產生 recording artifact metadata
+- transcription worker 會 claim transcribing job，因下載 MinIO placeholder artifact 失敗而重試 3 次後把 job 標成 `failed`
+- `docker compose down -v` 已清理完成
+- 已將 recording worker 抽成 executor 架構：
+- `StubRecordingExecutor`
+- `ScreenappMeetingBotExecutor`
+- recording worker 可透過 `RECORDING_EXECUTOR=stub|screenapp` 切換
+- 已新增 control plane webhook ingestion：
+- `POST /integrations/meeting-bot/completions`
+- webhook 會以 `metadata.botId` 對應內部 job id，並把 meeting-bot storage metadata 轉成 recording artifact
+- 已新增 `docker-compose.screenapp.yml`
+- 包含 `meeting-bot` service、MinIO bucket bootstrap、recording-worker 的 `screenapp` override
+- 已完成 real integration 自測：
+- `docker compose -f docker-compose.yml -f docker-compose.screenapp.yml config` 通過
+- `docker compose -f docker-compose.yml -f docker-compose.screenapp.yml build meeting-bot` 通過
+- `docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up -d` 通過
+- 實際送入一筆 meeting job 後，recording worker 會 dispatch 到真實 meeting-bot
+- meeting-bot logs 顯示 `Google Meet job accepted and started processing`，且 `botId` 正確對應內部 job id
+- control plane 中該 job 狀態維持 `joining`，不再走 stub recording artifact 路徑
+- 尚未完成的邊界：
+- 尚未用真實可 guest join 的會議完成到 meeting-bot completion webhook，因此 recording artifact / transcript artifact 的真 E2E 仍待驗證
+- 已用使用者提供的真實 Teams Live meeting link 做實測：
+- control plane 現在已接受 `https://teams.live.com/meet/...` 這種連結格式
+- real `screenapp` stack 中，recording worker 確實 dispatch 到 meeting-bot
+- meeting-bot logs 顯示：
+- 找到 `Join meeting from this browser`
+- 成功進入 pre-join 畫面
+- 成功填入 bot name
+- 成功點擊 `Join now`
+- 在本次觀察窗口內，control plane job 仍停在 `joining`
+- 代表 live link 已經走到真實 Teams join flow，但還沒觀察到 meeting-bot completion webhook 回傳錄製成品
+- 2026-03-30：開始處理「commit / push 更新所有 md」工作
+- 已確認目前專案根目錄沒有 `.git`
+- 已將本次發布流程加入 `tasks/todo.md`
+- 已確認 GitHub `andys0919/AI_NoteTacker` 目前為空倉庫
+- 已初始化本地 Git 倉庫並建立 `main` 分支
+- 已更新根 `.gitignore`，排除 `_inspect_meeting_bot/`、`__pycache__/`、`.pytest_cache/` 等不應入庫內容
+- 驗證完成：
+- `npm test` 通過，Node 端 4 個 test files / 23 tests 全部通過，recording worker 4 個 test files / 7 tests 全部通過，Python 端 6 tests 通過
+- `npm run build` 通過，Node TypeScript build 與 Python compile script 均成功

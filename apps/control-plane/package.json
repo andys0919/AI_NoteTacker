@@ -1,0 +1,27 @@
+{
+  "name": "@ai-notetacker/control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm exec -- tsc -p tsconfig.json",
+    "dev": "npm exec -- tsx watch src/server.ts",
+    "test": "npm exec -- vitest run"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "pg": "^8.16.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.7.2",
+    "@types/pg": "^8.15.5",
+    "@types/supertest": "^6.0.3",
+    "pg-mem": "^3.0.5",
+    "supertest": "^7.1.4",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

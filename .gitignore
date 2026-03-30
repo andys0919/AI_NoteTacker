@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.env.local
+coverage/
+*.log
+_inspect_meeting_bot/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
