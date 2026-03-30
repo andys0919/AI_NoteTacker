@@ -98,3 +98,53 @@
 - `npm test` 通過
 - `npm run build` 通過
 - `git push -u origin main` 通過
+
+## Live Test
+
+- [x] 確認 Docker engine 與 compose 可用
+- [x] 啟動 `docker-compose.yml` + `docker-compose.screenapp.yml`
+- [x] 送入使用者提供的真實 Teams Live meeting link
+- [x] 觀察 meeting-bot log、job state 與 webhook/收尾行為
+- [x] 補上本次 live test review
+
+## Live Test Review
+
+- 真實 Teams Live link：`https://teams.live.com/meet/9343114235416?p=I4yS5pia1gFxNYOOsV`
+- `recording-worker` 成功 dispatch job 到真實 `meeting-bot`
+- `meeting-bot` 成功走完：
+- 找到 `Join meeting from this browser`
+- 填入 bot name
+- 點擊 `Join now`
+- 進入會議
+- 啟動 ffmpeg 錄製
+- 因持續靜音 60 秒自動結束錄製
+- 完成 object storage upload
+- 已證實 `_inspect_meeting_bot` 的 auto-exit / upload 路徑可用
+- 觀察到一個整合缺口：
+- `meeting-bot` 完成錄製後，control-plane 沒有自動收到 completion webhook，job 卡在 `joining`
+- 以手動補 `POST /integrations/meeting-bot/completions` 的方式後，job 成功進入 `transcribing` 並最終到 `completed`
+- 結論：
+- 真實加入 Teams Live、錄製、靜音自動退出、上傳錄檔：已驗證
+- control-plane 自動 ingest meeting-bot completion webhook：本次未自動成功，需再查 webhook delivery 缺口
+
+## Webhook Bugfix
+
+- [x] 重現 `meeting-bot` completion payload 缺少 `metadata.storage` 時的 400
+- [x] 新增 regression test 覆蓋 `blobUrl` fallback 路徑
+- [x] 修正 control-plane completion webhook schema 與 artifact key 推導
+- [x] 重新跑 test / build
+- [x] 用 runtime request 驗證修正後容器可接受實際 payload 變體
+
+## Webhook Bugfix Review
+
+- root cause：
+- `_inspect_meeting_bot` 目前實際送出的 completion payload 不含 `metadata.storage`
+- control-plane 原本要求 `metadata.storage.key` 必填，因此自動 webhook 會回 400
+- 修正內容：
+- control-plane 現在接受 `metadata.storage` 缺失的 completion payload
+- 若缺少 `storage.key`，會改由 `blobUrl` 路徑推導 `recordingArtifact.storageKey`
+- 驗證結果：
+- 新增 regression test 後先 red，再修到 green
+- `npm test` 通過
+- `npm run build` 通過
+- 重新建一筆 runtime job 並送出「缺少 storage、只有 blobUrl」的 payload，容器回應 `transcribing`

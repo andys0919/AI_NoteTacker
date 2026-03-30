@@ -51,12 +51,14 @@ const meetingBotCompletionSchema = z.object({
     botId: z.string().min(1),
     contentType: z.string().min(1),
     uploaderType: z.string().min(1),
-    storage: z.object({
-      provider: z.string().min(1),
-      bucket: z.string().min(1).optional(),
-      key: z.string().min(1),
-      url: z.url().optional()
-    })
+    storage: z
+      .object({
+        provider: z.string().min(1),
+        bucket: z.string().min(1).optional(),
+        key: z.string().min(1).optional(),
+        url: z.url().optional()
+      })
+      .optional()
   })
 });
 
@@ -136,6 +138,23 @@ const toApiRecordingJob = (job: {
   recordingArtifact: job.recordingArtifact,
   transcriptArtifact: job.transcriptArtifact
 });
+
+const deriveStorageKeyFromCompletionPayload = (
+  payload: z.infer<typeof meetingBotCompletionSchema>
+): string | undefined => {
+  if (payload.metadata.storage?.key) {
+    return payload.metadata.storage.key;
+  }
+
+  const fallbackUrl = payload.blobUrl ?? payload.metadata.storage?.url;
+
+  if (!fallbackUrl) {
+    return undefined;
+  }
+
+  const pathname = new URL(fallbackUrl).pathname.replace(/^\/+/, '');
+  return pathname.length > 0 ? pathname : undefined;
+};
 
 export const createApp = (
   repository: RecordingJobRepository = new InMemoryRecordingJobRepository(),
@@ -250,12 +269,23 @@ export const createApp = (
       return response.status(404).json(notFoundResponse(parsedPayload.data.metadata.botId));
     }
 
+    const storageKey = deriveStorageKeyFromCompletionPayload(parsedPayload.data);
+
+    if (!storageKey) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: 'The completion payload must include either metadata.storage.key or blobUrl.'
+        }
+      });
+    }
+
     const savedJob = await repository.save(
       attachRecordingArtifact(job, {
-        storageKey: parsedPayload.data.metadata.storage.key,
+        storageKey,
         downloadUrl:
           parsedPayload.data.blobUrl ??
-          parsedPayload.data.metadata.storage.url ??
+          parsedPayload.data.metadata.storage?.url ??
           parsedPayload.data.meetingLink,
         contentType: parsedPayload.data.metadata.contentType
       })

@@ -137,3 +137,30 @@
 - 因此改以原生 Git 命令完成首次發布
 - 已建立 root commit `f18737c feat: publish initial AI NoteTacker project`
 - 已成功推送到 `origin/main`
+- 2026-03-30：開始處理使用者提供的真實 Teams Live link smoke test
+- 已新增 `Live Test` 任務項目，準備檢查 Docker engine、起 screenapp stack、送入真實 meeting job
+- Docker Desktop 起動後，`docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up --build -d` 成功
+- 已建立真實 Teams Live job：`job_9abc7186ae7c4f1c92d218e24a0b1e44`
+- `meeting-bot` logs 已確認：
+- 真實點到 `Join meeting from this browser`
+- 真實點到 `Join now`
+- 進入會議並啟動 ffmpeg 錄製
+- 1 分鐘持續靜音後觸發 auto-exit
+- 成功上傳錄檔到 MinIO
+- 觀察到整合缺口：
+- `meeting-bot` 錄製完成後，control-plane job 仍停在 `joining`
+- 代表 completion webhook 沒有自動把 artifact metadata 寫回 control-plane
+- 已用 MinIO presigned URL 手動補 `POST /integrations/meeting-bot/completions`
+- 補送後 job 進入 `transcribing`，隨後成功到 `completed`
+- 已重現 root cause：
+- 直接用 `_inspect_meeting_bot` 目前實際 payload 形狀打 `POST /integrations/meeting-bot/completions`，control-plane 回 400
+- 錯誤訊息顯示缺少 `metadata.storage`
+- 已新增 control-plane regression test，覆蓋「沒有 `metadata.storage`、但有 `blobUrl`」的 completion payload
+- 修正後：
+- control-plane 允許 `metadata.storage` 缺失
+- 若缺少 `storage.key`，會由 `blobUrl` 推導 `recordingArtifact.storageKey`
+- 驗證：
+- targeted test 先 fail 後 pass
+- 全 repo `npm test` 通過
+- 全 repo `npm run build` 通過
+- runtime 容器現在可接受「無 storage / 有 blobUrl」的 payload，job 成功進入 `transcribing`
