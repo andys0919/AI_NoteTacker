@@ -6,7 +6,16 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = ROOT / "workers" / "transcription-worker" / "src"
-PACKAGE_SRC_PATH = ROOT / "packages" / "meeting-ai-pipeline" / "src"
+DEFAULT_PACKAGE_SRC_PATH = Path("/home/solomon/Andy/meeting-ai-pipeline/src")
+PACKAGE_SRC_PATH = Path(
+    os.environ.get("MEETING_AI_PIPELINE_SRC", str(DEFAULT_PACKAGE_SRC_PATH))
+)
+
+if not PACKAGE_SRC_PATH.exists():
+    raise SystemExit(
+        f"meeting-ai-pipeline source path not found: {PACKAGE_SRC_PATH}. "
+        "Set MEETING_AI_PIPELINE_SRC to the external package checkout."
+    )
 
 environment = os.environ.copy()
 existing_pythonpath = environment.get("PYTHONPATH", "")
