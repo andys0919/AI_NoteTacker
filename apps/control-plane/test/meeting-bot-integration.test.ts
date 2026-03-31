@@ -92,7 +92,7 @@ describe('meeting-bot completion integration', () => {
     expect(response.body.id).toBe(created.body.id);
     expect(response.body.state).toBe('transcribing');
     expect(response.body.recordingArtifact.storageKey).toBe(
-      'meeting-artifacts/meeting-bot/meeting-bot-user/Microsoft%20Teams%20Recording.webm'
+      'meeting-artifacts/meeting-bot/meeting-bot-user/Microsoft Teams Recording.webm'
     );
     expect(response.body.recordingArtifact.downloadUrl).toBe(blobUrl);
   });

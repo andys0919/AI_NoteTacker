@@ -3,6 +3,7 @@ import { newDb } from 'pg-mem';
 
 import {
   attachRecordingArtifact,
+  attachSummaryArtifact,
   attachTranscriptArtifact,
   createRecordingJob
 } from '../src/domain/recording-job.js';
@@ -59,15 +60,23 @@ describe('PostgresRecordingJobRepository', () => {
       ]
     });
 
-    await repository.save(completed);
+    const summarized = attachSummaryArtifact(completed, {
+      model: 'gpt-5.3-codex-spark',
+      reasoningEffort: 'medium',
+      text: 'hello team summary'
+    });
 
-    const reloaded = await repository.getById(completed.id);
+    await repository.save(summarized);
+
+    const reloaded = await repository.getById(summarized.id);
 
     expect(reloaded).toBeDefined();
     expect(reloaded?.state).toBe('completed');
     expect(reloaded?.recordingArtifact?.storageKey).toBe('recordings/job_999/meeting.webm');
     expect(reloaded?.transcriptArtifact?.storageKey).toBe('transcripts/job_999/transcript.json');
     expect(reloaded?.transcriptArtifact?.segments[0]?.text).toBe('hello team');
+    expect(reloaded?.summaryArtifact?.model).toBe('gpt-5.3-codex-spark');
+    expect(reloaded?.summaryArtifact?.text).toBe('hello team summary');
   });
 
   it('claims the next queued job for a worker', async () => {

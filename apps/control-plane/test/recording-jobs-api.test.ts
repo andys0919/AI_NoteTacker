@@ -375,6 +375,17 @@ describe('recording jobs API', () => {
         }
       });
 
+    await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'summary-artifact-stored',
+        summaryArtifact: {
+          model: 'gpt-5.3-codex-spark',
+          reasoningEffort: 'medium',
+          text: 'Short summary'
+        }
+      });
+
     const fetched = await request(app).get(`/recording-jobs/${created.body.id}`);
 
     expect(fetched.status).toBe(200);
@@ -382,6 +393,8 @@ describe('recording jobs API', () => {
     expect(fetched.body.recordingArtifact.storageKey).toBe('recordings/job_456/meeting.webm');
     expect(fetched.body.transcriptArtifact.storageKey).toBe('transcripts/job_456/transcript.json');
     expect(fetched.body.transcriptArtifact.segments).toHaveLength(1);
+    expect(fetched.body.summaryArtifact.model).toBe('gpt-5.3-codex-spark');
+    expect(fetched.body.summaryArtifact.text).toBe('Short summary');
   });
 
   it('returns 404 for an unknown recording job id', async () => {

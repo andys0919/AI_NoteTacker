@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   attachRecordingArtifact,
+  attachSummaryArtifact,
+  attachTranscriptArtifact,
   createRecordingJob,
   markRecordingJobFailed,
   releaseTranscriptionJobForRetry,
@@ -83,5 +85,43 @@ describe('recording job lifecycle', () => {
     expect(terminalFailure.state).toBe('failed');
     expect(terminalFailure.failureCode).toBe('transcription-failed');
     expect(terminalFailure.transcriptionAttemptCount).toBe(3);
+  });
+
+  it('stores a summary artifact on a completed job', () => {
+    const created = createRecordingJob({
+      meetingUrl: 'https://meet.google.com/abc-defg-hij',
+      platform: 'google-meet'
+    });
+
+    const withRecording = attachRecordingArtifact(created, {
+      storageKey: 'recordings/job_summary/meeting.webm',
+      downloadUrl: 'https://storage.example.test/recordings/job_summary/meeting.webm',
+      contentType: 'video/webm'
+    });
+
+    const withTranscript = attachTranscriptArtifact(withRecording, {
+      storageKey: 'transcripts/job_summary/transcript.json',
+      downloadUrl: 'https://storage.example.test/transcripts/job_summary/transcript.json',
+      contentType: 'application/json',
+      language: 'en',
+      segments: [
+        {
+          startMs: 0,
+          endMs: 1200,
+          text: 'hello everyone'
+        }
+      ]
+    });
+
+    const summarized = attachSummaryArtifact(withTranscript, {
+      model: 'gpt-5.3-codex-spark',
+      reasoningEffort: 'medium',
+      text: 'Short summary'
+    });
+
+    expect(summarized.state).toBe('completed');
+    expect(summarized.summaryArtifact?.model).toBe('gpt-5.3-codex-spark');
+    expect(summarized.summaryArtifact?.reasoningEffort).toBe('medium');
+    expect(summarized.summaryArtifact?.text).toBe('Short summary');
   });
 });
