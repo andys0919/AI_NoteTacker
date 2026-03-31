@@ -38,6 +38,19 @@ class FakeTranscriber:
         return self.transcript_result
 
 
+class FakeSummarizer:
+    def __init__(self, summary_result=None, error=None):
+        self.summary_result = summary_result
+        self.error = error
+        self.inputs = []
+
+    def summarize(self, transcript_result):
+        self.inputs.append(transcript_result)
+        if self.error:
+            raise self.error
+        return self.summary_result
+
+
 class RunTranscriptionWorkerIterationTests(unittest.TestCase):
     def test_returns_idle_when_no_job_is_available(self) -> None:
         result = run_transcription_worker_iteration(
@@ -45,6 +58,7 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
             client=FakeClient(None),
             downloader=FakeDownloader("ignored.wav"),
             transcriber=FakeTranscriber({"language": "en", "segments": []}),
+            summarizer=None,
         )
 
         self.assertEqual(result, {"kind": "idle"})
@@ -69,19 +83,30 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
                 ],
             }
         )
+        summarizer = FakeSummarizer(
+            {
+                "model": "gpt-5.3-codex-spark",
+                "reasoning_effort": "medium",
+                "text": "Short summary",
+            }
+        )
 
         result = run_transcription_worker_iteration(
             worker_id="transcriber-alpha",
             client=client,
             downloader=downloader,
             transcriber=transcriber,
+            summarizer=summarizer,
         )
 
         self.assertEqual(result, {"kind": "processed", "job_id": "job_abc"})
         self.assertEqual(downloader.downloaded[0]["storageKey"], "recordings/job_abc/meeting.webm")
         self.assertEqual(transcriber.inputs, ["/tmp/job_abc.wav"])
+        self.assertEqual(summarizer.inputs[0]["segments"][0]["text"], "hello team")
         self.assertEqual(client.events[0][0], "job_abc")
         self.assertEqual(client.events[0][1]["type"], "transcript-artifact-stored")
+        self.assertEqual(client.events[1][1]["type"], "summary-artifact-stored")
+        self.assertEqual(client.events[1][1]["summaryArtifact"]["model"], "gpt-5.3-codex-spark")
 
     def test_reports_transcription_failure_instead_of_crashing(self) -> None:
         client = FakeClient(
@@ -102,6 +127,7 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
             client=client,
             downloader=downloader,
             transcriber=transcriber,
+            summarizer=None,
         )
 
         self.assertEqual(result, {"kind": "failed", "job_id": "job_fail"})

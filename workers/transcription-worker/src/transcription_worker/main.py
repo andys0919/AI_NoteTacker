@@ -1,21 +1,54 @@
 import os
 import time
 
-from transcription_worker.artifact_downloader import RecordingArtifactDownloader
+from meeting_ai_pipeline.artifact_downloader import RecordingArtifactDownloader, S3ArtifactStorage
+from meeting_ai_pipeline.codex_transcript_summarizer import CodexTranscriptSummarizer
+from meeting_ai_pipeline.faster_whisper_transcriber import FasterWhisperTranscriber
 from transcription_worker.config import read_transcription_worker_config
 from transcription_worker.control_plane_client import ControlPlaneClient
-from transcription_worker.faster_whisper_engine import FasterWhisperTranscriber
 from transcription_worker.worker_loop import run_transcription_worker_iteration
+
+
+def build_object_storage_from_environment(environment: dict[str, str]) -> S3ArtifactStorage | None:
+    required_keys = (
+        "S3_BUCKET_NAME",
+        "S3_ENDPOINT",
+        "S3_REGION",
+        "S3_ACCESS_KEY_ID",
+        "S3_SECRET_ACCESS_KEY",
+    )
+
+    if not all(environment.get(key) for key in required_keys):
+        return None
+
+    return S3ArtifactStorage(
+        bucket_name=environment["S3_BUCKET_NAME"],
+        endpoint_url=environment["S3_ENDPOINT"],
+        region_name=environment["S3_REGION"],
+        access_key_id=environment["S3_ACCESS_KEY_ID"],
+        secret_access_key=environment["S3_SECRET_ACCESS_KEY"],
+    )
 
 
 def main() -> None:
     config = read_transcription_worker_config(os.environ)
     client = ControlPlaneClient(config["control_plane_base_url"])
-    downloader = RecordingArtifactDownloader()
+    downloader = RecordingArtifactDownloader(
+        object_storage=build_object_storage_from_environment(os.environ),
+    )
     transcriber = FasterWhisperTranscriber(
         model_name=str(config["whisper_model"]),
         device=str(config["whisper_device"]),
         compute_type=str(config["whisper_compute_type"]),
+    )
+    summarizer = (
+        CodexTranscriptSummarizer(
+            model=str(config["summary_model"]),
+            reasoning_effort=str(config["summary_reasoning_effort"]),
+            codex_cli_path=str(config["codex_cli_path"]),
+        )
+        if bool(config["summary_enabled"])
+        else None
     )
 
     while True:
@@ -25,6 +58,7 @@ def main() -> None:
                 client=client,
                 downloader=downloader,
                 transcriber=transcriber,
+                summarizer=summarizer,
             )
 
             if result["kind"] == "idle":

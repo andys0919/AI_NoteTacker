@@ -21,6 +21,10 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
                 "whisper_model": "small",
                 "whisper_device": "cpu",
                 "whisper_compute_type": "int8",
+                "summary_enabled": False,
+                "summary_model": "gpt-5.3-codex-spark",
+                "summary_reasoning_effort": "medium",
+                "codex_cli_path": "codex",
                 "poll_interval_ms": 1000,
             },
         )
