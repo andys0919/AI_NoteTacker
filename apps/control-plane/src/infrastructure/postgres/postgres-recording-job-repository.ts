@@ -1,6 +1,7 @@
 import type {
   RecordingArtifact,
   RecordingJob,
+  SummaryArtifact,
   TranscriptArtifact
 } from '../../domain/recording-job.js';
 import {
@@ -30,6 +31,7 @@ type RecordingJobRow = {
   failure_message: string | null;
   recording_artifact: RecordingArtifact | null;
   transcript_artifact: TranscriptArtifact | null;
+  summary_artifact: SummaryArtifact | null;
 };
 
 const recordingJobSchemaSql = `
@@ -46,8 +48,12 @@ const recordingJobSchemaSql = `
     failure_code TEXT,
     failure_message TEXT,
     recording_artifact JSONB,
-    transcript_artifact JSONB
+    transcript_artifact JSONB,
+    summary_artifact JSONB
   );
+
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS summary_artifact JSONB;
 `;
 
 const toIsoString = (value: Date | string): string =>
@@ -66,7 +72,8 @@ const mapRowToRecordingJob = (row: RecordingJobRow): RecordingJob => ({
   failureCode: row.failure_code ?? undefined,
   failureMessage: row.failure_message ?? undefined,
   recordingArtifact: row.recording_artifact ?? undefined,
-  transcriptArtifact: row.transcript_artifact ?? undefined
+  transcriptArtifact: row.transcript_artifact ?? undefined,
+  summaryArtifact: row.summary_artifact ?? undefined
 });
 
 export const ensureRecordingJobSchema = async (database: Queryable): Promise<void> => {
@@ -92,9 +99,10 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           failure_code,
           failure_message,
           recording_artifact,
-          transcript_artifact
+          transcript_artifact,
+          summary_artifact
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz, $10, $11, $12::jsonb, $13::jsonb)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz, $10, $11, $12::jsonb, $13::jsonb, $14::jsonb)
         ON CONFLICT (id) DO UPDATE SET
           meeting_url = EXCLUDED.meeting_url,
           platform = EXCLUDED.platform,
@@ -107,7 +115,8 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           failure_code = EXCLUDED.failure_code,
           failure_message = EXCLUDED.failure_message,
           recording_artifact = EXCLUDED.recording_artifact,
-          transcript_artifact = EXCLUDED.transcript_artifact
+          transcript_artifact = EXCLUDED.transcript_artifact,
+          summary_artifact = EXCLUDED.summary_artifact
         RETURNING *
       `,
       [
@@ -123,7 +132,8 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
         job.failureCode ?? null,
         job.failureMessage ?? null,
         job.recordingArtifact ? JSON.stringify(job.recordingArtifact) : null,
-        job.transcriptArtifact ? JSON.stringify(job.transcriptArtifact) : null
+        job.transcriptArtifact ? JSON.stringify(job.transcriptArtifact) : null,
+        job.summaryArtifact ? JSON.stringify(job.summaryArtifact) : null
       ]
     );
 

@@ -30,6 +30,12 @@ export type TranscriptArtifact = RecordingArtifact & {
   segments: TranscriptSegment[];
 };
 
+export type SummaryArtifact = {
+  model: string;
+  reasoningEffort: string;
+  text: string;
+};
+
 export type RecordingJob = {
   id: string;
   meetingUrl: string;
@@ -44,6 +50,7 @@ export type RecordingJob = {
   failureMessage?: string;
   recordingArtifact?: RecordingArtifact;
   transcriptArtifact?: TranscriptArtifact;
+  summaryArtifact?: SummaryArtifact;
 };
 
 type CreateRecordingJobInput = {
@@ -120,6 +127,16 @@ export const attachTranscriptArtifact = (
   ...job,
   assignedTranscriptionWorkerId: undefined,
   transcriptArtifact,
+  state: 'completed',
+  updatedAt: now()
+});
+
+export const attachSummaryArtifact = (
+  job: RecordingJob,
+  summaryArtifact: SummaryArtifact
+): RecordingJob => ({
+  ...job,
+  summaryArtifact,
   state: 'completed',
   updatedAt: now()
 });

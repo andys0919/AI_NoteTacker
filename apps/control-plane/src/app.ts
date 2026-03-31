@@ -5,6 +5,7 @@ import { evaluateMeetingLinkPolicy } from './domain/meeting-link-policy.js';
 import type { RecordingJobRepository } from './domain/recording-job-repository.js';
 import {
   attachRecordingArtifact,
+  attachSummaryArtifact,
   attachTranscriptArtifact,
   assignRecordingJobToWorker,
   createRecordingJob,
@@ -39,6 +40,12 @@ const transcriptArtifactSchema = recordingArtifactSchema.extend({
   segments: z.array(transcriptSegmentSchema)
 });
 
+const summaryArtifactSchema = z.object({
+  model: z.string().min(1),
+  reasoningEffort: z.string().min(1),
+  text: z.string().min(1)
+});
+
 const meetingBotCompletionSchema = z.object({
   recordingId: z.string().min(1),
   meetingLink: z.url(),
@@ -62,6 +69,23 @@ const meetingBotCompletionSchema = z.object({
   })
 });
 
+const meetingBotStatusSchema = z.object({
+  eventId: z.string().min(1).optional(),
+  botId: z.string().min(1),
+  provider: z.string().min(1),
+  status: z.array(z.string().min(1)).min(1)
+});
+
+const meetingBotLogSchema = z.object({
+  eventId: z.string().min(1).optional(),
+  botId: z.string().min(1),
+  provider: z.string().min(1),
+  level: z.string().min(1),
+  message: z.string().min(1),
+  category: z.string().min(1).optional(),
+  subCategory: z.string().min(1).optional()
+});
+
 const recordingJobEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('state-updated'),
@@ -74,6 +98,10 @@ const recordingJobEventSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('transcript-artifact-stored'),
     transcriptArtifact: transcriptArtifactSchema
+  }),
+  z.object({
+    type: z.literal('summary-artifact-stored'),
+    summaryArtifact: summaryArtifactSchema
   }),
   z.object({
     type: z.literal('failed'),
@@ -123,6 +151,11 @@ const toApiRecordingJob = (job: {
       text: string;
     }[];
   };
+  summaryArtifact?: {
+    model: string;
+    reasoningEffort: string;
+    text: string;
+  };
 }) => ({
   id: job.id,
   meetingUrl: job.meetingUrl,
@@ -136,7 +169,8 @@ const toApiRecordingJob = (job: {
   failureCode: job.failureCode,
   failureMessage: job.failureMessage,
   recordingArtifact: job.recordingArtifact,
-  transcriptArtifact: job.transcriptArtifact
+  transcriptArtifact: job.transcriptArtifact,
+  summaryArtifact: job.summaryArtifact
 });
 
 const deriveStorageKeyFromCompletionPayload = (
@@ -153,8 +187,34 @@ const deriveStorageKeyFromCompletionPayload = (
   }
 
   const pathname = new URL(fallbackUrl).pathname.replace(/^\/+/, '');
-  return pathname.length > 0 ? pathname : undefined;
+  return pathname.length > 0 ? decodeURIComponent(pathname) : undefined;
 };
+
+const toKebabCase = (value: string): string =>
+  value
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+
+const shouldApplyMeetingBotFailure = (state: string): boolean =>
+  ['queued', 'joining', 'recording'].includes(state);
+
+const shouldApplyMeetingBotFailureDetails = (state: string): boolean =>
+  ['queued', 'joining', 'recording', 'failed'].includes(state);
+
+const genericMeetingBotFailure = {
+  code: 'meeting-bot-failed',
+  message: 'The meeting bot reported a failed join or recording attempt.'
+};
+
+const deriveMeetingBotLogFailure = (payload: z.infer<typeof meetingBotLogSchema>) => ({
+  code: ['meeting-bot', payload.category, payload.subCategory]
+    .filter((value): value is string => Boolean(value))
+    .map(toKebabCase)
+    .join('-'),
+  message: payload.message
+});
 
 export const createApp = (
   repository: RecordingJobRepository = new InMemoryRecordingJobRepository(),
@@ -294,6 +354,62 @@ export const createApp = (
     return response.status(202).json(toApiRecordingJob(savedJob));
   });
 
+  app.patch('/v2/meeting/app/bot/status', async (request, response) => {
+    const parsedPayload = meetingBotStatusSchema.safeParse(request.body);
+
+    if (!parsedPayload.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedPayload.error.issues[0]?.message ?? 'The request payload is invalid.'
+        }
+      });
+    }
+
+    const job = await repository.getById(parsedPayload.data.botId);
+
+    if (!job) {
+      return response.status(404).json(notFoundResponse(parsedPayload.data.botId));
+    }
+
+    if (
+      parsedPayload.data.status.includes('failed') &&
+      shouldApplyMeetingBotFailure(job.state)
+    ) {
+      await repository.save(markRecordingJobFailed(job, genericMeetingBotFailure));
+    }
+
+    return response.status(200).json({ success: true });
+  });
+
+  app.patch('/v2/meeting/app/bot/log', async (request, response) => {
+    const parsedPayload = meetingBotLogSchema.safeParse(request.body);
+
+    if (!parsedPayload.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedPayload.error.issues[0]?.message ?? 'The request payload is invalid.'
+        }
+      });
+    }
+
+    const job = await repository.getById(parsedPayload.data.botId);
+
+    if (!job) {
+      return response.status(404).json(notFoundResponse(parsedPayload.data.botId));
+    }
+
+    if (
+      parsedPayload.data.level.toLowerCase() === 'error' &&
+      shouldApplyMeetingBotFailureDetails(job.state)
+    ) {
+      await repository.save(markRecordingJobFailed(job, deriveMeetingBotLogFailure(parsedPayload.data)));
+    }
+
+    return response.status(200).json({ success: true });
+  });
+
   app.post('/recording-jobs/:id/events', async (request, response) => {
     const parsedEvent = recordingJobEventSchema.safeParse(request.body);
 
@@ -319,6 +435,8 @@ export const createApp = (
           ? attachRecordingArtifact(job, parsedEvent.data.recordingArtifact)
           : parsedEvent.data.type === 'transcript-artifact-stored'
             ? attachTranscriptArtifact(job, parsedEvent.data.transcriptArtifact)
+            : parsedEvent.data.type === 'summary-artifact-stored'
+              ? attachSummaryArtifact(job, parsedEvent.data.summaryArtifact)
             : parsedEvent.data.type === 'transcription-failed'
               ? releaseTranscriptionJobForRetry(job, parsedEvent.data.failure, maxTranscriptionAttempts)
               : markRecordingJobFailed(job, parsedEvent.data.failure);
