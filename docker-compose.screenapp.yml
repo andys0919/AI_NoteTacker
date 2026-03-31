@@ -12,12 +12,28 @@ services:
       meeting-bot:
         condition: service_healthy
 
+  transcription-worker:
+    environment:
+      WHISPER_MODEL: large-v3
+      WHISPER_DEVICE: cuda
+      WHISPER_COMPUTE_TYPE: float16
+      SUMMARY_ENABLED: "true"
+      SUMMARY_MODEL: gpt-5.3-codex-spark
+      SUMMARY_REASONING_EFFORT: medium
+      CODEX_CLI_PATH: codex
+      CODEX_HOME: /codex-home
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    gpus: all
+    volumes:
+      - ${CODEX_HOME}:/codex-home
+
   meeting-bot:
-    build:
-      context: ./_inspect_meeting_bot
-      dockerfile: Dockerfile.production
+    image: ghcr.io/screenappai/meeting-bot:latest
     environment:
       NODE_ENV: production
+      AUTH_BASE_URL_V2: http://control-plane:3000/v2
+      MEETING_INACTIVITY_MINUTES: "52560000"
       REDIS_CONSUMER_ENABLED: "false"
       STORAGE_PROVIDER: s3
       UPLOADER_TYPE: s3
