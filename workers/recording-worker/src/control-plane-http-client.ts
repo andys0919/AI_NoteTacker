@@ -2,6 +2,9 @@ export type WorkerClaimedJob = {
   id: string;
   meetingUrl: string;
   platform: 'google-meet' | 'microsoft-teams' | 'zoom';
+  inputSource?: 'meeting-link';
+  submitterId?: string;
+  requestedJoinName?: string;
   state: 'joining' | 'recording' | 'transcribing' | 'completed' | 'failed' | 'queued';
   assignedWorkerId?: string;
 };

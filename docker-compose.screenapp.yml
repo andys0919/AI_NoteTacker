@@ -1,4 +1,11 @@
 services:
+  control-plane:
+    environment:
+      DOCKER_SOCKET_PATH: /var/run/docker.sock
+      MEETING_BOT_CONTAINER_NAME: ai_notetacker-meeting-bot-1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
   recording-worker:
     environment:
       RECORDING_EXECUTOR: screenapp
@@ -30,6 +37,12 @@ services:
 
   meeting-bot:
     image: ghcr.io/screenappai/meeting-bot:latest
+    entrypoint:
+      - /bin/bash
+      - /opt/ainotetacker/meeting-bot-entrypoint.sh
+    command:
+      - node
+      - dist/index.js
     environment:
       NODE_ENV: production
       AUTH_BASE_URL_V2: http://control-plane:3000/v2
@@ -46,6 +59,9 @@ services:
       NOTIFY_WEBHOOK_ENABLED: "true"
       NOTIFY_WEBHOOK_URL: http://control-plane:3000/integrations/meeting-bot/completions
       UPLOADER_FILE_EXTENSION: .webm
+    volumes:
+      - ./ops/meeting-bot/entrypoint.sh:/opt/ainotetacker/meeting-bot-entrypoint.sh:ro
+      - ./ops/meeting-bot/MicrosoftTeamsBot.js:/usr/src/app/dist/bots/MicrosoftTeamsBot.js:ro
     depends_on:
       control-plane:
         condition: service_healthy

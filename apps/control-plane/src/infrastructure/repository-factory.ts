@@ -1,7 +1,13 @@
 import { Pool } from 'pg';
 
+import type { AuthenticatedUserRepository } from '../domain/authenticated-user-repository.js';
 import type { RecordingJobRepository } from '../domain/recording-job-repository.js';
+import { InMemoryAuthenticatedUserRepository } from './in-memory-authenticated-user-repository.js';
 import { InMemoryRecordingJobRepository } from './in-memory-recording-job-repository.js';
+import {
+  ensureAuthenticatedUserSchema,
+  PostgresAuthenticatedUserRepository
+} from './postgres/postgres-authenticated-user-repository.js';
 import {
   ensureRecordingJobSchema,
   PostgresRecordingJobRepository
@@ -34,8 +40,21 @@ const withRetry = async <T>(operation: () => Promise<T>, attempts: number, delay
 };
 
 export const createRecordingJobRepositoryFromEnvironment = async (): Promise<RecordingJobRepository> => {
+  const context = await createPersistenceContextFromEnvironment();
+  return context.recordingJobRepository;
+};
+
+export type PersistenceContext = {
+  recordingJobRepository: RecordingJobRepository;
+  authenticatedUserRepository: AuthenticatedUserRepository;
+};
+
+export const createPersistenceContextFromEnvironment = async (): Promise<PersistenceContext> => {
   if (!isPostgresDriver(process.env.PERSISTENCE_DRIVER)) {
-    return new InMemoryRecordingJobRepository();
+    return {
+      recordingJobRepository: new InMemoryRecordingJobRepository(),
+      authenticatedUserRepository: new InMemoryAuthenticatedUserRepository()
+    };
   }
 
   const connectionString = process.env.DATABASE_URL;
@@ -50,7 +69,11 @@ export const createRecordingJobRepositoryFromEnvironment = async (): Promise<Rec
 
   await withRetry(async () => {
     await ensureRecordingJobSchema(pool);
+    await ensureAuthenticatedUserSchema(pool);
   }, 10, 3000);
 
-  return new PostgresRecordingJobRepository(pool);
+  return {
+    recordingJobRepository: new PostgresRecordingJobRepository(pool),
+    authenticatedUserRepository: new PostgresAuthenticatedUserRepository(pool)
+  };
 };

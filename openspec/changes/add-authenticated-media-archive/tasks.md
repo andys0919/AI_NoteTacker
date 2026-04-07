@@ -1,0 +1,23 @@
+## 1. Implementation
+- [x] 1.1 Add failing tests for authenticated user scoping, unauthenticated access rejection, and archive ownership boundaries.
+- [x] 1.2 Add failing tests for uploaded video preparation, stage progress persistence, and durable transcript/archive retrieval.
+- [x] 1.2a Add failing tests for archive search across uploaded file names, meeting links, summary text, and transcript text.
+- [x] 1.2b Add failing tests for reclaiming stale transcription leases when a claimed job stops heartbeating.
+- [x] 1.2c Add failing tests for sending one terminal email notification per authenticated job completion/failure.
+- [x] 1.2d Add failing tests for owner-scoped archive export in Markdown, TXT, SRT, and JSON formats.
+- [ ] 1.2e Add failing tests for operator-interrupted uploaded-media jobs and sticky cancellation against late worker callbacks.
+- [ ] 1.2f Add failing tests for GPU-aware transcription slot gating and mojibake filename repair tooling.
+- [x] 1.3 Integrate Supabase Auth email OTP sign-in and backend JWT verification, then map authenticated identities into local user records.
+- [x] 1.4 Replace anonymous submitter-based job ownership with authenticated user ownership in APIs, repositories, and dashboard queries.
+- [x] 1.5 Add a media-preparation stage and worker path that stores raw uploads and extracts canonical audio from supported audio/video inputs before transcription.
+- [x] 1.6 Persist job stage events, worker heartbeats, transcript text, summary text, and archive metadata in durable storage.
+- [x] 1.6a Persist durable `jobHistory` timeline entries on jobs so stage changes and archive detail context survive reloads.
+- [x] 1.6b Persist terminal notification delivery state so repeated terminal saves do not resend duplicate emails.
+- [x] 1.7 Update the dashboard to support sign-in, archive browsing, archive search, job detail views, and stage-by-stage queue progress for active jobs.
+- [x] 1.7a Show a job timeline block in the dashboard so archive/job detail views expose durable stage history.
+- [x] 1.7b Add dashboard export actions for completed jobs with transcript/archive data.
+- [ ] 1.7c Add interrupt controls for queued/transcribing uploaded-media jobs.
+- [ ] 1.7d Add operational repair tooling for legacy uploaded filename mojibake.
+- [x] 1.8 Add stale transcription reclaim logic to claim flows so abandoned uploaded-media jobs resume automatically.
+- [x] 1.8a Add SMTP-backed notification delivery for terminal job outcomes when authenticated operator email and mail transport are configured.
+- [ ] 1.9 Verify tests, build, auth flow, `.m4a` upload flow, `.mp4` upload flow, archive search, and stale-transcription retry flows.

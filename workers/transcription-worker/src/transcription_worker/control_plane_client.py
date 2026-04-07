@@ -21,6 +21,16 @@ class ControlPlaneClient:
     def post_job_event(self, job_id: str, payload: dict) -> None:
         self._post_json(f"{self.base_url}/recording-jobs/{job_id}/events", payload)
 
+    def get_job(self, job_id: str) -> dict | None:
+        http_request = request.Request(
+            f"{self.base_url}/recording-jobs/{job_id}",
+            method="GET",
+        )
+
+        with request.urlopen(http_request) as response:  # noqa: S310
+            body = response.read()
+            return json.loads(body.decode("utf-8")) if body else None
+
     def _post_json(self, url: str, payload: dict, allow_no_content: bool = False) -> dict | None:
         encoded_payload = json.dumps(payload).encode("utf-8")
         http_request = request.Request(

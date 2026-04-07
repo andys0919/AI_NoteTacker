@@ -5,6 +5,7 @@ Transcript generation is now operational, but operators still need a concise sum
 
 ## What Changes
 - Add a derived summary artifact generated from completed transcripts.
+- Extend the summary artifact with structured sections for action items, decisions, risks, and open questions while keeping Markdown text output.
 - Use Codex-backed summarization with model `gpt-5.3-codex-spark` and reasoning effort `medium`.
 - Extend the job result payload so operators can retrieve both transcript and summary output.
 - Wire the screenapp stack so summary generation can run inside the worker environment using existing Codex authentication from the host machine.

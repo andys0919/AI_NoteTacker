@@ -5,8 +5,13 @@ services:
       dockerfile: apps/control-plane/Dockerfile
     env_file:
       - .env.example
+    environment:
+      DOCKER_SOCKET_PATH: /var/run/docker.sock
+      MEETING_BOT_CONTAINER_NAME: ${MEETING_BOT_CONTAINER_NAME:-ai_notetacker-meeting-bot-1}
     ports:
       - "3000:3000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 5s
@@ -40,6 +45,13 @@ services:
       - .env.example
     environment:
       WORKER_ID: transcriber-alpha
+      SUMMARY_ENABLED: "true"
+      CODEX_HOME: /codex-home
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    gpus: all
+    volumes:
+      - ${CODEX_HOME}:/codex-home
     depends_on:
       control-plane:
         condition: service_healthy

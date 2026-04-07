@@ -11,8 +11,9 @@ class _FakeSegment:
 
 
 class _FakeInfo:
-    def __init__(self, language):
+    def __init__(self, language, duration=1.2):
         self.language = language
+        self.duration = duration
 
 
 class _FakeModel:
@@ -37,6 +38,24 @@ class FasterWhisperTranscriberTests(unittest.TestCase):
             result["segments"],
             [{"start_ms": 0, "end_ms": 1200, "text": "hello whisper"}],
         )
+
+    def test_reports_real_progress_as_segments_are_materialized(self) -> None:
+        progress_updates = []
+        transcriber = FasterWhisperTranscriber(
+            model_name="small",
+            device="cpu",
+            compute_type="int8",
+            model_factory=lambda *_args, **_kwargs: _FakeModel(),
+        )
+
+        transcriber.transcribe(
+            "/tmp/example.wav",
+            on_progress=lambda update: progress_updates.append(update),
+        )
+
+        self.assertEqual(progress_updates[0]["processed_ms"], 1200)
+        self.assertEqual(progress_updates[0]["total_ms"], 1200)
+        self.assertEqual(progress_updates[-1]["percent"], 100)
 
 
 if __name__ == "__main__":

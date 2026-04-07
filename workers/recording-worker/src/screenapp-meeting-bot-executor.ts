@@ -30,7 +30,7 @@ export class ScreenappMeetingBotExecutor implements RecordingWorkerExecutor {
       body: JSON.stringify({
         bearerToken: this.options.bearerToken,
         url: job.meetingUrl,
-        name: this.options.botName,
+        name: job.requestedJoinName ?? this.options.botName,
         teamId: this.options.teamId,
         timezone: this.options.timezone,
         userId: this.options.userId,

@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
 
 import {
+  assignRecordingJobToWorker,
   attachRecordingArtifact,
   attachSummaryArtifact,
   attachTranscriptArtifact,
-  createRecordingJob
+  createRecordingJob,
+  markRecordingJobFailed,
+  updateRecordingJobProgress
 } from '../src/domain/recording-job.js';
 import {
   PostgresRecordingJobRepository,
@@ -147,5 +150,131 @@ describe('PostgresRecordingJobRepository', () => {
     const claimed = await repository.claimNextTranscriptionReady('transcriber-beta');
 
     expect(claimed).toBeUndefined();
+  });
+
+  it('deletes only terminal history for the requested operator', async () => {
+    const failedJob = markRecordingJobFailed(
+      createRecordingJob({
+        meetingUrl: 'https://meet.google.com/postgres-failed',
+        platform: 'google-meet',
+        submitterId: 'operator-a'
+      }),
+      {
+        code: 'meeting-bot-failed',
+        message: 'join failed'
+      }
+    );
+    const completedJob = attachTranscriptArtifact(
+      attachRecordingArtifact(
+        createRecordingJob({
+          meetingUrl: 'https://meet.google.com/postgres-completed',
+          platform: 'google-meet',
+          submitterId: 'operator-a'
+        }),
+        {
+          storageKey: 'recordings/job_pg_completed/meeting.webm',
+          downloadUrl: 'https://storage.example.test/recordings/job_pg_completed/meeting.webm',
+          contentType: 'video/webm'
+        }
+      ),
+      {
+        storageKey: 'transcripts/job_pg_completed/transcript.json',
+        downloadUrl: 'https://storage.example.test/transcripts/job_pg_completed/transcript.json',
+        contentType: 'application/json',
+        language: 'en',
+        segments: [
+          {
+            startMs: 0,
+            endMs: 1000,
+            text: 'postgres completed'
+          }
+        ]
+      }
+    );
+    const activeJob = assignRecordingJobToWorker(
+      createRecordingJob({
+        meetingUrl: 'https://meet.google.com/postgres-active',
+        platform: 'google-meet',
+        submitterId: 'operator-a'
+      }),
+      'worker-alpha'
+    );
+    const otherOperatorJob = markRecordingJobFailed(
+      createRecordingJob({
+        meetingUrl: 'https://meet.google.com/postgres-other',
+        platform: 'google-meet',
+        submitterId: 'operator-b'
+      }),
+      {
+        code: 'meeting-bot-failed',
+        message: 'other operator'
+      }
+    );
+
+    await repository.save(failedJob);
+    await repository.save(completedJob);
+    await repository.save(activeJob);
+    await repository.save(otherOperatorJob);
+
+    const deletedCount = await repository.clearTerminalHistoryForSubmitter('operator-a');
+
+    expect(deletedCount).toBe(2);
+    expect(await repository.getById(failedJob.id)).toBeUndefined();
+    expect(await repository.getById(completedJob.id)).toBeUndefined();
+    expect(await repository.getById(activeJob.id)).toBeDefined();
+    expect(await repository.getById(otherOperatorJob.id)).toBeDefined();
+  });
+
+  it('persists job history entries for archive detail timelines', async () => {
+    const created = createRecordingJob({
+      meetingUrl: 'uploaded://postgres-timeline.mp4',
+      platform: 'uploaded-audio',
+      inputSource: 'uploaded-audio',
+      submitterId: 'operator-history',
+      uploadedFileName: 'postgres-timeline.mp4'
+    });
+
+    const staged = updateRecordingJobProgress(created, {
+      processingStage: 'preparing-media',
+      processingMessage: 'Extracting audio from uploaded video.'
+    });
+
+    const summarized = attachSummaryArtifact(
+      attachTranscriptArtifact(
+        attachRecordingArtifact(staged, {
+          storageKey: 'uploads/operator-history/job_pg_timeline/postgres-timeline.mp4',
+          downloadUrl:
+            'https://storage.example.test/uploads/operator-history/job_pg_timeline/postgres-timeline.mp4',
+          contentType: 'video/mp4'
+        }),
+        {
+          storageKey: 'transcripts/job_pg_timeline/transcript.json',
+          downloadUrl: 'https://storage.example.test/transcripts/job_pg_timeline/transcript.json',
+          contentType: 'application/json',
+          language: 'en',
+          segments: [
+            {
+              startMs: 0,
+              endMs: 1000,
+              text: 'postgres timeline entry'
+            }
+          ]
+        }
+      ),
+      {
+        model: 'gpt-5.3-codex-spark',
+        reasoningEffort: 'medium',
+        text: 'postgres timeline summary'
+      }
+    );
+
+    await repository.save(summarized);
+
+    const reloaded = await repository.getById(summarized.id);
+
+    expect(reloaded?.jobHistory?.length).toBeGreaterThanOrEqual(4);
+    expect(reloaded?.jobHistory?.[0]?.stage).toBe('queued');
+    expect(reloaded?.jobHistory?.some((entry) => entry.stage === 'preparing-media')).toBe(true);
+    expect(reloaded?.jobHistory?.at(-1)?.stage).toBe('completed');
   });
 });

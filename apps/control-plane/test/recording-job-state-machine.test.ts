@@ -7,7 +7,8 @@ import {
   createRecordingJob,
   markRecordingJobFailed,
   releaseTranscriptionJobForRetry,
-  transitionRecordingJobState
+  transitionRecordingJobState,
+  updateRecordingJobProgress
 } from '../src/domain/recording-job.js';
 
 describe('recording job lifecycle', () => {
@@ -123,5 +124,80 @@ describe('recording job lifecycle', () => {
     expect(summarized.summaryArtifact?.model).toBe('gpt-5.3-codex-spark');
     expect(summarized.summaryArtifact?.reasoningEffort).toBe('medium');
     expect(summarized.summaryArtifact?.text).toBe('Short summary');
+  });
+
+  it('stores a processing stage and message without changing lifecycle state', () => {
+    const created = createRecordingJob({
+      meetingUrl: 'uploaded://example.mp4',
+      platform: 'uploaded-audio',
+      inputSource: 'uploaded-audio'
+    });
+
+    const updated = updateRecordingJobProgress(created, {
+      processingStage: 'preparing-media',
+      processingMessage: 'Extracting audio track from uploaded video.'
+    });
+
+    expect(updated.state).toBe('queued');
+    expect(updated.processingStage).toBe('preparing-media');
+    expect(updated.processingMessage).toBe('Extracting audio track from uploaded video.');
+    expect(updated.jobHistory?.at(-1)?.stage).toBe('preparing-media');
+    expect(updated.jobHistory?.at(-1)?.message).toBe('Extracting audio track from uploaded video.');
+  });
+
+  it('creates and appends durable history entries while deduplicating repeated progress updates', () => {
+    const created = createRecordingJob({
+      meetingUrl: 'uploaded://history-demo.mp4',
+      platform: 'uploaded-audio',
+      inputSource: 'uploaded-audio'
+    });
+
+    expect(created.jobHistory).toHaveLength(1);
+    expect(created.jobHistory?.[0]?.stage).toBe('queued');
+
+    const withStage = updateRecordingJobProgress(created, {
+      processingStage: 'preparing-media',
+      processingMessage: 'Extracting audio track from uploaded video.'
+    });
+
+    const repeatedProgress = updateRecordingJobProgress(withStage, {
+      processingStage: 'preparing-media',
+      processingMessage: 'Extracting audio track from uploaded video.',
+      progressPercent: 24
+    });
+
+    const withSummary = attachSummaryArtifact(
+      attachTranscriptArtifact(
+        attachRecordingArtifact(withStage, {
+          storageKey: 'recordings/job_history/meeting.webm',
+          downloadUrl: 'https://storage.example.test/recordings/job_history/meeting.webm',
+          contentType: 'video/webm'
+        }),
+        {
+          storageKey: 'transcripts/job_history/transcript.json',
+          downloadUrl: 'https://storage.example.test/transcripts/job_history/transcript.json',
+          contentType: 'application/json',
+          language: 'en',
+          segments: [
+            {
+              startMs: 0,
+              endMs: 1000,
+              text: 'hello timeline'
+            }
+          ]
+        }
+      ),
+      {
+        model: 'gpt-5.3-codex-spark',
+        reasoningEffort: 'medium',
+        text: 'Timeline summary'
+      }
+    );
+
+    expect(repeatedProgress.jobHistory).toHaveLength(2);
+    expect(withSummary.jobHistory?.at(-1)?.stage).toBe('completed');
+    expect(withSummary.jobHistory?.at(-1)?.message).toBe(
+      'Transcript and summary generation completed.'
+    );
   });
 });

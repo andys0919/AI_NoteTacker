@@ -2,10 +2,11 @@ import os
 import time
 
 from meeting_ai_pipeline.artifact_downloader import RecordingArtifactDownloader, S3ArtifactStorage
-from meeting_ai_pipeline.codex_transcript_summarizer import CodexTranscriptSummarizer
-from meeting_ai_pipeline.faster_whisper_transcriber import FasterWhisperTranscriber
 from transcription_worker.config import read_transcription_worker_config
+from transcription_worker.codex_transcript_summarizer import CodexTranscriptSummarizer
 from transcription_worker.control_plane_client import ControlPlaneClient
+from transcription_worker.faster_whisper_engine import FasterWhisperTranscriber
+from transcription_worker.media_preparer import FFmpegMediaPreparer
 from transcription_worker.worker_loop import run_transcription_worker_iteration
 
 
@@ -36,6 +37,7 @@ def main() -> None:
     downloader = RecordingArtifactDownloader(
         object_storage=build_object_storage_from_environment(os.environ),
     )
+    media_preparer = FFmpegMediaPreparer()
     transcriber = FasterWhisperTranscriber(
         model_name=str(config["whisper_model"]),
         device=str(config["whisper_device"]),
@@ -57,6 +59,7 @@ def main() -> None:
                 worker_id=str(config["worker_id"]),
                 client=client,
                 downloader=downloader,
+                media_preparer=media_preparer,
                 transcriber=transcriber,
                 summarizer=summarizer,
             )

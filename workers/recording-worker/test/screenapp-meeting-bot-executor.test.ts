@@ -78,4 +78,27 @@ describe('ScreenappMeetingBotExecutor', () => {
       botId: 'job_123'
     });
   });
+
+  it('uses the requested join name from the claimed job when provided', async () => {
+    const executor = new ScreenappMeetingBotExecutor({
+      meetingBotBaseUrl: baseUrl,
+      bearerToken: 'internal-token',
+      botName: 'AI NoteTacker',
+      teamId: 'team-123',
+      timezone: 'UTC',
+      userId: 'worker-user'
+    });
+
+    await executor.execute({
+      id: 'job_custom_name',
+      meetingUrl: 'https://teams.live.com/meet/9343114235416?p=I4yS5pia1gFxNYOOsV',
+      platform: 'microsoft-teams',
+      state: 'joining',
+      requestedJoinName: 'Solomon - NoteTaker Pro'
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.path).toBe('/microsoft/join');
+    expect(requests[0]?.body.name).toBe('Solomon - NoteTaker Pro');
+  });
 });

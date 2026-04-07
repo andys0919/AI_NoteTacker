@@ -164,3 +164,165 @@
 - 全 repo `npm test` 通過
 - 全 repo `npm run build` 通過
 - runtime 容器現在可接受「無 storage / 有 blobUrl」的 payload，job 成功進入 `transcribing`
+- 2026-04-02：開始處理 operator dashboard 歷史工作清理能力
+- 已建立並驗證 OpenSpec change：`add-operator-job-history-controls`
+- 已手動從 PostgreSQL 刪除使用者指定的兩筆舊 failed jobs
+- 已以 TDD 補上：
+- `DELETE /api/operator/jobs/:id`
+- `POST /api/operator/jobs/clear-history`
+- repository terminal-history cleanup methods（in-memory + PostgreSQL）
+- dashboard 的 `Delete History` / `Clear History` controls
+- 新增測試覆蓋：
+- 單筆刪除 terminal job
+- 拒絕刪除 active job
+- 僅清除目前 operator 的 terminal history
+- PostgreSQL repository terminal-history cleanup
+- 最新驗證結果：
+- 全 repo `npm test` 通過，control-plane 42 tests、recording-worker 8 tests、Python transcription worker 10 tests
+- 全 repo `npm run build` 通過
+- `openspec validate add-operator-job-history-controls --strict --no-interactive` 通過
+- `node --check apps/control-plane/public/app.js` 通過
+- 2026-04-02：開始處理具名使用者、影音上傳、archive、100 人並發需求
+- 已與使用者確認身份方向為「只輸入 email」，並收斂成 passwordless magic-link
+- 以免費可行方案選定：
+- `Supabase Auth` 提供 email magic-link auth
+- `Brevo Free` 提供 custom SMTP 寄信
+- 保留本地 PostgreSQL + MinIO 作為 jobs / archives / artifacts 真相
+- 已實測 live `.m4a` upload：
+- 前端可成功建立 upload job
+- job 可由 queue 進入 `transcribing`
+- 問題不在 upload API 本身，而在缺少清楚進度與後段可觀測性
+- 已建立並驗證 OpenSpec change：`add-authenticated-media-archive`
+- 內容涵蓋：
+- authenticated dashboard
+- email magic-link auth
+- audio/video ingestion + media preparation
+- durable stage progress
+- transcript/summary archive
+- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
+- 2026-04-02：開始實作 `add-authenticated-media-archive` 第一切片，先處理 uploaded media + progress 可觀測性
+- 已完成：
+- control-plane job domain 新增 `processingStage` / `processingMessage`
+- `progress-updated` job event 已可持久保存到 PostgreSQL
+- transcription worker 已從黑盒 pipeline 改成顯式步驟：download -> prepare media -> Whisper -> summary
+- 新增 `FFmpegMediaPreparer`，對 `.mp4`/`.m4a` 先產生 canonical `.wav`
+- transcription-worker image 已安裝 `ffmpeg`
+- dashboard 現在顯示 `Pipeline Progress`
+- transcript UI 從 preview 改為 `Full Transcript`
+- 驗證：
+- 全 repo `npm test` 通過，control-plane 44 tests、recording-worker 8 tests、Python transcription worker 12 tests
+- 全 repo `npm run build` 通過
+- live `.mp4` 上傳驗證成功：
+- queue 顯示 progress 文案
+- job 成功完成到 `completed`
+- API/DB 可查到 `processing_stage = completed`
+- transcript 與 summary 均已持久保存
+- 已將舊的卡住 `.m4a` transcription lease 標記為 failed，避免同一 operator 的後續 upload 被過期 active job 卡住
+- 尚未開始的範圍：
+- `Supabase Auth + Brevo Free` magic-link sign-in
+- 具名使用者 archive ownership 與跨裝置回看
+- 2026-04-02：開始實作 auth slice（feature-flagged）
+- 已完成：
+- operator auth domain/infrastructure：`OperatorAuth`、`AuthenticatedUserRepository`
+- backend `/api/operator/*` 在 auth 啟用時改為從 bearer token 解析 authenticated user，不再信任 client 傳入的 `submitterId`
+- backend 新增 `/api/auth/config`
+- frontend 已加入 auth panel / session card 與 Supabase auth client scaffolding
+- 若未設定 `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY`，dashboard 仍維持目前匿名模式，不會中斷現有流程
+- 驗證：
+- 全 repo `npm test` 通過，control-plane 46 tests、recording-worker 8 tests、Python transcription worker 12 tests
+- 全 repo `npm run build` 通過
+- live `/api/auth/config` 目前回 `{\"enabled\":false}`，feature flag 運作正常
+- 2026-04-07：開始補第一批 archive / reliability 能力
+- 使用者已核准直接實作，不再只停留在功能建議。
+- 本批 scope 收斂為兩項：
+- `archive search`
+- `transcription stale lease recovery`
+- 已確認這兩項應併入既有 `add-authenticated-media-archive` active change，而不是另開新 change：
+- archive search 屬於 authenticated archive browsing 的自然延伸
+- stale transcription reclaim 屬於 durable progress / heartbeat / reclaim 的落地實作
+- 已更新並重新驗證 `add-authenticated-media-archive`：
+- proposal / design / tasks 已補 archive search 與 stale transcription recovery
+- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
+- 已以 TDD 補上兩個 regression tests：
+- authenticated operator archive search 會依 `q` 過濾自己的 jobs，匹配 file name / meeting link / transcript / summary
+- stale transcription lease 會在下一次 `/transcription-workers/claims` 時自動釋放並重新 claim
+- 已完成實作：
+- `/api/operator/jobs` 新增 `q` query filtering
+- dashboard 新增 archive search input，搜尋時會帶 query 並更新 empty-state 文案
+- control-plane 在 transcription claim 前會檢查 stale leased transcription jobs，並用既有 retry path 回收
+- 驗證：
+- `npm test --workspace @ai-notetacker/control-plane` 通過，9 files / 56 tests 全綠
+- `node --check apps/control-plane/public/app.js` 通過
+- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
+- `docker compose up -d --build control-plane` 完成，container healthy，`GET /health` 回 `{\"status\":\"ok\"}`
+- 2026-04-07：已補 archive detail timeline 第一刀
+- 已以 TDD 補上：
+- recording job state machine 會建立並附加 `jobHistory`
+- PostgreSQL repository 會持久保存 `jobHistory`
+- API job payload 會回傳 `jobHistory`
+- uploaded-media progress regression test 現在也驗證 history 內容
+- 已完成實作：
+- `RecordingJob` 新增 durable `jobHistory`
+- lifecycle / artifact / failure / progress 事件現在會 append history entry
+- 重複百分比更新若 stage/message 沒變，不會在 history 中爆量追加
+- dashboard job card 新增 `Job Timeline` 區塊
+- job meta 補 `Updated` timestamp
+- 驗證：
+- `npm test --workspace @ai-notetacker/control-plane` 通過，9 files / 58 tests 全綠
+- `npm run build --workspace @ai-notetacker/control-plane` 通過
+- `node --check apps/control-plane/public/app.js` 通過
+- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
+- 2026-04-07：已補 authenticated terminal email notifications
+- 已更新 OpenSpec：
+- `operator-notifications` spec 已加入 `add-authenticated-media-archive`
+- proposal / tasks / design 已補 terminal email notifications
+- 已以 TDD 補上兩個 regression tests：
+- authenticated completed job 只寄一次 terminal email
+- authenticated failed operator job 會寄 failed terminal email
+- 已完成實作：
+- 新增 `JobNotificationSender` domain interface
+- 新增 SMTP-backed `SmtpJobNotificationSender`
+- server 會從 env 建立 notification sender 並注入 control-plane
+- `RecordingJob` 新增 terminal notification persistence fields，避免 duplicate resend
+- control-plane 的 terminal saves 現在會在適用時寄通知，並把 notification-sent 寫回 job history
+- `.env.example` 已補 `SMTP_*` 設定欄位
+- 驗證：
+- `npm test --workspace @ai-notetacker/control-plane` 通過，9 files / 60 tests 全綠
+- `npm run build --workspace @ai-notetacker/control-plane` 通過
+- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
+- 2026-04-07：已補 archive export formats
+- 已更新 OpenSpec：
+- `operator-dashboard` / `transcript-archive` specs 已補 export requirements
+- proposal / tasks 已補 exportable archive formats
+- 已以 TDD 補上兩個 regression tests：
+- owner-scoped completed job 可匯出 `Markdown / TXT / SRT / JSON`
+- 非 owner 匯出被拒絕，unsupported format 會回 invalid-request
+- 已完成實作：
+- 新增 `GET /api/operator/jobs/:id/export?format=markdown|txt|srt|json`
+- server-side renderer 已支援 4 種輸出
+- dashboard job card 已加入 `Export MD / TXT / SRT / JSON` 按鈕
+- 下載流程走 authenticated fetch + blob download，不需要另開新頁
+- 驗證：
+- `npm test --workspace @ai-notetacker/control-plane` 通過，9 files / 62 tests 全綠
+- `npm run build --workspace @ai-notetacker/control-plane` 通過
+- `node --check apps/control-plane/public/app.js` 通過
+- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
+- 2026-04-07：已補 structured summary sections
+- 已更新 OpenSpec：
+- `add-codex-transcript-summaries` proposal / spec / tasks 已補 structured summary sections
+- 已以 TDD 補上：
+- `meeting-ai-pipeline` summarizer 會回 Markdown text + structured payload
+- transcription worker summary event 會帶出 structured summary
+- control-plane API 會持久保存並回傳 structured summary
+- 已完成實作：
+- Codex summarizer prompt 現在要求 JSON-only summary payload
+- 本地會把 JSON payload render 回 Markdown summary text
+- `summaryArtifact.structured` 現在包含 `summary / keyPoints / actionItems / decisions / risks / openQuestions`
+- dashboard summary block 現在會額外顯示 `Action Items / Decisions / Risks / Open Questions`
+- transcription-worker runtime import 已改成使用本地 wrapper summarizer，避免容器繼續吃舊版 GitHub package 行為
+- root Python test script 現在會先跑 `meeting-ai-pipeline` tests，再跑 worker tests
+- 驗證：
+- `npm test` 通過，Node 62 tests、recording-worker 8 tests、Python 16 tests 全綠
+- `npm run build` 通過
+- `openspec validate add-codex-transcript-summaries --strict --no-interactive` 通過
+- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過

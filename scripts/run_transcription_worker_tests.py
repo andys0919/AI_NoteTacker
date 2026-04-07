@@ -30,6 +30,21 @@ result = subprocess.run(
         "unittest",
         "discover",
         "-s",
+        str(PACKAGE_SRC_PATH.parent / "tests"),
+        "-p",
+        "test_*.py",
+    ],
+    cwd=ROOT,
+    env=environment,
+)
+
+worker_result = subprocess.run(
+    [
+        sys.executable,
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
         str(ROOT / "workers" / "transcription-worker" / "tests"),
         "-p",
         "test_*.py",
@@ -38,4 +53,4 @@ result = subprocess.run(
     env=environment,
 )
 
-sys.exit(result.returncode)
+sys.exit(0 if result.returncode == 0 and worker_result.returncode == 0 else 1)
