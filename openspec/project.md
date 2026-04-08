@@ -3,7 +3,7 @@
 ## Purpose
 Build a self-hosted meeting recording and transcription platform that can join supported meetings through direct meeting links, record audio/video inside isolated workers, and produce Whisper-based transcripts without relying on the user's workstation audio stack.
 
-The initial product focus is operational reliability for recording and transcript generation. AI summaries, action items, calendar sync, and conversational agents are explicitly deferred until the recording and transcript pipeline is stable.
+The current product focus is still operational reliability for recording and transcript generation, but the repository now also includes Codex summaries, structured action items/decisions/risks/open questions, archive search/export, and operator controls needed to make the system usable day to day.
 
 ## Tech Stack
 - OpenSpec for change proposals, design docs, and requirement tracking
@@ -47,7 +47,7 @@ The initial product focus is operational reliability for recording and transcrip
 - The product is a meeting bot platform, not a desktop recorder.
 - The system must join meetings using direct links when guest or anonymous join is permitted.
 - The user's workstation must remain uninvolved in media capture after a job is submitted.
-- The current MVP is about recording and transcription only. Speaker diarization, summaries, search, and CRM integrations can be added later.
+- The current product already includes summaries, structured summary sections, archive search, export, interrupt/stop controls, and authenticated operator ownership. Speaker diarization, CRM integrations, and richer multi-worker scheduling can be added later.
 - Platform constraints matter: some Zoom, Meet, and Teams meetings cannot be joined without authentication, approval, or manual admission.
 
 ## Important Constraints

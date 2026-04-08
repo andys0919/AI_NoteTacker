@@ -307,6 +307,19 @@
 - `npm run build --workspace @ai-notetacker/control-plane` 通過
 - `node --check apps/control-plane/public/app.js` 通過
 - `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
+- 2026-04-08：已刷新使用文件
+- 已新增 root `README.md`
+- 已更新：
+- `workers/recording-worker/README.md`
+- `workers/transcription-worker/README.md`
+- `openspec/project.md`
+- `tasks/todo.md`
+- `tasks/lessons.md`
+- 內容已反映目前真實可用流程：
+- compose 啟動方式
+- dashboard 用法
+- 上傳 / 會議 bot / 匯出 / 中斷
+- GPU 轉錄與 Codex summary 預設
 - 2026-04-07：已補 structured summary sections
 - 已更新 OpenSpec：
 - `add-codex-transcript-summaries` proposal / spec / tasks 已補 structured summary sections

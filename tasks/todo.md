@@ -1,5 +1,22 @@
 # Todo
 
+## Current Usage
+
+- Start upload-only mode:
+- `docker compose up -d --build`
+- Start full meeting-bot mode:
+- `docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up -d --build`
+- Open dashboard:
+- `http://localhost:3000`
+- Upload audio/video:
+- use `Upload Recording`
+- Meeting link recording:
+- use `Submit Meeting Link`
+- Export completed jobs:
+- `Export MD / TXT / SRT / JSON`
+- Repair older mojibake upload file names:
+- `DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/ainotetacker node scripts/fix_uploaded_audio_filenames.mjs`
+
 - [x] 建立研究計畫與工作記錄
 - [x] 搜尋 GitHub 專案
 - [x] 依需求篩選可行方案
