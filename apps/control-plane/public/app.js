@@ -1,11 +1,54 @@
 import { createOperatorAuthClient } from '/auth-client.js';
+import {
+  formatJobTimestamp,
+  getEmptyStateMessage,
+  getHistoryStageLabel,
+  getJobCardViewModel,
+  renderOptionalMarkup
+} from '/dashboard-copy.js';
 import { getDashboardPrefill } from '/dashboard-query.js';
-import { getJobProgressModel } from '/job-progress.js';
-import { getMeetingBotStatusCopy } from '/job-runtime-state.js';
+import {
+  filterJobsByQuickFilter,
+  getJobActionSet
+} from '/dashboard-workflows.js';
+import {
+  formatProviderLabel,
+  formatSummaryModeLabel,
+  formatUsd,
+  getAdminGovernanceViewModel,
+  getAuditEntryViewModels,
+  getQuotaDisplayModel,
+  getUsageReportRowViewModels
+} from '/governance-panel.js';
 
 const DEFAULT_OPERATOR_ID_KEY = 'solomon-notetaker-operator-id';
-
 const elements = {
+  adminAuditList: document.querySelector('#admin-audit-list'),
+  adminUsageReportList: document.querySelector('#admin-usage-report-list'),
+  adminUsageReportSummary: document.querySelector('#admin-usage-report-summary'),
+  adminProviderCopy: document.querySelector('#admin-provider-copy'),
+  adminProviderCurrent: document.querySelector('#admin-provider-current'),
+  adminProviderForm: document.querySelector('#admin-provider-form'),
+  adminProviderPanel: document.querySelector('#admin-provider-panel'),
+  adminProviderSelect: document.querySelector('#admin-provider-select'),
+  adminTranscriptionModelInput: document.querySelector('#admin-transcription-model-input'),
+  adminSummaryProviderSelect: document.querySelector('#admin-summary-provider-select'),
+  adminSummaryModelInput: document.querySelector('#admin-summary-model-input'),
+  adminPricingVersionInput: document.querySelector('#admin-pricing-version-input'),
+  adminDefaultQuotaInput: document.querySelector('#admin-default-quota-input'),
+  adminLiveMeetingCapInput: document.querySelector('#admin-live-meeting-cap-input'),
+  adminLocalTranscriptionInput: document.querySelector('#admin-local-transcription-input'),
+  adminCloudTranscriptionInput: document.querySelector('#admin-cloud-transcription-input'),
+  adminLocalSummaryInput: document.querySelector('#admin-local-summary-input'),
+  adminCloudSummaryInput: document.querySelector('#admin-cloud-summary-input'),
+  adminOverrideForm: document.querySelector('#admin-override-form'),
+  adminOverrideSubmitterId: document.querySelector('#admin-override-submitter-id'),
+  adminOverrideQuotaInput: document.querySelector('#admin-override-quota-input'),
+  adminOverrideSubmit: document.querySelector('#admin-override-submit'),
+  adminSummaryModelStatus: document.querySelector('#admin-summary-model-status'),
+  adminProviderStatus: document.querySelector('#admin-provider-status'),
+  adminProviderStatusPill: document.querySelector('#admin-provider-status-pill'),
+  adminProviderSubmit: document.querySelector('#admin-provider-submit'),
   authCopy: document.querySelector('#auth-copy'),
   authEmail: document.querySelector('#auth-email'),
   authForm: document.querySelector('#auth-form'),
@@ -15,6 +58,9 @@ const elements = {
   dashboardGrid: document.querySelector('.dashboard-grid'),
   otpField: document.querySelector('#otp-field'),
   otpVerifyButton: document.querySelector('#otp-verify-button'),
+  quotaCard: document.querySelector('#quota-card'),
+  quotaRemaining: document.querySelector('#quota-remaining'),
+  quotaBreakdown: document.querySelector('#quota-breakdown'),
   sessionCard: document.querySelector('#session-card'),
   sessionEmail: document.querySelector('#session-email'),
   signOutButton: document.querySelector('#sign-out-button'),
@@ -31,8 +77,10 @@ const elements = {
   statusBanner: document.querySelector('#status-banner'),
   activeCount: document.querySelector('#active-count'),
   queuedCount: document.querySelector('#queued-count'),
+  completedCount: document.querySelector('#completed-count'),
   clearHistoryButton: document.querySelector('#clear-history-button'),
-  archiveSearch: document.querySelector('#archive-search')
+  archiveSearch: document.querySelector('#archive-search'),
+  jobFilters: document.querySelector('#job-filters')
 };
 
 const activeStates = new Set(['joining', 'recording', 'transcribing']);
@@ -72,12 +120,54 @@ let currentSubmitterId = getOrCreateSubmitterId();
 let pendingAuthEmail = null;
 let unsubscribeAuthState = () => {};
 let uploadInFlight = false;
+let adminProviderState = null;
+let operatorConfig = {
+  defaultJoinName: 'Solomon - NoteTaker',
+  submissionTemplates: []
+};
+let selectedTemplateId = 'general';
+let currentQuickFilter = 'all';
+let pendingSharedJobId = '';
 
 const updateIdentityDisplay = () => {
-  elements.submitterId.textContent = currentOperatorEmail || currentSubmitterId;
-  elements.submitterIdLabel.textContent = authEnabled ? 'Operator Email' : 'Workspace ID';
+  elements.submitterId.textContent = authEnabled
+    ? currentOperatorEmail || '待登入'
+    : '訪客模式';
+  elements.submitterId.title = authEnabled ? currentOperatorEmail || '' : currentSubmitterId;
+  elements.submitterIdLabel.textContent = authEnabled ? '目前身分' : '使用模式';
   elements.sessionCard.hidden = !authEnabled || !currentOperatorEmail;
   elements.sessionEmail.textContent = currentOperatorEmail || '-';
+};
+
+const applyDefaultJoinNameToForm = () => {
+  elements.defaultJoinName.textContent = operatorConfig.defaultJoinName;
+  elements.joinName.value = operatorConfig.defaultJoinName;
+};
+
+const setQuickFilter = (filterId) => {
+  currentQuickFilter = filterId;
+  elements.jobFilters
+    ?.querySelectorAll('[data-filter]')
+    .forEach((button) => button.classList.toggle('active', button.dataset.filter === filterId));
+};
+
+const focusSharedJobIfNeeded = () => {
+  if (!pendingSharedJobId) {
+    return;
+  }
+
+  const card = elements.jobList.querySelector(`[data-job-id="${pendingSharedJobId}"]`);
+
+  if (!card) {
+    return;
+  }
+
+  card.classList.add('job-card-highlight');
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  window.setTimeout(() => {
+    card.classList.remove('job-card-highlight');
+  }, 2200);
+  pendingSharedJobId = '';
 };
 
 const setAuthMode = (enabled) => {
@@ -89,22 +179,27 @@ const syncOtpUi = () => {
   const hasPendingOtp = Boolean(authEnabled && !currentOperatorEmail && pendingAuthEmail);
   elements.otpField.hidden = !hasPendingOtp;
   elements.otpVerifyButton.hidden = !hasPendingOtp;
-  elements.authSubmitButton.textContent = hasPendingOtp ? 'Resend Code' : 'Send Code';
+  elements.authSubmitButton.textContent = hasPendingOtp ? '重新寄送驗證碼' : '寄送驗證碼';
   elements.authSubmitButton.formNoValidate = hasPendingOtp;
   elements.authEmail.value = pendingAuthEmail ?? elements.authEmail.value;
   elements.authEmail.disabled = hasPendingOtp;
   elements.authOtp.required = hasPendingOtp;
   elements.authCopy.textContent = hasPendingOtp
     ? `驗證碼已寄到 ${pendingAuthEmail}。請輸入信中的驗證碼完成登入。`
-    : '輸入 email 後，系統會寄一組驗證碼到你的信箱。輸入驗證碼後，瀏覽器會記住登入狀態。';
+    : '輸入公司 email 後，系統會寄出一次性驗證碼。驗證完成後，瀏覽器會記住你的登入狀態。';
 };
+
+const collectFormElements = (root, selector) => (root ? [...root.querySelectorAll(selector)] : []);
 
 const setDashboardInteractionEnabled = (enabled) => {
   const interactiveElements = [
+    ...collectFormElements(elements.adminProviderForm, 'select, input, button'),
+    ...collectFormElements(elements.adminOverrideForm, 'input, button'),
     ...elements.meetingForm.querySelectorAll('input, button'),
     ...elements.uploadForm.querySelectorAll('input, button'),
     elements.clearHistoryButton,
-    elements.archiveSearch
+    elements.archiveSearch,
+    ...elements.jobFilters.querySelectorAll('button')
   ];
 
   interactiveElements.forEach((element) => {
@@ -112,6 +207,188 @@ const setDashboardInteractionEnabled = (enabled) => {
       element.disabled = !enabled;
     }
   });
+};
+
+const setAdminPanelVisible = (visible) => {
+  if (!elements.adminProviderPanel) {
+    return;
+  }
+
+  elements.adminProviderPanel.hidden = !visible;
+};
+
+const setQuotaVisible = (visible) => {
+  elements.quotaCard.hidden = !visible;
+};
+
+const resetAdminProviderPanel = () => {
+  if (!elements.adminProviderPanel) {
+    return;
+  }
+
+  adminProviderState = null;
+  elements.adminProviderSelect.replaceChildren();
+  elements.adminSummaryProviderSelect.replaceChildren();
+  elements.adminProviderCurrent.textContent = '目前不可用';
+  elements.adminProviderCopy.textContent = '管理員治理設定目前不可用。';
+  elements.adminProviderStatus.textContent = '';
+  elements.adminTranscriptionModelInput.value = '';
+  elements.adminSummaryModelInput.value = '';
+  elements.adminPricingVersionInput.value = '';
+  elements.adminDefaultQuotaInput.value = '';
+  elements.adminLiveMeetingCapInput.value = '';
+  elements.adminLocalTranscriptionInput.value = '';
+  elements.adminCloudTranscriptionInput.value = '';
+  elements.adminLocalSummaryInput.value = '';
+  elements.adminCloudSummaryInput.value = '';
+  elements.adminOverrideSubmitterId.value = '';
+  elements.adminOverrideQuotaInput.value = '';
+  elements.adminSummaryModelStatus.textContent = '';
+  elements.adminAuditList.innerHTML = '<p class="admin-provider-status">尚無治理異動紀錄。</p>';
+  elements.adminUsageReportSummary.textContent = '尚無 cloud usage 資料。';
+  elements.adminUsageReportList.innerHTML = '<p class="admin-provider-status">尚無 cloud usage 資料。</p>';
+  elements.adminProviderStatusPill.textContent = '隱藏';
+  elements.adminProviderStatusPill.className = 'provider-pill blocked';
+  elements.adminProviderSubmit.disabled = true;
+  elements.adminOverrideSubmit.disabled = true;
+  setAdminPanelVisible(false);
+};
+
+const updateAdminProviderStatus = () => {
+  if (!elements.adminProviderPanel) {
+    return;
+  }
+
+  const viewModel = getAdminGovernanceViewModel({
+    state: adminProviderState,
+    selectedTranscriptionProvider: elements.adminProviderSelect.value,
+    selectedSummaryProvider: elements.adminSummaryProviderSelect.value,
+    transcriptionModelInput: elements.adminTranscriptionModelInput.value,
+    summaryModelInput: elements.adminSummaryModelInput.value,
+    pricingVersionInput: elements.adminPricingVersionInput.value,
+    overrideSubmitterId: elements.adminOverrideSubmitterId.value,
+    overrideQuotaInput: elements.adminOverrideQuotaInput.value
+  });
+
+  elements.adminProviderCurrent.textContent = viewModel.currentLabel;
+  elements.adminProviderCopy.textContent = viewModel.copyText;
+  elements.adminProviderStatus.textContent = viewModel.providerStatusText;
+  elements.adminSummaryModelStatus.textContent = viewModel.overrideStatusText;
+  elements.adminProviderStatusPill.textContent = viewModel.pillText;
+  elements.adminProviderStatusPill.className = `provider-pill ${viewModel.pillTone}`;
+  elements.adminProviderSubmit.disabled = viewModel.submitDisabled;
+  elements.adminOverrideSubmit.disabled = viewModel.overrideDisabled;
+  elements.adminSummaryModelInput.disabled = viewModel.summaryModelInputDisabled;
+  elements.adminSummaryModelInput.placeholder = viewModel.summaryModelInputDisabled
+    ? '地端 Codex 不需要輸入模型'
+    : '例如 gpt-5.4-nano';
+};
+
+const renderAuditEntries = (entries = []) => {
+  if (!elements.adminAuditList) {
+    return;
+  }
+
+  if (!entries.length) {
+    elements.adminAuditList.innerHTML = '<p class="admin-provider-status">尚無治理異動紀錄。</p>';
+    return;
+  }
+
+  elements.adminAuditList.replaceChildren(
+    ...getAuditEntryViewModels(entries, formatJobTimestamp).map((entry) => {
+      const node = document.createElement('article');
+      node.className = 'admin-audit-entry';
+      node.innerHTML = `
+        <strong>${entry.action}</strong>
+        <span>${entry.target}</span>
+        <small>${entry.timestampText}</small>
+      `;
+      return node;
+    })
+  );
+};
+
+const renderUsageReport = (payload) => {
+  if (!elements.adminUsageReportList || !elements.adminUsageReportSummary) {
+    return;
+  }
+
+  if (!payload?.rows?.length) {
+    elements.adminUsageReportSummary.textContent = '尚無 cloud usage 資料。';
+    elements.adminUsageReportList.innerHTML = '<p class="admin-provider-status">尚無 cloud usage 資料。</p>';
+    return;
+  }
+
+  elements.adminUsageReportSummary.textContent = `日期 ${payload.quotaDayKey} / 使用者 ${payload.totals.operatorCount} / 已用 ${formatUsd(payload.totals.consumedUsd)} / 保留 ${formatUsd(payload.totals.reservedUsd)}`;
+  elements.adminUsageReportList.replaceChildren(
+    ...getUsageReportRowViewModels(payload.rows).map((row) => {
+      const node = document.createElement('article');
+      node.className = 'admin-audit-entry';
+      node.innerHTML = `
+        <strong>${row.identityLabel}</strong>
+        <span>${row.submitterId}</span>
+        <small>已用 ${row.consumedLabel} / 保留 ${row.reservedLabel} / 剩餘 ${row.remainingLabel} / 總額 ${row.dailyQuotaLabel} / ${row.entryCountLabel}</small>
+      `;
+      return node;
+    })
+  );
+};
+
+const renderAdminProviderPanel = (payload, overrides = [], auditEntries = [], usageReport = null) => {
+  if (!elements.adminProviderPanel) {
+    return;
+  }
+
+  adminProviderState = {
+    ...payload,
+    overrides,
+    auditEntries,
+    usageReport
+  };
+  elements.adminProviderSelect.replaceChildren(
+    ...payload.transcriptionOptions.map((option) => {
+      const node = document.createElement('option');
+      node.value = option.value;
+      node.textContent = option.ready
+        ? formatProviderLabel(option.value)
+        : `${formatProviderLabel(option.value)}（未就緒）`;
+      node.disabled = !option.ready;
+      node.selected = option.value === payload.transcriptionProvider;
+      return node;
+    })
+  );
+  elements.adminSummaryProviderSelect.replaceChildren(
+    ...payload.summaryOptions.map((option) => {
+      const node = document.createElement('option');
+      node.value = option.value;
+      node.textContent = option.ready
+        ? formatSummaryModeLabel(option.value)
+        : `${formatSummaryModeLabel(option.value)}（未就緒）`;
+      node.disabled = !option.ready;
+      node.selected = option.value === payload.summaryProvider;
+      return node;
+    })
+  );
+  elements.adminTranscriptionModelInput.value = payload.transcriptionModel ?? '';
+  elements.adminSummaryModelInput.value = payload.summaryModel ?? '';
+  elements.adminPricingVersionInput.value = payload.pricingVersion ?? 'v1';
+  elements.adminDefaultQuotaInput.value = payload.defaultDailyCloudQuotaUsd ?? 0;
+  elements.adminLiveMeetingCapInput.value = payload.liveMeetingReservationCapUsd ?? 0;
+  elements.adminLocalTranscriptionInput.value = payload.concurrencyPools?.localTranscription ?? 1;
+  elements.adminCloudTranscriptionInput.value = payload.concurrencyPools?.cloudTranscription ?? 1;
+  elements.adminLocalSummaryInput.value = payload.concurrencyPools?.localSummary ?? 1;
+  elements.adminCloudSummaryInput.value = payload.concurrencyPools?.cloudSummary ?? 1;
+  renderAuditEntries(auditEntries);
+  renderUsageReport(usageReport);
+  setAdminPanelVisible(true);
+  updateAdminProviderStatus();
+};
+
+const renderOperatorQuota = (payload) => {
+  const viewModel = getQuotaDisplayModel(payload);
+  setQuotaVisible(!viewModel.hidden);
+  elements.quotaRemaining.textContent = viewModel.remainingLabel;
+  elements.quotaBreakdown.textContent = viewModel.breakdownText;
 };
 
 const setAuthenticatedView = (user) => {
@@ -123,6 +400,11 @@ const setAuthenticatedView = (user) => {
   setDashboardInteractionEnabled(!authEnabled || Boolean(user));
   syncOtpUi();
   updateIdentityDisplay();
+
+  if (!user) {
+    resetAdminProviderPanel();
+    renderOperatorQuota(null);
+  }
 };
 
 const apiFetch = async (input, init) => authClient.authorizedFetch(input, init);
@@ -141,8 +423,8 @@ const setBanner = (message, kind = 'info') => {
 };
 
 const resetUploadSelectionUi = () => {
-  elements.uploadTitle.textContent = 'Drop audio here or click to browse';
-  elements.uploadSubtitle.textContent = '支援音訊或錄音檔，會直接進 Whisper + Codex 流程。';
+  elements.uploadTitle.textContent = '拖曳檔案到這裡，或點擊選擇';
+  elements.uploadSubtitle.textContent = '送出後會自動產生逐字稿與摘要。';
 };
 
 const formatFileSize = (bytes) => {
@@ -155,20 +437,11 @@ const formatFileSize = (bytes) => {
 
 const showSelectedUploadFile = (file) => {
   elements.uploadTitle.textContent = file.name;
-  elements.uploadSubtitle.textContent = `已選擇 ${formatFileSize(file.size)}，會立即開始上傳與轉錄。`;
+  elements.uploadSubtitle.textContent = `已選擇 ${formatFileSize(file.size)}，按下「上傳並開始整理」後就會開始處理。`;
 };
 
 const statusClass = (value) => value.toLowerCase();
 const isTerminalJob = (job) => terminalStates.has(job.state);
-
-const prettifySource = (job) =>
-  job.inputSource === 'uploaded-audio' ? `Uploaded Audio: ${job.uploadedFileName}` : job.meetingUrl;
-
-const prettifyProcessingStage = (value) =>
-  (value || 'queued')
-    .split('-')
-    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-    .join(' ');
 
 const formatDuration = (milliseconds) => {
   if (typeof milliseconds !== 'number' || milliseconds < 0) {
@@ -271,40 +544,22 @@ const downloadJobExport = async (jobId, format) => {
 };
 
 const createActionBlock = (job, runtimeState) => {
-  const actions = [];
+  const actionSet = getJobActionSet(job, runtimeState);
+  const actions = actionSet.map((action) => {
+    if (action === 'stop-current') {
+      return '<button class="mini-button danger" type="button" data-action="stop-current">離開會議</button>';
+    }
 
-  if (job.inputSource === 'meeting-link' && (runtimeState === 'joining' || runtimeState === 'recording')) {
-    actions.push(
-      '<button class="mini-button danger" type="button" data-action="stop-current">Exit Meeting</button>'
-    );
-  }
+    if (action === 'interrupt-job') {
+      return '<button class="mini-button danger" type="button" data-action="interrupt-job">停止處理</button>';
+    }
 
-  if ((job.state === 'queued' || job.state === 'transcribing') && !(job.inputSource === 'meeting-link' && (runtimeState === 'joining' || runtimeState === 'recording'))) {
-    actions.push(
-      '<button class="mini-button danger" type="button" data-action="interrupt-job">Interrupt Job</button>'
-    );
-  }
+    if (action === 'delete-history') {
+      return '<button class="mini-button history" type="button" data-action="delete-history">刪除紀錄</button>';
+    }
 
-  if (isTerminalJob(job)) {
-    actions.push(
-      '<button class="mini-button history" type="button" data-action="delete-history">Delete History</button>'
-    );
-  }
-
-  if (job.transcriptArtifact || job.summaryArtifact) {
-    actions.push(
-      '<button class="mini-button export" type="button" data-action="export-markdown">Export MD</button>'
-    );
-    actions.push(
-      '<button class="mini-button export" type="button" data-action="export-txt">Export TXT</button>'
-    );
-    actions.push(
-      '<button class="mini-button export" type="button" data-action="export-srt">Export SRT</button>'
-    );
-    actions.push(
-      '<button class="mini-button export" type="button" data-action="export-json">Export JSON</button>'
-    );
-  }
+    return '<button class="mini-button export" type="button" data-action="export-markdown">下載 MD</button>';
+  });
 
   if (actions.length === 0) {
     return '';
@@ -316,36 +571,29 @@ const createActionBlock = (job, runtimeState) => {
 const createJobCard = (job) => {
   const card = document.createElement('article');
   card.className = 'job-card';
+  card.dataset.jobId = job.id;
+  card.id = `job-${job.id}`;
 
-  const runtimeState = job.displayState || job.state;
-  const activeBadge = statusClass(runtimeState);
-  const progress = getJobProgressModel({
-    inputSource: job.inputSource,
-    state: job.state,
-    displayState: runtimeState,
-    processingStage: job.processingStage,
-    progressPercent: job.progressPercent,
-    progressProcessedMs: job.progressProcessedMs,
-    progressTotalMs: job.progressTotalMs
-  });
+  const viewModel = getJobCardViewModel(job);
+  const activeBadge = statusClass(viewModel.badgeTone);
   const progressDuration =
-    typeof progress.processedMs === 'number' && typeof progress.totalMs === 'number'
-      ? `${formatDuration(progress.processedMs)} / ${formatDuration(progress.totalMs)}`
+    typeof viewModel.progressProcessedMs === 'number' && typeof viewModel.progressTotalMs === 'number'
+      ? `${formatDuration(viewModel.progressProcessedMs)} / ${formatDuration(viewModel.progressTotalMs)}`
       : '';
   const summaryBlock = job.summaryArtifact
     ? `
       <details open>
-        <summary>Codex Summary</summary>
+        <summary>AI 摘要</summary>
         <pre class="summary-text">${job.summaryArtifact.text}</pre>
         ${
           job.summaryArtifact.structured
             ? `
               <div class="structured-summary">
                 ${[
-                  ['Action Items', job.summaryArtifact.structured.actionItems],
-                  ['Decisions', job.summaryArtifact.structured.decisions],
-                  ['Risks', job.summaryArtifact.structured.risks],
-                  ['Open Questions', job.summaryArtifact.structured.openQuestions]
+                  ['待辦事項', job.summaryArtifact.structured.actionItems],
+                  ['決策重點', job.summaryArtifact.structured.decisions],
+                  ['風險提醒', job.summaryArtifact.structured.risks],
+                  ['待確認問題', job.summaryArtifact.structured.openQuestions]
                 ]
                   .map(
                     ([title, items]) => `
@@ -354,7 +602,7 @@ const createJobCard = (job) => {
                         ${
                           items.length
                             ? `<ul>${items.map((item) => `<li>${item}</li>`).join('')}</ul>`
-                            : '<p>None.</p>'
+                            : '<p>目前沒有。</p>'
                         }
                       </div>
                     `
@@ -371,7 +619,7 @@ const createJobCard = (job) => {
   const transcriptPreview = job.transcriptArtifact
     ? `
       <details>
-        <summary>Full Transcript</summary>
+        <summary>逐字稿</summary>
         <pre class="transcript-preview">${job.transcriptArtifact.segments
           .map((segment) => segment.text)
           .join('\n')}</pre>
@@ -380,86 +628,116 @@ const createJobCard = (job) => {
     : '';
 
   const progressBlock =
-    job.processingStage &&
+    viewModel.showProgress &&
     `
-      <div class="artifact-block">
-        <h3>Pipeline Progress</h3>
+      <div class="artifact-block progress-block">
+        <div class="artifact-heading">
+          <h3>目前進度</h3>
+          <p>${viewModel.statusSummary}</p>
+        </div>
         <div class="progress-shell">
           <div class="progress-meta">
-            <span>${progress.label}</span>
-            <strong>${progress.percent}%</strong>
+            <span>${viewModel.progressLabel}</span>
+            <strong>${viewModel.progressPercent}%</strong>
           </div>
           ${progressDuration ? `<p class="progress-duration">${progressDuration}</p>` : ''}
-          <div class="progress-bar ${progress.tone}">
-            <span style="width: ${progress.percent}%"></span>
+          <div class="progress-bar ${viewModel.progressTone}">
+            <span style="width: ${viewModel.progressPercent}%"></span>
           </div>
         </div>
-        <p class="summary-text">${prettifyProcessingStage(job.processingStage)}${job.processingMessage ? `: ${job.processingMessage}` : ''}</p>
       </div>
     `;
 
   const failureBlock =
     job.failureMessage &&
     `
-      <div class="artifact-block">
-        <h3>Failure</h3>
-        <p class="summary-text">${job.failureCode}: ${job.failureMessage}</p>
+      <div class="artifact-block failure-block">
+        <div class="artifact-heading">
+          <h3>需要處理</h3>
+          <p>${viewModel.statusSummary}</p>
+        </div>
+        ${job.failureCode ? `<p class="artifact-note">錯誤代碼：${job.failureCode}</p>` : ''}
       </div>
     `;
 
-  const botStatusCopy = getMeetingBotStatusCopy(job);
-  const botStatusBlock =
-    botStatusCopy &&
-    `
-      <div class="artifact-block bot-status-block">
-        <h3>AI Bot</h3>
-        <p class="summary-text">${botStatusCopy}</p>
-      </div>
-    `;
-
-  const historyBlock =
-    job.jobHistory?.length &&
-    `
-      <details class="timeline-block">
-        <summary>Job Timeline (${job.jobHistory.length})</summary>
-        <ol class="history-timeline">
-          ${job.jobHistory
-            .map(
-              (entry) => `
-                <li class="history-entry">
-                  <div class="history-heading">
-                    <strong>${prettifyProcessingStage(entry.stage)}</strong>
-                    <span class="history-at">${new Date(entry.at).toLocaleString()}</span>
-                  </div>
-                  <p class="history-message">${entry.message}</p>
-                </li>
-              `
-            )
-            .join('')}
-        </ol>
-      </details>
-    `;
-
-  const actionBlock = createActionBlock(job, runtimeState);
+  const actionBlock = createActionBlock(job, viewModel.badgeTone);
 
   card.innerHTML = `
     <div class="job-head">
       <div>
-        <h3 class="job-title">${job.inputSource === 'uploaded-audio' ? 'Audio Queue Job' : 'Meeting Queue Job'}</h3>
-        <p class="job-meta">
-          ${prettifySource(job)}<br />
-          Join Name: ${job.requestedJoinName}<br />
-          Created: ${new Date(job.createdAt).toLocaleString()}<br />
-          Updated: ${new Date(job.updatedAt).toLocaleString()}
-        </p>
+        <p class="job-kicker">${viewModel.sourceLabel}</p>
+        <h3 class="job-title">${viewModel.title}</h3>
+        <p class="job-status-summary">${viewModel.statusSummary}</p>
       </div>
-      <span class="badge ${activeBadge}">${runtimeState}</span>
+      <span class="badge ${activeBadge}">${viewModel.badgeLabel}</span>
+    </div>
+    <div class="job-meta-grid">
+      <div class="job-meta-item">
+        <span>${viewModel.sourceLabel}</span>
+        <strong>${viewModel.sourceValue}</strong>
+      </div>
+      ${
+        viewModel.joinNameLabel
+          ? `
+            <div class="job-meta-item">
+              <span>${viewModel.joinNameLabel}</span>
+              <strong>${viewModel.joinNameValue}</strong>
+            </div>
+          `
+          : ''
+      }
+      <div class="job-meta-item">
+        <span>${viewModel.createdLabel}</span>
+        <strong>${viewModel.createdAtText}</strong>
+      </div>
+      <div class="job-meta-item">
+        <span>${viewModel.updatedLabel}</span>
+        <strong>${viewModel.updatedAtText}</strong>
+      </div>
+      ${
+        viewModel.durationLabel
+          ? `
+            <div class="job-meta-item">
+              <span>${viewModel.durationLabel}</span>
+              <strong>${viewModel.durationValue}</strong>
+            </div>
+          `
+          : ''
+      }
+      ${
+        viewModel.transcriptionCostLabel
+          ? `
+            <div class="job-meta-item">
+              <span>${viewModel.transcriptionCostLabel}</span>
+              <strong>${viewModel.transcriptionCostValue}</strong>
+            </div>
+          `
+          : ''
+      }
+      ${
+        viewModel.summaryCostLabel
+          ? `
+            <div class="job-meta-item">
+              <span>${viewModel.summaryCostLabel}</span>
+              <strong>${viewModel.summaryCostValue}</strong>
+            </div>
+          `
+          : ''
+      }
+      ${
+        viewModel.totalCostLabel
+          ? `
+            <div class="job-meta-item">
+              <span>${viewModel.totalCostLabel}</span>
+              <strong>${viewModel.totalCostValue}</strong>
+            </div>
+          `
+          : ''
+      }
     </div>
     ${actionBlock}
-    ${botStatusBlock ?? ''}
-    ${failureBlock ?? ''}
-    ${progressBlock ?? ''}
-    ${historyBlock ?? ''}
+    ${renderOptionalMarkup(failureBlock)}
+    ${renderOptionalMarkup(progressBlock)}
     ${summaryBlock}
     ${transcriptPreview}
   `;
@@ -468,7 +746,7 @@ const createJobCard = (job) => {
   if (stopButton) {
     stopButton.addEventListener('click', async () => {
       try {
-        setBanner('Stopping current meeting bot...');
+        setBanner('正在停止目前會議...');
         const response = await apiFetch('/api/operator/stop-current', {
           method: 'POST',
           headers: {
@@ -480,7 +758,7 @@ const createJobCard = (job) => {
         if (!response.ok) {
           throw new Error(payload?.error?.message ?? `Stop failed: ${response.status}`);
         }
-        setBanner('Current meeting bot stopped.');
+        setBanner('目前會議已停止。');
         await fetchJobs();
       } catch (error) {
         setBanner(error instanceof Error ? error.message : String(error), 'error');
@@ -491,15 +769,15 @@ const createJobCard = (job) => {
   const deleteButton = card.querySelector('[data-action="delete-history"]');
   if (deleteButton) {
     deleteButton.addEventListener('click', async () => {
-      const confirmed = window.confirm('Delete this completed or failed job from your history?');
+      const confirmed = window.confirm('要從歷史紀錄中刪除這筆工作嗎？');
       if (!confirmed) {
         return;
       }
 
       try {
-        setBanner('Deleting job history...');
+        setBanner('正在刪除紀錄...');
         await deleteJob(job.id);
-        setBanner('Job history deleted.');
+        setBanner('紀錄已刪除。');
         await fetchJobs();
       } catch (error) {
         setBanner(error instanceof Error ? error.message : String(error), 'error');
@@ -510,15 +788,15 @@ const createJobCard = (job) => {
   const interruptButton = card.querySelector('[data-action="interrupt-job"]');
   if (interruptButton) {
     interruptButton.addEventListener('click', async () => {
-      const confirmed = window.confirm('Interrupt this job now?');
+      const confirmed = window.confirm('要立即停止這筆工作嗎？');
       if (!confirmed) {
         return;
       }
 
       try {
-        setBanner('Interrupting job...');
+        setBanner('正在停止工作...');
         await interruptJob(job.id);
-        setBanner('Job interrupted.');
+        setBanner('工作已停止。');
         await fetchJobs();
       } catch (error) {
         setBanner(error instanceof Error ? error.message : String(error), 'error');
@@ -527,10 +805,7 @@ const createJobCard = (job) => {
   }
 
   const exportFormats = {
-    'export-markdown': 'markdown',
-    'export-txt': 'txt',
-    'export-srt': 'srt',
-    'export-json': 'json'
+    'export-markdown': 'markdown'
   };
 
   Object.entries(exportFormats).forEach(([action, format]) => {
@@ -542,7 +817,7 @@ const createJobCard = (job) => {
 
     button.addEventListener('click', async () => {
       try {
-        setBanner(`Exporting ${format.toUpperCase()}...`);
+        setBanner(`正在準備 ${format.toUpperCase()} 匯出檔...`);
         await downloadJobExport(job.id, format);
         setBanner('');
       } catch (error) {
@@ -557,30 +832,108 @@ const createJobCard = (job) => {
 const renderJobs = (jobs) => {
   const activeCount = jobs.filter((job) => activeStates.has(job.state)).length;
   const queuedCount = jobs.filter((job) => job.state === 'queued').length;
+  const completedCount = jobs.filter((job) => job.state === 'completed').length;
   const terminalCount = jobs.filter((job) => isTerminalJob(job)).length;
   const activeSearch = elements.archiveSearch?.value.trim() ?? '';
+  let visibleJobs = filterJobsByQuickFilter(jobs, currentQuickFilter);
+
+  if (
+    pendingSharedJobId &&
+    jobs.some((job) => job.id === pendingSharedJobId) &&
+    !visibleJobs.some((job) => job.id === pendingSharedJobId)
+  ) {
+    setQuickFilter('all');
+    visibleJobs = filterJobsByQuickFilter(jobs, currentQuickFilter);
+  }
 
   elements.activeCount.textContent = String(activeCount);
   elements.queuedCount.textContent = String(queuedCount);
+  elements.completedCount.textContent = String(completedCount);
   elements.clearHistoryButton.disabled = terminalCount === 0;
 
-  if (jobs.length === 0) {
+  if (visibleJobs.length === 0) {
     elements.jobList.innerHTML = `
       <div class="empty-state">
-        <p>${activeSearch ? `找不到符合「${activeSearch}」的工作。` : '目前還沒有工作。送出會議連結或上傳錄音後，狀態會顯示在這裡。'}</p>
+        <p>${
+          activeSearch || currentQuickFilter === 'all'
+            ? getEmptyStateMessage(activeSearch)
+            : '目前沒有符合這個篩選條件的工作。'
+        }</p>
       </div>
     `;
     return;
   }
 
-  elements.jobList.replaceChildren(...jobs.map(createJobCard));
+  elements.jobList.replaceChildren(...visibleJobs.map(createJobCard));
+  focusSharedJobIfNeeded();
 };
 
 const fetchConfig = async () => {
   const response = await apiFetch('/api/operator/config');
   const payload = await response.json();
-  elements.defaultJoinName.textContent = payload.defaultJoinName;
-  elements.joinName.value = payload.defaultJoinName;
+  operatorConfig = payload;
+  applyDefaultJoinNameToForm();
+  setDashboardInteractionEnabled(!authEnabled || Boolean(currentOperatorEmail));
+};
+
+const fetchOperatorQuota = async () => {
+  if (authEnabled && !currentOperatorEmail) {
+    renderOperatorQuota(null);
+    return;
+  }
+
+  const url = new URL('/api/operator/quota', window.location.origin);
+  url.searchParams.set('submitterId', currentSubmitterId);
+  const response = await apiFetch(url);
+
+  if (response.status === 401) {
+    renderOperatorQuota(null);
+    return;
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch quota: ${response.status}`);
+  }
+
+  renderOperatorQuota(await response.json());
+};
+
+const fetchAdminProviderPanel = async () => {
+  if (!elements.adminProviderPanel) {
+    return;
+  }
+
+  if (!authEnabled || !currentOperatorEmail) {
+    resetAdminProviderPanel();
+    return;
+  }
+
+  const [policyResponse, overridesResponse, auditResponse, usageReportResponse] = await Promise.all([
+    apiFetch('/api/admin/ai-policy'),
+    apiFetch('/api/admin/cloud-quota/overrides'),
+    apiFetch('/api/admin/audit-log'),
+    apiFetch('/api/admin/cloud-usage/report')
+  ]);
+
+  if (policyResponse.status === 401 || policyResponse.status === 403) {
+    resetAdminProviderPanel();
+    return;
+  }
+
+  if (!policyResponse.ok || !overridesResponse.ok || !auditResponse.ok || !usageReportResponse.ok) {
+    throw new Error('Failed to fetch admin governance settings.');
+  }
+
+  const policy = await policyResponse.json();
+  const overridesPayload = await overridesResponse.json();
+  const auditPayload = await auditResponse.json();
+  const usageReportPayload = await usageReportResponse.json();
+  renderAdminProviderPanel(
+    policy,
+    overridesPayload.overrides || [],
+    auditPayload.entries || [],
+    usageReportPayload
+  );
 };
 
 const fetchJobs = async () => {
@@ -608,7 +961,7 @@ const fetchJobs = async () => {
 
 const submitMeetingJob = async (event) => {
   event?.preventDefault?.();
-  setBanner('Submitting meeting job...');
+  setBanner('正在送出會議...');
 
   const formData = new FormData(elements.meetingForm);
   const response = await apiFetch('/api/operator/jobs/meetings', {
@@ -619,7 +972,8 @@ const submitMeetingJob = async (event) => {
     body: JSON.stringify({
       submitterId: currentSubmitterId,
       meetingUrl: formData.get('meetingUrl'),
-      requestedJoinName: formData.get('requestedJoinName')
+      requestedJoinName: formData.get('requestedJoinName'),
+      submissionTemplateId: selectedTemplateId
     })
   });
 
@@ -629,20 +983,19 @@ const submitMeetingJob = async (event) => {
     throw new Error(payload?.error?.message ?? `Meeting submission failed: ${response.status}`);
   }
 
-  setBanner('Meeting job queued.');
+  setBanner('會議已加入整理流程。');
   elements.meetingForm.reset();
-  elements.joinName.value = elements.defaultJoinName.textContent;
+  applyDefaultJoinNameToForm();
+  await fetchOperatorQuota();
   await fetchJobs();
 };
 
 const applyQueryPrefill = () => {
   const prefill = getDashboardPrefill(window.location.href, elements.defaultJoinName.textContent);
+  pendingSharedJobId = prefill.jobId;
 
   if (prefill.meetingUrl) {
     elements.meetingForm.elements.meetingUrl.value = prefill.meetingUrl;
-  }
-
-  if (prefill.requestedJoinName) {
     elements.joinName.value = prefill.requestedJoinName;
   }
 
@@ -656,16 +1009,17 @@ const submitUploadJob = async (event) => {
   }
 
   if (!elements.audioFile.files?.length) {
-    setBanner('Please choose an audio file first.', 'error');
+    setBanner('請先選擇音訊或影片檔。', 'error');
     return;
   }
 
   uploadInFlight = true;
-  setBanner('Uploading audio file...');
+  setBanner('正在上傳錄音檔...');
 
   const formData = new FormData();
   formData.set('submitterId', currentSubmitterId);
   formData.set('audio', elements.audioFile.files[0]);
+  formData.set('submissionTemplateId', selectedTemplateId);
 
   const response = await apiFetch('/api/operator/jobs/uploads', {
     method: 'POST',
@@ -679,10 +1033,11 @@ const submitUploadJob = async (event) => {
     throw new Error(payload?.error?.message ?? `Upload failed: ${response.status}`);
   }
 
-  setBanner('Audio job queued.');
+  setBanner('錄音檔已加入整理流程。');
   elements.uploadForm.reset();
   resetUploadSelectionUi();
   uploadInFlight = false;
+  await fetchOperatorQuota();
   await fetchJobs();
 };
 
@@ -695,6 +1050,12 @@ const initializeAuth = async () => {
     setAuthenticatedView(user);
 
     if (user) {
+      await fetchAdminProviderPanel().catch((error) => {
+        setBanner(error instanceof Error ? error.message : String(error), 'error');
+      });
+      await fetchOperatorQuota().catch((error) => {
+        setBanner(error instanceof Error ? error.message : String(error), 'error');
+      });
       await fetchJobs().catch((error) => {
         setBanner(error instanceof Error ? error.message : String(error), 'error');
       });
@@ -712,9 +1073,11 @@ const boot = async () => {
   try {
     await initializeAuth();
     await fetchConfig();
+    await fetchAdminProviderPanel();
+    await fetchOperatorQuota();
 
     if (authEnabled && !currentOperatorEmail) {
-      setBanner('Please sign in with your email OTP before uploading or queueing jobs.');
+      setBanner('請先完成 Email 驗證登入，再送出會議或上傳錄音。');
       return;
     }
 
@@ -722,10 +1085,11 @@ const boot = async () => {
     if (prefill.shouldAutoQueue) {
       await submitMeetingJob();
       window.history.replaceState({}, document.title, window.location.pathname);
-      setBanner('Meeting job queued from URL parameters.');
+      setBanner('已依照網址參數自動送出會議。');
       return;
     }
     await fetchJobs();
+    focusSharedJobIfNeeded();
     setBanner('');
   } catch (error) {
     setBanner(error instanceof Error ? error.message : String(error), 'error');
@@ -738,11 +1102,11 @@ elements.authForm.addEventListener('submit', async (event) => {
   try {
     elements.authSubmitButton.disabled = true;
     const email = elements.authEmail.value.trim();
-    setBanner('Sending verification code...');
+    setBanner('正在寄送驗證碼...');
     await authClient.requestEmailOtp(email);
     pendingAuthEmail = email;
     syncOtpUi();
-    setBanner(`Verification code sent to ${email}.`, 'info');
+    setBanner(`驗證碼已寄到 ${email}。`, 'info');
   } catch (error) {
     setBanner(error instanceof Error ? error.message : String(error), 'error');
   } finally {
@@ -753,11 +1117,11 @@ elements.authForm.addEventListener('submit', async (event) => {
 elements.otpVerifyButton.addEventListener('click', async () => {
   try {
     elements.otpVerifyButton.disabled = true;
-    setBanner('Verifying code...');
+    setBanner('正在驗證登入...');
     const user = await authClient.verifyEmailOtp(elements.authOtp.value.trim());
     setAuthenticatedView(user);
     elements.authOtp.value = '';
-    setBanner('Signed in.');
+    setBanner('登入完成。');
     await fetchJobs();
   } catch (error) {
     setBanner(error instanceof Error ? error.message : String(error), 'error');
@@ -777,7 +1141,7 @@ elements.meetingForm.addEventListener('submit', async (event) => {
 elements.signOutButton.addEventListener('click', async () => {
   try {
     await authClient.signOut();
-    setBanner('Signed out.');
+    setBanner('已登出。');
   } catch (error) {
     setBanner(error instanceof Error ? error.message : String(error), 'error');
   }
@@ -792,6 +1156,117 @@ elements.uploadForm.addEventListener('submit', async (event) => {
   }
 });
 
+elements.adminProviderSelect?.addEventListener('change', () => {
+  updateAdminProviderStatus();
+});
+
+elements.adminSummaryProviderSelect?.addEventListener('change', () => {
+  updateAdminProviderStatus();
+});
+
+[
+  elements.adminTranscriptionModelInput,
+  elements.adminSummaryModelInput,
+  elements.adminPricingVersionInput,
+  elements.adminDefaultQuotaInput,
+  elements.adminLiveMeetingCapInput,
+  elements.adminLocalTranscriptionInput,
+  elements.adminCloudTranscriptionInput,
+  elements.adminLocalSummaryInput,
+  elements.adminCloudSummaryInput,
+  elements.adminOverrideSubmitterId,
+  elements.adminOverrideQuotaInput
+].forEach((element) => {
+  element?.addEventListener('input', () => {
+    updateAdminProviderStatus();
+  });
+});
+
+elements.adminProviderForm?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+
+  if (!adminProviderState) {
+    return;
+  }
+
+  try {
+    elements.adminProviderSubmit.disabled = true;
+    setBanner('正在更新治理設定...');
+    const response = await apiFetch('/api/admin/ai-policy', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        transcriptionProvider: elements.adminProviderSelect.value,
+        transcriptionModel: elements.adminTranscriptionModelInput.value.trim(),
+        summaryProvider: elements.adminSummaryProviderSelect.value,
+        summaryModel:
+          elements.adminSummaryProviderSelect.value === 'local-codex'
+            ? adminProviderState.summaryModel || 'gpt-5-mini'
+            : elements.adminSummaryModelInput.value.trim(),
+        pricingVersion: elements.adminPricingVersionInput.value.trim(),
+        defaultDailyCloudQuotaUsd: Number(elements.adminDefaultQuotaInput.value),
+        liveMeetingReservationCapUsd: Number(elements.adminLiveMeetingCapInput.value),
+        concurrencyPools: {
+          localTranscription: Number(elements.adminLocalTranscriptionInput.value),
+          cloudTranscription: Number(elements.adminCloudTranscriptionInput.value),
+          localSummary: Number(elements.adminLocalSummaryInput.value),
+          cloudSummary: Number(elements.adminCloudSummaryInput.value)
+        }
+      })
+    });
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(payload?.error?.message ?? `AI policy update failed: ${response.status}`);
+    }
+
+    setBanner('治理設定已更新。');
+    await fetchAdminProviderPanel();
+    await fetchOperatorQuota();
+  } catch (error) {
+    setBanner(error instanceof Error ? error.message : String(error), 'error');
+  } finally {
+    updateAdminProviderStatus();
+  }
+});
+
+elements.adminOverrideForm?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+
+  if (!adminProviderState) {
+    return;
+  }
+
+  try {
+    elements.adminOverrideSubmit.disabled = true;
+    setBanner('正在更新個人 quota override...');
+    const response = await apiFetch('/api/admin/cloud-quota/overrides', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        submitterId: elements.adminOverrideSubmitterId.value.trim(),
+        dailyQuotaUsd: Number(elements.adminOverrideQuotaInput.value)
+      })
+    });
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(payload?.error?.message ?? `Quota override update failed: ${response.status}`);
+    }
+
+    setBanner(`個人 quota override 已更新為 ${formatUsd(payload.dailyQuotaUsd)}。`);
+    await fetchAdminProviderPanel();
+  } catch (error) {
+    setBanner(error instanceof Error ? error.message : String(error), 'error');
+  } finally {
+    updateAdminProviderStatus();
+  }
+});
+
 elements.audioFile.addEventListener('change', async () => {
   const file = elements.audioFile.files?.[0];
 
@@ -801,13 +1276,7 @@ elements.audioFile.addEventListener('change', async () => {
   }
 
   showSelectedUploadFile(file);
-
-  try {
-    await submitUploadJob(new Event('submit'));
-  } catch (error) {
-    setBanner(error instanceof Error ? error.message : String(error), 'error');
-    uploadInFlight = false;
-  }
+  setBanner('');
 });
 
 elements.clearHistoryButton.addEventListener('click', async () => {
@@ -815,15 +1284,15 @@ elements.clearHistoryButton.addEventListener('click', async () => {
     return;
   }
 
-  const confirmed = window.confirm('Clear all completed and failed jobs from your history?');
+  const confirmed = window.confirm('要清除所有已完成與失敗的歷史紀錄嗎？');
   if (!confirmed) {
     return;
   }
 
   try {
-    setBanner('Clearing terminal job history...');
+    setBanner('正在清除歷史紀錄...');
     const deletedCount = await clearHistory();
-    setBanner(`Cleared ${deletedCount} historical job${deletedCount === 1 ? '' : 's'}.`);
+    setBanner(`已清除 ${deletedCount} 筆歷史紀錄。`);
     await fetchJobs();
   } catch (error) {
     setBanner(error instanceof Error ? error.message : String(error), 'error');
@@ -831,6 +1300,22 @@ elements.clearHistoryButton.addEventListener('click', async () => {
 });
 
 elements.archiveSearch?.addEventListener('input', () => {
+  fetchJobs().catch((error) => {
+    setBanner(error instanceof Error ? error.message : String(error), 'error');
+  });
+});
+
+elements.jobFilters?.addEventListener('click', (event) => {
+  if (!(event.target instanceof Element)) {
+    return;
+  }
+
+  const button = event.target.closest('[data-filter]');
+  if (!(button instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  setQuickFilter(button.dataset.filter || 'all');
   fetchJobs().catch((error) => {
     setBanner(error instanceof Error ? error.message : String(error), 'error');
   });

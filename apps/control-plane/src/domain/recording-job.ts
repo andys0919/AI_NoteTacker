@@ -1,3 +1,12 @@
+import type { SummaryProvider } from './summary-provider.js';
+import type { TranscriptionProvider } from './transcription-provider.js';
+import {
+  DEFAULT_OPERATOR_JOIN_NAME,
+  type PreferredExportFormat,
+  type SubmissionTemplateId,
+  type SummaryProfile
+} from './operator-workflow-template.js';
+
 export type MeetingPlatform = 'google-meet' | 'microsoft-teams' | 'zoom' | 'uploaded-audio';
 export type RecordingInputSource = 'meeting-link' | 'uploaded-audio';
 
@@ -60,6 +69,9 @@ export type RecordingJob = {
   inputSource: RecordingInputSource;
   submitterId: string;
   requestedJoinName: string;
+  submissionTemplateId?: SubmissionTemplateId;
+  summaryProfile?: SummaryProfile;
+  preferredExportFormat?: PreferredExportFormat;
   uploadedFileName?: string;
   state: RecordingJobState;
   processingStage?: string;
@@ -69,6 +81,14 @@ export type RecordingJob = {
   progressTotalMs?: number;
   assignedWorkerId?: string;
   assignedTranscriptionWorkerId?: string;
+  transcriptionProvider?: TranscriptionProvider;
+  transcriptionModel?: string;
+  summaryProvider?: SummaryProvider;
+  summaryModel?: string;
+  pricingVersion?: string;
+  estimatedCloudReservationUsd?: number;
+  reservedCloudQuotaUsd?: number;
+  quotaDayKey?: string;
   transcriptionAttemptCount?: number;
   createdAt: string;
   updatedAt: string;
@@ -89,10 +109,21 @@ type CreateRecordingJobInput = {
   inputSource?: RecordingInputSource;
   submitterId?: string;
   requestedJoinName?: string;
+  submissionTemplateId?: SubmissionTemplateId;
+  summaryProfile?: SummaryProfile;
+  preferredExportFormat?: PreferredExportFormat;
   uploadedFileName?: string;
+  transcriptionProvider?: TranscriptionProvider;
+  transcriptionModel?: string;
+  summaryProvider?: SummaryProvider;
+  summaryModel?: string;
+  pricingVersion?: string;
+  estimatedCloudReservationUsd?: number;
+  reservedCloudQuotaUsd?: number;
+  quotaDayKey?: string;
 };
 
-export const DEFAULT_JOIN_NAME = 'Solomon - NoteTaker';
+export const DEFAULT_JOIN_NAME = DEFAULT_OPERATOR_JOIN_NAME;
 
 const validStateTransitions: Record<RecordingJobState, RecordingJobState[]> = {
   queued: ['joining', 'failed'],
@@ -146,7 +177,18 @@ export const createRecordingJob = ({
   inputSource = 'meeting-link',
   submitterId = 'anonymous',
   requestedJoinName = DEFAULT_JOIN_NAME,
-  uploadedFileName
+  submissionTemplateId = 'general',
+  summaryProfile = 'general',
+  preferredExportFormat = 'markdown',
+  uploadedFileName,
+  transcriptionProvider,
+  transcriptionModel,
+  summaryProvider,
+  summaryModel,
+  pricingVersion,
+  estimatedCloudReservationUsd,
+  reservedCloudQuotaUsd,
+  quotaDayKey
 }: CreateRecordingJobInput): RecordingJob => ({
   id: nextJobId(),
   meetingUrl,
@@ -154,7 +196,18 @@ export const createRecordingJob = ({
   inputSource,
   submitterId,
   requestedJoinName,
+  submissionTemplateId,
+  summaryProfile,
+  preferredExportFormat,
   uploadedFileName,
+  transcriptionProvider,
+  transcriptionModel,
+  summaryProvider,
+  summaryModel,
+  pricingVersion,
+  estimatedCloudReservationUsd,
+  reservedCloudQuotaUsd,
+  quotaDayKey,
   state: 'queued',
   processingStage: 'queued',
   processingMessage: stateHistoryMessage.queued,

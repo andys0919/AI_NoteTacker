@@ -11,6 +11,7 @@ describe('operator dashboard query prefill', () => {
 
     expect(result).toEqual({
       meetingUrl: 'https://teams.live.com/meet/9343114235416?p=I4yS5pia1gFxNYOOsV',
+      jobId: '',
       requestedJoinName: 'Solomon - ANdy',
       shouldAutoQueue: true
     });
@@ -24,8 +25,23 @@ describe('operator dashboard query prefill', () => {
 
     expect(result).toEqual({
       meetingUrl: 'https://meet.google.com/abc-defg-hij',
+      jobId: '',
       requestedJoinName: 'Solomon - NoteTaker',
       shouldAutoQueue: true
+    });
+  });
+
+  it('extracts a shared job deep link without auto-queueing a new meeting job', () => {
+    const result = getDashboardPrefill(
+      'http://10.1.2.158:3000/?jobId=job_shared_123',
+      'Solomon - NoteTaker'
+    );
+
+    expect(result).toEqual({
+      meetingUrl: '',
+      jobId: 'job_shared_123',
+      requestedJoinName: 'Solomon - NoteTaker',
+      shouldAutoQueue: false
     });
   });
 });

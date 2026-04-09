@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Solomon NoteTaker Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="admin-body">
+    <div class="background-grid" aria-hidden="true"></div>
+    <div class="background-glow background-glow-left" aria-hidden="true"></div>
+    <div class="background-glow background-glow-right" aria-hidden="true"></div>
+
+    <main class="admin-shell">
+      <aside class="admin-rail panel">
+        <p class="eyebrow">Operations Console</p>
+        <h1>AI 治理設定</h1>
+        <p class="hero-text">
+          這裡只給管理員使用。調整 AI 路由、雲端額度、併發池與使用報表，不影響一般同仁的主頁操作。
+        </p>
+        <div class="admin-rail-points">
+          <article class="hero-point">
+            <strong>摘要模式</strong>
+            <span>只分雲端與地端 Codex，雲端才需要自填模型。</span>
+          </article>
+          <article class="hero-point">
+            <strong>Cloud 額度</strong>
+            <span>調整預設 quota 與個人 override，讓成本可控。</span>
+          </article>
+          <article class="hero-point">
+            <strong>使用報表</strong>
+            <span>直接看今日每位使用者的 consumed、reserved 與 remaining。</span>
+          </article>
+        </div>
+        <div class="admin-rail-actions">
+          <a class="toolbar-button" href="/">回主頁</a>
+          <button id="sign-out-button" class="toolbar-button compact" type="button">登出</button>
+        </div>
+      </aside>
+
+      <section class="admin-main">
+        <section class="panel admin-topbar">
+          <div class="admin-topbar-copy">
+            <span class="meta-label">Admin Navigation</span>
+            <strong>治理設定頁</strong>
+            <span>一般送件與查詢請回到主頁操作。</span>
+          </div>
+          <div class="admin-topbar-actions">
+            <a class="toolbar-button admin-home-link" href="/">回主頁</a>
+          </div>
+        </section>
+
+        <section id="auth-panel" class="panel form-panel auth-panel" hidden>
+          <div class="section-heading">
+            <p class="eyebrow">Admin Access</p>
+            <h2>Email 驗證登入</h2>
+          </div>
+          <p id="auth-copy" class="hero-text auth-copy">
+            使用管理員 email 驗證登入後，才可進入治理設定頁。
+          </p>
+          <form id="auth-form" class="stack-form auth-form">
+            <label class="field">
+              <span>Email</span>
+              <input id="auth-email" name="email" type="email" placeholder="you@example.com" required />
+            </label>
+            <label id="otp-field" class="field" hidden>
+              <span>驗證碼</span>
+              <input id="auth-otp" name="otp" type="text" inputmode="numeric" maxlength="12" placeholder="輸入信件中的驗證碼" />
+            </label>
+            <div class="auth-actions">
+              <button id="auth-submit-button" class="action-button" type="submit">寄送驗證碼</button>
+              <button id="otp-verify-button" class="action-button secondary" type="button" hidden>驗證並登入</button>
+            </div>
+          </form>
+        </section>
+
+        <section id="admin-denied-panel" class="panel form-panel auth-panel" hidden>
+          <div class="section-heading">
+            <p class="eyebrow">Admin Only</p>
+            <h2>沒有管理權限</h2>
+          </div>
+          <p class="hero-text">
+            你的帳號已登入，但不在 `ADMIN_EMAILS` 允許名單內。請使用管理員 email 重新登入，或回主頁使用一般操作功能。
+          </p>
+          <div class="admin-rail-actions">
+            <a class="toolbar-button" href="/">回主頁</a>
+          </div>
+        </section>
+
+        <section id="admin-content" class="admin-content" hidden>
+          <section class="panel admin-summary-strip">
+            <div class="meta-card">
+              <span class="meta-label">已登入帳號</span>
+              <span id="session-email">-</span>
+            </div>
+            <div class="meta-card">
+              <span class="meta-label">今日 Cloud Usage</span>
+              <strong id="admin-usage-report-summary">$0.000</strong>
+            </div>
+            <div class="meta-card">
+              <span class="meta-label">目前路由</span>
+              <span id="admin-provider-current">目前不可用</span>
+            </div>
+            <div class="meta-card">
+              <span class="meta-label">可用狀態</span>
+              <span id="admin-provider-status-pill" class="provider-pill ready">可用</span>
+            </div>
+          </section>
+
+          <section id="admin-provider-panel" class="panel admin-governance-panel">
+            <div class="section-heading">
+              <p class="eyebrow">AI Routing</p>
+              <h2>治理設定</h2>
+            </div>
+            <p id="admin-provider-copy" class="hero-text admin-provider-copy">
+              治理設定只會影響之後新送出的工作。
+            </p>
+            <form id="admin-provider-form" class="stack-form admin-provider-form">
+              <div class="admin-provider-controls">
+                <label class="field admin-summary-model-field">
+                  <span>轉寫 Provider</span>
+                  <select
+                    id="admin-provider-select"
+                    name="transcriptionProvider"
+                    aria-label="Transcription provider"
+                  ></select>
+                </label>
+                <label class="field admin-summary-model-field">
+                  <span>轉寫模型</span>
+                  <input
+                    id="admin-transcription-model-input"
+                    name="transcriptionModel"
+                    type="text"
+                    placeholder="large-v3 或 gpt-4o-mini-transcribe"
+                    autocomplete="off"
+                  />
+                </label>
+                <label class="field admin-summary-model-field">
+                  <span>摘要模式</span>
+                  <select
+                    id="admin-summary-provider-select"
+                    name="summaryProvider"
+                    aria-label="Summary provider"
+                  ></select>
+                </label>
+              </div>
+              <div class="admin-provider-controls">
+                <label class="field admin-summary-model-field">
+                  <span>雲端摘要模型</span>
+                  <input
+                    id="admin-summary-model-input"
+                    name="summaryModel"
+                    type="text"
+                    placeholder="例如 gpt-5.4-nano"
+                    autocomplete="off"
+                  />
+                </label>
+                <label class="field admin-summary-model-field">
+                  <span>Pricing 版本</span>
+                  <input
+                    id="admin-pricing-version-input"
+                    name="pricingVersion"
+                    type="text"
+                    placeholder="v1"
+                    autocomplete="off"
+                  />
+                </label>
+                <label class="field admin-summary-model-field">
+                  <span>每日預設額度 (USD)</span>
+                  <input
+                    id="admin-default-quota-input"
+                    name="defaultDailyCloudQuotaUsd"
+                    type="number"
+                    min="0"
+                    step="0.001"
+                  />
+                </label>
+              </div>
+              <div class="admin-provider-controls">
+                <label class="field admin-summary-model-field">
+                  <span>會議保留額度 (USD)</span>
+                  <input
+                    id="admin-live-meeting-cap-input"
+                    name="liveMeetingReservationCapUsd"
+                    type="number"
+                    min="0"
+                    step="0.001"
+                  />
+                </label>
+                <label class="field admin-summary-model-field">
+                  <span>Local 轉寫併發</span>
+                  <input id="admin-local-transcription-input" type="number" min="1" step="1" />
+                </label>
+                <label class="field admin-summary-model-field">
+                  <span>Cloud 轉寫併發</span>
+                  <input id="admin-cloud-transcription-input" type="number" min="1" step="1" />
+                </label>
+              </div>
+              <div class="admin-provider-controls">
+                <label class="field admin-summary-model-field">
+                  <span>Local 摘要併發</span>
+                  <input id="admin-local-summary-input" type="number" min="1" step="1" />
+                </label>
+                <label class="field admin-summary-model-field">
+                  <span>Cloud 摘要併發</span>
+                  <input id="admin-cloud-summary-input" type="number" min="1" step="1" />
+                </label>
+                <button id="admin-provider-submit" class="toolbar-button" type="submit">
+                  更新治理設定
+                </button>
+              </div>
+              <p id="admin-provider-status" class="admin-provider-status">正在讀取治理設定...</p>
+            </form>
+          </section>
+
+          <section class="admin-grid">
+            <section class="panel admin-governance-panel">
+              <div class="section-heading">
+                <p class="eyebrow">Overrides</p>
+                <h2>個人額度</h2>
+              </div>
+              <form id="admin-override-form" class="stack-form admin-provider-form">
+                <div class="admin-provider-controls">
+                  <label class="field admin-summary-model-field">
+                    <span>Submitter ID</span>
+                    <input
+                      id="admin-override-submitter-id"
+                      name="submitterId"
+                      type="text"
+                      placeholder="operator-user"
+                      autocomplete="off"
+                    />
+                  </label>
+                  <label class="field admin-summary-model-field">
+                    <span>個人每日額度 (USD)</span>
+                    <input
+                      id="admin-override-quota-input"
+                      name="dailyQuotaUsd"
+                      type="number"
+                      min="0"
+                      step="0.001"
+                    />
+                  </label>
+                  <button id="admin-override-submit" class="toolbar-button" type="submit">
+                    更新個人額度
+                  </button>
+                </div>
+                <p id="admin-summary-model-status" class="admin-provider-status">尚未設定個人 quota override。</p>
+              </form>
+            </section>
+
+            <section class="panel admin-governance-panel">
+              <div class="section-heading">
+                <p class="eyebrow">Audit Trail</p>
+                <h2>最近治理異動</h2>
+              </div>
+              <div id="admin-audit-list" class="admin-audit-list">
+                <p class="admin-provider-status">尚無治理異動紀錄。</p>
+              </div>
+            </section>
+          </section>
+
+          <section class="panel admin-governance-panel">
+            <div class="section-heading">
+              <p class="eyebrow">Cloud Usage</p>
+              <h2>今日使用報表</h2>
+            </div>
+            <div id="admin-usage-report-list" class="admin-audit-list">
+              <p class="admin-provider-status">尚無 cloud usage 資料。</p>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="/admin.js"></script>
+  </body>
+</html>

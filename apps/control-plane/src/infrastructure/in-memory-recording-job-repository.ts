@@ -4,6 +4,7 @@ import {
   type RecordingJob
 } from '../domain/recording-job.js';
 import type { RecordingJobRepository } from '../domain/recording-job-repository.js';
+import type { TranscriptionProvider } from '../domain/transcription-provider.js';
 
 const processingStates = new Set(['joining', 'recording', 'transcribing']);
 const terminalStates = new Set(['failed', 'completed']);
@@ -23,6 +24,12 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
   async listBySubmitter(submitterId: string): Promise<RecordingJob[]> {
     return [...this.jobs.values()]
       .filter((job) => job.submitterId === submitterId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  async listByQuotaDayKey(quotaDayKey: string): Promise<RecordingJob[]> {
+    return [...this.jobs.values()]
+      .filter((job) => job.quotaDayKey === quotaDayKey)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
@@ -50,6 +57,12 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
 
   async listActiveProcessingJobs(): Promise<RecordingJob[]> {
     return [...this.jobs.values()].filter((job) => processingStates.has(job.state));
+  }
+
+  async listGeneratingSummaryJobs(): Promise<RecordingJob[]> {
+    return [...this.jobs.values()].filter(
+      (job) => job.processingStage === 'generating-summary' && !job.summaryArtifact
+    );
   }
 
   private hasOtherActiveJobForSubmitter(submitterId: string, jobId: string): boolean {
@@ -88,13 +101,23 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
     return claimedJob;
   }
 
-  async claimNextTranscriptionReady(workerId: string): Promise<RecordingJob | undefined> {
+  async claimNextTranscriptionReady(
+    workerId: string,
+    allowedProviders?: TranscriptionProvider | TranscriptionProvider[]
+  ): Promise<RecordingJob | undefined> {
+    const normalizedProviders = !allowedProviders
+      ? undefined
+      : Array.isArray(allowedProviders)
+        ? allowedProviders
+        : [allowedProviders];
     const transcribingJob = [...this.jobs.values()]
       .filter(
         (job) =>
           job.recordingArtifact &&
           !job.transcriptArtifact &&
           !job.assignedTranscriptionWorkerId &&
+          (!normalizedProviders?.length ||
+            normalizedProviders.includes(job.transcriptionProvider ?? 'self-hosted-whisper')) &&
           (job.state === 'transcribing' ||
             (job.state === 'queued' && job.inputSource === 'uploaded-audio'))
       )
@@ -110,7 +133,14 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
     }
 
     const claimedJob = assignTranscriptionJobToWorker(transcribingJob, workerId);
-    this.jobs.set(claimedJob.id, claimedJob);
-    return claimedJob;
+    const patchedClaimedJob =
+      !claimedJob.transcriptionProvider && normalizedProviders?.length === 1
+        ? {
+            ...claimedJob,
+            transcriptionProvider: normalizedProviders[0]
+          }
+        : claimedJob;
+    this.jobs.set(patchedClaimedJob.id, patchedClaimedJob);
+    return patchedClaimedJob;
   }
 }

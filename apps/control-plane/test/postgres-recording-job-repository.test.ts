@@ -122,11 +122,15 @@ describe('PostgresRecordingJobRepository', () => {
 
     await repository.save(transcribing);
 
-    const claimed = await repository.claimNextTranscriptionReady('transcriber-alpha');
+    const claimed = await repository.claimNextTranscriptionReady(
+      'transcriber-alpha',
+      'self-hosted-whisper'
+    );
 
     expect(claimed).toBeDefined();
     expect(claimed?.state).toBe('transcribing');
     expect(claimed?.assignedTranscriptionWorkerId).toBe('transcriber-alpha');
+    expect(claimed?.transcriptionProvider).toBe('self-hosted-whisper');
     expect(claimed?.recordingArtifact?.storageKey).toBe('recordings/job_777/meeting.webm');
   });
 
@@ -147,7 +151,10 @@ describe('PostgresRecordingJobRepository', () => {
 
     await repository.save(transcribing);
 
-    const claimed = await repository.claimNextTranscriptionReady('transcriber-beta');
+    const claimed = await repository.claimNextTranscriptionReady(
+      'transcriber-beta',
+      'self-hosted-whisper'
+    );
 
     expect(claimed).toBeUndefined();
   });

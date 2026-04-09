@@ -12,7 +12,7 @@ describe('job progress model', () => {
       })
     ).toEqual({
       percent: 25,
-      label: 'Preparing Media',
+      label: '媒體整理中',
       tone: 'active'
     });
 
@@ -24,7 +24,7 @@ describe('job progress model', () => {
       })
     ).toEqual({
       percent: 65,
-      label: 'Transcribing Audio',
+      label: '語音轉寫中',
       tone: 'active'
     });
   });
@@ -41,7 +41,7 @@ describe('job progress model', () => {
       })
     ).toEqual({
       percent: 41,
-      label: 'Transcribing Audio',
+      label: '語音轉寫中',
       tone: 'active',
       processedMs: 1200000,
       totalMs: 3600000
@@ -57,7 +57,7 @@ describe('job progress model', () => {
       })
     ).toEqual({
       percent: 100,
-      label: 'Completed',
+      label: '已完成',
       tone: 'completed'
     });
   });
@@ -71,7 +71,7 @@ describe('job progress model', () => {
       })
     ).toEqual({
       percent: 100,
-      label: 'Failed',
+      label: '處理失敗',
       tone: 'failed'
     });
   });

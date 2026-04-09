@@ -11,7 +11,7 @@ The current product focus is still operational reliability for recording and tra
 - Playwright + Chromium for browser-based meeting join flows
 - Docker for worker isolation and deployment
 - FFmpeg, Xvfb, and PulseAudio for isolated media capture where browser-native capture is insufficient
-- Whisper-based transcription, with `faster-whisper` as the expected implementation target
+- Whisper-based transcription, with `faster-whisper` as the default self-hosted implementation target and Azure OpenAI `gpt-4o-mini-transcribe` as an optional admin-selected hosted provider
 - Object storage compatible with S3/MinIO for recording artifacts
 - PostgreSQL for job metadata and transcript indexing
 - Redis for queueing and worker dispatch when concurrent processing is introduced
@@ -53,7 +53,7 @@ The current product focus is still operational reliability for recording and tra
 ## Important Constraints
 - No capture path may depend on the submitting user's live system audio device.
 - The MVP must not require storing or using the user's personal Google, Microsoft, or Zoom credentials.
-- Transcription must use Whisper only; no hosted STT vendors in the MVP.
+- The default transcription path should remain self-hosted Whisper, but the product may also support an explicitly configured admin-selected Azure OpenAI transcription provider.
 - The system must prefer self-hosted infrastructure and locally controlled artifacts.
 - Unsupported meetings must surface clear failure reasons instead of hanging indefinitely.
 

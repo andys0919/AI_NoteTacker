@@ -4,10 +4,37 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
+import type { AdminAuditLogRepository } from './domain/admin-audit-log-repository.js';
 import type { AuthenticatedUserRepository } from './domain/authenticated-user-repository.js';
+import {
+  buildQuotaDayKey,
+  calculateAzureSummaryCostUsd,
+  calculateAzureTranscriptionCostUsd,
+  calculateRemainingCloudQuotaUsd,
+  estimateCloudReservationUsd,
+  roundUsd,
+  sumActualConsumedUsd,
+  sumReservedUsd
+} from './domain/cloud-usage.js';
+import type { CloudUsageLedgerRepository } from './domain/cloud-usage-ledger-repository.js';
 import type { JobNotificationSender, TerminalJobNotification } from './domain/job-notification-sender.js';
 import { evaluateMeetingLinkPolicy } from './domain/meeting-link-policy.js';
+import {
+  getOperatorWorkflowTemplate,
+  operatorWorkflowTemplates,
+  submissionTemplateIds
+} from './domain/operator-workflow-template.js';
+import type { OperatorCloudQuotaOverrideRepository } from './domain/operator-cloud-quota-override-repository.js';
 import type { RecordingJobRepository } from './domain/recording-job-repository.js';
+import {
+  isCloudSummaryProvider,
+  summaryProviders
+} from './domain/summary-provider.js';
+import type { TranscriptionProviderSettingsRepository } from './domain/transcription-provider-settings-repository.js';
+import {
+  isCloudTranscriptionProvider,
+  transcriptionProviders
+} from './domain/transcription-provider.js';
 import {
   attachRecordingArtifact,
   attachQueuedRecordingArtifact,
@@ -23,12 +50,24 @@ import {
   transitionRecordingJobState,
   updateRecordingJobProgress
 } from './domain/recording-job.js';
+import { InMemoryTranscriptionProviderSettingsRepository } from './infrastructure/in-memory-transcription-provider-settings-repository.js';
+import { InMemoryAdminAuditLogRepository } from './infrastructure/in-memory-admin-audit-log-repository.js';
+import { InMemoryCloudUsageLedgerRepository } from './infrastructure/in-memory-cloud-usage-ledger-repository.js';
+import { InMemoryOperatorCloudQuotaOverrideRepository } from './infrastructure/in-memory-operator-cloud-quota-override-repository.js';
 import { InMemoryRecordingJobRepository } from './infrastructure/in-memory-recording-job-repository.js';
 import type {
   MeetingBotController,
   MeetingBotRuntimeMonitor
 } from './infrastructure/meeting-bot-runtime.js';
 import type { OperatorAuth } from './infrastructure/operator-auth.js';
+import type { AuthenticatedOperator } from './infrastructure/operator-auth.js';
+import type { SummaryProviderCatalog } from './infrastructure/summary-provider-catalog.js';
+import {
+  createSummaryProviderCatalog,
+  createSummaryProviderCatalogFromEnvironment
+} from './infrastructure/summary-provider-catalog.js';
+import type { TranscriptionProviderCatalog } from './infrastructure/transcription-provider-catalog.js';
+import { createTranscriptionProviderCatalogFromEnvironment } from './infrastructure/transcription-provider-catalog.js';
 import type { UploadedAudioStorage } from './infrastructure/uploaded-audio-storage.js';
 
 const createRecordingJobRequestSchema = z.object({
@@ -39,15 +78,29 @@ const claimRecordingJobRequestSchema = z.object({
   workerId: z.string().min(1)
 });
 
+const claimSummarySlotRequestSchema = z.object({
+  workerId: z.string().min(1),
+  jobId: z.string().min(1)
+});
+
 const operatorMeetingJobRequestSchema = z.object({
   submitterId: z.string().trim().min(1).max(120).optional(),
   meetingUrl: z.url(),
-  requestedJoinName: z.string().trim().max(120).optional()
+  requestedJoinName: z.string().trim().max(120).optional(),
+  submissionTemplateId: z.enum(submissionTemplateIds).optional()
 });
 
 const operatorJobsQuerySchema = z.object({
   submitterId: z.string().trim().min(1).max(120).optional(),
   q: z.string().trim().max(200).optional()
+});
+
+const adminCloudUsageReportQuerySchema = z.object({
+  quotaDayKey: z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
 });
 
 const operatorJobExportQuerySchema = z.object({
@@ -57,6 +110,37 @@ const operatorJobExportQuerySchema = z.object({
 
 const operatorStopRequestSchema = z.object({
   submitterId: z.string().trim().min(1).max(120).optional()
+});
+
+const updateTranscriptionProviderSchema = z.object({
+  provider: z.enum(transcriptionProviders)
+});
+
+const updateSummaryModelSchema = z.object({
+  summaryModel: z.string().trim().min(1).max(120)
+});
+
+const concurrencyPoolsSchema = z.object({
+  localTranscription: z.number().int().min(1).max(64),
+  cloudTranscription: z.number().int().min(1).max(64),
+  localSummary: z.number().int().min(1).max(64),
+  cloudSummary: z.number().int().min(1).max(64)
+});
+
+const updateAiPolicySchema = z.object({
+  transcriptionProvider: z.enum(transcriptionProviders),
+  transcriptionModel: z.string().trim().min(1).max(120),
+  summaryProvider: z.enum(summaryProviders),
+  summaryModel: z.string().trim().min(1).max(120),
+  pricingVersion: z.string().trim().min(1).max(60),
+  defaultDailyCloudQuotaUsd: z.number().nonnegative().max(100000),
+  liveMeetingReservationCapUsd: z.number().nonnegative().max(100000),
+  concurrencyPools: concurrencyPoolsSchema
+});
+
+const updateOperatorQuotaOverrideSchema = z.object({
+  submitterId: z.string().trim().min(1).max(120),
+  dailyQuotaUsd: z.number().nonnegative().max(100000)
 });
 
 const recordingArtifactSchema = z.object({
@@ -76,6 +160,10 @@ const transcriptArtifactSchema = recordingArtifactSchema.extend({
   segments: z.array(transcriptSegmentSchema)
 });
 
+const transcriptUsageSchema = z.object({
+  audioMs: z.number().int().nonnegative()
+});
+
 const summaryArtifactSchema = z.object({
   model: z.string().min(1),
   reasoningEffort: z.string().min(1),
@@ -90,6 +178,12 @@ const summaryArtifactSchema = z.object({
       openQuestions: z.array(z.string())
     })
     .optional()
+});
+
+const summaryUsageSchema = z.object({
+  promptTokens: z.number().int().nonnegative().optional(),
+  completionTokens: z.number().int().nonnegative().optional(),
+  totalTokens: z.number().int().nonnegative().optional()
 });
 
 const meetingBotCompletionSchema = z.object({
@@ -143,11 +237,13 @@ const recordingJobEventSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('transcript-artifact-stored'),
-    transcriptArtifact: transcriptArtifactSchema
+    transcriptArtifact: transcriptArtifactSchema,
+    usage: transcriptUsageSchema.optional()
   }),
   z.object({
     type: z.literal('summary-artifact-stored'),
-    summaryArtifact: summaryArtifactSchema
+    summaryArtifact: summaryArtifactSchema,
+    usage: summaryUsageSchema.optional()
   }),
   z.object({
     type: z.literal('progress-updated'),
@@ -175,6 +271,12 @@ const recordingJobEventSchema = z.discriminatedUnion('type', [
 
 type AppOptions = {
   authenticatedUserRepository?: AuthenticatedUserRepository;
+  transcriptionProviderSettingsRepository?: TranscriptionProviderSettingsRepository;
+  transcriptionProviderCatalog?: TranscriptionProviderCatalog;
+  summaryProviderCatalog?: SummaryProviderCatalog;
+  operatorCloudQuotaOverrideRepository?: OperatorCloudQuotaOverrideRepository;
+  cloudUsageLedgerRepository?: CloudUsageLedgerRepository;
+  adminAuditLogRepository?: AdminAuditLogRepository;
   maxTranscriptionAttempts?: number;
   operatorAuth?: OperatorAuth;
   uploadedAudioStorage?: UploadedAudioStorage;
@@ -182,6 +284,7 @@ type AppOptions = {
   meetingBotRuntimeMonitor?: MeetingBotRuntimeMonitor;
   jobNotificationSender?: JobNotificationSender;
   maxConcurrentTranscriptionJobs?: number;
+  adminEmails?: string[];
   staleMeetingJobAfterMs?: number;
   staleMeetingFinalizationAfterMs?: number;
   staleTranscriptionJobAfterMs?: number;
@@ -195,6 +298,9 @@ const toApiRecordingJob = (job: {
   inputSource: string;
   submitterId: string;
   requestedJoinName: string;
+  submissionTemplateId?: string;
+  summaryProfile?: string;
+  preferredExportFormat?: string;
   uploadedFileName?: string;
   state: string;
   processingStage?: string;
@@ -204,6 +310,17 @@ const toApiRecordingJob = (job: {
   progressTotalMs?: number;
   assignedWorkerId?: string;
   assignedTranscriptionWorkerId?: string;
+  transcriptionProvider?: string;
+  transcriptionModel?: string;
+  summaryProvider?: string;
+  summaryModel?: string;
+  pricingVersion?: string;
+  estimatedCloudReservationUsd?: number;
+  reservedCloudQuotaUsd?: number;
+  quotaDayKey?: string;
+  actualTranscriptionCostUsd?: number;
+  actualSummaryCostUsd?: number;
+  actualCloudCostUsd?: number;
   transcriptionAttemptCount?: number;
   createdAt: string;
   updatedAt: string;
@@ -245,6 +362,9 @@ const toApiRecordingJob = (job: {
     state: string;
     kind: string;
   }>;
+  terminalNotificationSentAt?: string;
+  terminalNotificationTarget?: string;
+  terminalNotificationState?: string;
   displayState?: string;
 }) => ({
   id: job.id,
@@ -253,6 +373,9 @@ const toApiRecordingJob = (job: {
   inputSource: job.inputSource,
   submitterId: job.submitterId,
   requestedJoinName: job.requestedJoinName,
+  submissionTemplateId: job.submissionTemplateId,
+  summaryProfile: job.summaryProfile,
+  preferredExportFormat: job.preferredExportFormat,
   uploadedFileName: job.uploadedFileName,
   state: job.state,
   displayState: job.displayState,
@@ -263,6 +386,17 @@ const toApiRecordingJob = (job: {
   progressTotalMs: job.progressTotalMs,
   assignedWorkerId: job.assignedWorkerId,
   assignedTranscriptionWorkerId: job.assignedTranscriptionWorkerId,
+  transcriptionProvider: job.transcriptionProvider,
+  transcriptionModel: job.transcriptionModel,
+  summaryProvider: job.summaryProvider,
+  summaryModel: job.summaryModel,
+  pricingVersion: job.pricingVersion,
+  estimatedCloudReservationUsd: job.estimatedCloudReservationUsd,
+  reservedCloudQuotaUsd: job.reservedCloudQuotaUsd,
+  quotaDayKey: job.quotaDayKey,
+  actualTranscriptionCostUsd: job.actualTranscriptionCostUsd,
+  actualSummaryCostUsd: job.actualSummaryCostUsd,
+  actualCloudCostUsd: job.actualCloudCostUsd,
   transcriptionAttemptCount: job.transcriptionAttemptCount,
   createdAt: job.createdAt,
   updatedAt: job.updatedAt,
@@ -271,7 +405,10 @@ const toApiRecordingJob = (job: {
   recordingArtifact: job.recordingArtifact,
   transcriptArtifact: job.transcriptArtifact,
   summaryArtifact: job.summaryArtifact,
-  jobHistory: job.jobHistory
+  jobHistory: job.jobHistory,
+  terminalNotificationSentAt: job.terminalNotificationSentAt,
+  terminalNotificationTarget: job.terminalNotificationTarget,
+  terminalNotificationState: job.terminalNotificationState
 });
 
 const deriveStorageKeyFromCompletionPayload = (
@@ -341,9 +478,9 @@ const deriveMeetingBotLogFailure = (payload: z.infer<typeof meetingBotLogSchema>
   message: payload.message
 });
 
-const resolveRequestedJoinName = (value?: string): string => {
+const resolveRequestedJoinName = (value?: string, fallbackJoinName = DEFAULT_JOIN_NAME): string => {
   const trimmed = (value ?? '').trim();
-  return trimmed.length > 0 ? trimmed : DEFAULT_JOIN_NAME;
+  return trimmed.length > 0 ? trimmed : fallbackJoinName;
 };
 
 const buildUploadedAudioMeetingUrl = (fileName: string): string =>
@@ -507,6 +644,12 @@ const buildTerminalJobNotification = (
 
 const normalizeSearchValue = (value: string): string => value.trim().toLowerCase();
 
+const parseAdminEmails = (value: string | undefined): string[] =>
+  (value ?? '')
+    .split(',')
+    .map((email) => email.trim().toLowerCase())
+    .filter((email) => email.length > 0);
+
 const jobMatchesSearchQuery = (
   job: {
     meetingUrl: string;
@@ -618,23 +761,74 @@ export const createApp = (
 ) => {
   const app = express();
   const authenticatedUserRepository = options.authenticatedUserRepository;
+  const transcriptionProviderCatalog =
+    options.transcriptionProviderCatalog ?? createTranscriptionProviderCatalogFromEnvironment();
+  const summaryProviderCatalog =
+    options.summaryProviderCatalog ?? createSummaryProviderCatalogFromEnvironment();
+  const defaultLocalTranscriptionModel = process.env.WHISPER_MODEL ?? 'large-v3';
+  const defaultCloudTranscriptionModel =
+    process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-4o-mini-transcribe';
+  const defaultTranscriptionModel =
+    transcriptionProviderCatalog.defaultProvider === 'azure-openai-gpt-4o-mini-transcribe'
+      ? defaultCloudTranscriptionModel
+      : defaultLocalTranscriptionModel;
+  const defaultSummaryModel = process.env.SUMMARY_MODEL ?? 'gpt-5-mini';
+  const defaultDailyCloudQuotaUsd = Number(process.env.DEFAULT_DAILY_CLOUD_QUOTA_USD ?? '5');
+  const defaultLiveMeetingReservationCapUsd = Number(
+    process.env.LIVE_MEETING_RESERVATION_CAP_USD ?? '1.5'
+  );
+  const defaultPricingVersion = process.env.AI_PRICING_VERSION ?? 'v1';
+  const transcriptionProviderSettingsRepository =
+    options.transcriptionProviderSettingsRepository ??
+    new InMemoryTranscriptionProviderSettingsRepository({
+      defaultTranscriptionProvider: transcriptionProviderCatalog.defaultProvider,
+      defaultTranscriptionModel,
+      defaultLocalTranscriptionModel,
+      defaultCloudTranscriptionModel,
+      defaultSummaryProvider: summaryProviderCatalog.defaultProvider,
+      defaultSummaryModel,
+      defaultDailyCloudQuotaUsd,
+      defaultLiveMeetingReservationCapUsd,
+      defaultPricingVersion,
+      defaultConcurrencyPools: {
+        localTranscription: Math.max(
+          1,
+          options.maxConcurrentTranscriptionJobs ??
+            Number(process.env.MAX_CONCURRENT_TRANSCRIPTION_JOBS ?? '1')
+        ),
+        cloudTranscription: Math.max(
+          1,
+          options.maxConcurrentTranscriptionJobs ??
+            Number(process.env.MAX_CONCURRENT_TRANSCRIPTION_JOBS ?? '1')
+        ),
+        localSummary: 1,
+        cloudSummary: 1
+      }
+    });
+  const operatorCloudQuotaOverrideRepository =
+    options.operatorCloudQuotaOverrideRepository ??
+    new InMemoryOperatorCloudQuotaOverrideRepository();
+  const cloudUsageLedgerRepository =
+    options.cloudUsageLedgerRepository ?? new InMemoryCloudUsageLedgerRepository();
+  const adminAuditLogRepository =
+    options.adminAuditLogRepository ?? new InMemoryAdminAuditLogRepository();
   const maxTranscriptionAttempts = options.maxTranscriptionAttempts ?? 3;
   const operatorAuth = options.operatorAuth;
   const uploadedAudioStorage = options.uploadedAudioStorage;
   const meetingBotController = options.meetingBotController;
   const meetingBotRuntimeMonitor = options.meetingBotRuntimeMonitor;
   const jobNotificationSender = options.jobNotificationSender;
-  const maxConcurrentTranscriptionJobs = Math.max(
-    1,
-    options.maxConcurrentTranscriptionJobs ??
-      Number(process.env.MAX_CONCURRENT_TRANSCRIPTION_JOBS ?? '1')
-  );
   const staleMeetingJobAfterMs = options.staleMeetingJobAfterMs ?? 10 * 60 * 1000;
   const staleMeetingFinalizationAfterMs =
     options.staleMeetingFinalizationAfterMs ?? 2 * 60 * 1000;
   const staleTranscriptionJobAfterMs = options.staleTranscriptionJobAfterMs ?? 15 * 60 * 1000;
   const currentDir = dirname(fileURLToPath(import.meta.url));
   const publicDir = options.publicDir ?? resolve(currentDir, '../public');
+  const adminEmails = new Set(
+    (options.adminEmails ?? parseAdminEmails(process.env.ADMIN_EMAILS)).map((email) =>
+      email.toLowerCase()
+    )
+  );
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -653,6 +847,172 @@ export const createApp = (
     error: {
       code: 'operator-auth-required',
       message: 'A valid authenticated operator session is required.'
+    }
+  };
+
+  const adminRequiredResponse = {
+    error: {
+      code: 'operator-admin-required',
+      message: 'An authenticated administrator is required.'
+    }
+  };
+
+  const quotaExceededResponse = (remainingUsd: number, requiredUsd: number) => ({
+    error: {
+      code: 'cloud-quota-exceeded',
+      message: `The daily cloud quota would be exceeded. Remaining: $${remainingUsd.toFixed(3)}, required: $${requiredUsd.toFixed(3)}.`
+    }
+  });
+
+  const appendAdminAuditEntry = async (
+    actor: AuthenticatedOperator,
+    input: {
+      action: string;
+      target: string;
+      before?: Record<string, unknown>;
+      after?: Record<string, unknown>;
+    }
+  ): Promise<void> => {
+    await adminAuditLogRepository.append({
+      actorId: actor.id,
+      actorEmail: actor.email,
+      action: input.action,
+      target: input.target,
+      before: input.before,
+      after: input.after
+    });
+  };
+
+  const getQuotaStatusForSubmitter = async (submitterId: string, at: Date = new Date()) => {
+    const currentPolicy = await transcriptionProviderSettingsRepository.getCurrent();
+    const quotaDayKey = buildQuotaDayKey(at);
+    const override = await operatorCloudQuotaOverrideRepository.getBySubmitterId(submitterId);
+    const dailyQuotaUsd = override?.dailyQuotaUsd ?? currentPolicy.defaultDailyCloudQuotaUsd;
+    const ledgerEntries = await cloudUsageLedgerRepository.listBySubmitterAndDay(
+      submitterId,
+      quotaDayKey
+    );
+    const consumedUsd = sumActualConsumedUsd(ledgerEntries, submitterId, quotaDayKey);
+    const reservedUsd = sumReservedUsd(
+      await repository.listBySubmitter(submitterId),
+      submitterId,
+      quotaDayKey
+    );
+    const remainingUsd = calculateRemainingCloudQuotaUsd({
+      dailyQuotaUsd,
+      consumedUsd,
+      reservedUsd
+    });
+
+    return {
+      dailyQuotaUsd,
+      consumedUsd,
+      reservedUsd,
+      remainingUsd,
+      quotaDayKey
+    };
+  };
+
+  const buildPolicySnapshotForJob = async (input: {
+    submitterId: string;
+    inputSource: RecordingJob['inputSource'];
+  }) => {
+    const currentPolicy = await transcriptionProviderSettingsRepository.getCurrent();
+    const quotaStatus = await getQuotaStatusForSubmitter(input.submitterId);
+    const estimatedCloudReservationUsd = estimateCloudReservationUsd(
+      {
+        inputSource: input.inputSource,
+        transcriptionProvider: currentPolicy.transcriptionProvider,
+        transcriptionModel: currentPolicy.transcriptionModel,
+        summaryProvider: currentPolicy.summaryProvider
+      },
+      currentPolicy
+    );
+
+    if (estimatedCloudReservationUsd > quotaStatus.remainingUsd) {
+      return {
+        accepted: false as const,
+        estimatedCloudReservationUsd,
+        quotaStatus
+      };
+    }
+
+    return {
+      accepted: true as const,
+      policy: currentPolicy,
+      estimatedCloudReservationUsd,
+      quotaStatus
+    };
+  };
+
+  const appendActualUsageFromEvent = async (
+    job: RecordingJob,
+    event:
+      | z.infer<typeof recordingJobEventSchema>
+      | Extract<z.infer<typeof recordingJobEventSchema>, { type: 'transcript-artifact-stored' }>
+      | Extract<z.infer<typeof recordingJobEventSchema>, { type: 'summary-artifact-stored' }>
+  ): Promise<void> => {
+    if (!job.quotaDayKey || !job.pricingVersion) {
+      return;
+    }
+
+    if (
+      event.type === 'transcript-artifact-stored' &&
+      job.transcriptionProvider &&
+      isCloudTranscriptionProvider(job.transcriptionProvider)
+    ) {
+      const audioMs =
+        event.usage?.audioMs ?? job.progressTotalMs ?? job.progressProcessedMs ?? 0;
+
+      await cloudUsageLedgerRepository.append({
+        jobId: job.id,
+        submitterId: job.submitterId,
+        quotaDayKey: job.quotaDayKey,
+        entryType: 'actual',
+        stage: 'transcription',
+        provider: job.transcriptionProvider,
+        model: job.transcriptionModel ?? event.transcriptArtifact.language,
+        pricingVersion: job.pricingVersion,
+        usageQuantity: audioMs,
+        usageUnit: 'audio-ms',
+        costUsd: calculateAzureTranscriptionCostUsd(audioMs, {
+          provider: job.transcriptionProvider,
+          model: job.transcriptionModel
+        }),
+        detail: event.usage ? { audioMs: event.usage.audioMs } : undefined
+      });
+    }
+
+    if (
+      event.type === 'summary-artifact-stored' &&
+      job.summaryProvider &&
+      isCloudSummaryProvider(job.summaryProvider)
+    ) {
+      const promptTokens = event.usage?.promptTokens ?? 0;
+      const completionTokens = event.usage?.completionTokens ?? 0;
+      const totalTokens = event.usage?.totalTokens ?? promptTokens + completionTokens;
+
+      await cloudUsageLedgerRepository.append({
+        jobId: job.id,
+        submitterId: job.submitterId,
+        quotaDayKey: job.quotaDayKey,
+        entryType: 'actual',
+        stage: 'summary',
+        provider: job.summaryProvider,
+        model: job.summaryModel ?? event.summaryArtifact.model,
+        pricingVersion: job.pricingVersion,
+        usageQuantity: totalTokens,
+        usageUnit: 'tokens',
+        costUsd: calculateAzureSummaryCostUsd({
+          promptTokens,
+          completionTokens
+        }),
+        detail: {
+          promptTokens,
+          completionTokens,
+          totalTokens
+        }
+      });
     }
   };
 
@@ -695,6 +1055,28 @@ export const createApp = (
     }
   };
 
+  const resolveAuthenticatedOperatorFromRequest = async (
+    request: express.Request,
+    response: express.Response
+  ): Promise<AuthenticatedOperator | undefined> => {
+    if (!operatorAuth) {
+      response.status(401).json(authRequiredResponse);
+      return undefined;
+    }
+
+    const authenticatedOperator = await operatorAuth.verifyAuthorizationHeader(
+      request.headers.authorization
+    );
+
+    if (!authenticatedOperator) {
+      response.status(401).json(authRequiredResponse);
+      return undefined;
+    }
+
+    await authenticatedUserRepository?.upsert(authenticatedOperator);
+    return authenticatedOperator;
+  };
+
   const resolveSubmitterIdFromRequest = async (
     request: express.Request,
     response: express.Response,
@@ -716,17 +1098,25 @@ export const createApp = (
       return submitterId;
     }
 
-    const authenticatedOperator = await operatorAuth.verifyAuthorizationHeader(
-      request.headers.authorization
-    );
+    return (await resolveAuthenticatedOperatorFromRequest(request, response))?.id;
+  };
+
+  const requireAdminOperator = async (
+    request: express.Request,
+    response: express.Response
+  ): Promise<AuthenticatedOperator | undefined> => {
+    const authenticatedOperator = await resolveAuthenticatedOperatorFromRequest(request, response);
 
     if (!authenticatedOperator) {
-      response.status(401).json(authRequiredResponse);
       return undefined;
     }
 
-    await authenticatedUserRepository?.upsert(authenticatedOperator);
-    return authenticatedOperator.id;
+    if (!adminEmails.has(authenticatedOperator.email.toLowerCase())) {
+      response.status(403).json(adminRequiredResponse);
+      return undefined;
+    }
+
+    return authenticatedOperator;
   };
 
   const maybeSendTerminalJobNotification = async (job: RecordingJob): Promise<RecordingJob> => {
@@ -786,10 +1176,433 @@ export const createApp = (
     });
   });
 
+  app.get('/api/admin/ai-policy', async (request, response) => {
+    const authenticatedOperator = await requireAdminOperator(request, response);
+
+    if (!authenticatedOperator) {
+      return;
+    }
+
+    const currentPolicy = await transcriptionProviderSettingsRepository.getCurrent();
+
+    return response.status(200).json({
+      transcriptionProvider: currentPolicy.transcriptionProvider,
+      transcriptionModel: currentPolicy.transcriptionModel,
+      summaryProvider: currentPolicy.summaryProvider,
+      summaryModel: currentPolicy.summaryModel,
+      pricingVersion: currentPolicy.pricingVersion,
+      defaultDailyCloudQuotaUsd: currentPolicy.defaultDailyCloudQuotaUsd,
+      liveMeetingReservationCapUsd: currentPolicy.liveMeetingReservationCapUsd,
+      concurrencyPools: currentPolicy.concurrencyPools,
+      transcriptionOptions: transcriptionProviderCatalog.options.map((option) => ({
+        value: option.value,
+        label: option.label,
+        ready: option.ready,
+        ...(option.reason ? { reason: option.reason } : {})
+      })),
+      summaryOptions: summaryProviderCatalog.options.map((option) => ({
+        value: option.value,
+        label: option.label,
+        ready: option.ready,
+        ...(option.reason ? { reason: option.reason } : {})
+      })),
+      updatedAt: currentPolicy.updatedAt,
+      updatedBy: currentPolicy.updatedBy
+    });
+  });
+
+  app.put('/api/admin/ai-policy', async (request, response) => {
+    const parsedRequest = updateAiPolicySchema.safeParse(request.body);
+
+    if (!parsedRequest.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedRequest.error.issues[0]?.message ?? 'The request payload is invalid.'
+        }
+      });
+    }
+
+    const authenticatedOperator = await requireAdminOperator(request, response);
+
+    if (!authenticatedOperator) {
+      return;
+    }
+
+    if (!transcriptionProviderCatalog.isReady(parsedRequest.data.transcriptionProvider)) {
+      return response.status(409).json({
+        error: {
+          code: 'transcription-provider-not-ready',
+          message:
+            transcriptionProviderCatalog.readinessReason(parsedRequest.data.transcriptionProvider) ??
+            'The requested transcription provider is not ready.'
+        }
+      });
+    }
+
+    if (!summaryProviderCatalog.isReady(parsedRequest.data.summaryProvider)) {
+      return response.status(409).json({
+        error: {
+          code: 'summary-provider-not-ready',
+          message:
+            summaryProviderCatalog.readinessReason(parsedRequest.data.summaryProvider) ??
+            'The requested summary provider is not ready.'
+        }
+      });
+    }
+
+    const before = await transcriptionProviderSettingsRepository.getCurrent();
+    const updated = await transcriptionProviderSettingsRepository.updatePolicy({
+      transcriptionProvider: parsedRequest.data.transcriptionProvider,
+      transcriptionModel: parsedRequest.data.transcriptionModel,
+      summaryProvider: parsedRequest.data.summaryProvider,
+      summaryModel: parsedRequest.data.summaryModel,
+      pricingVersion: parsedRequest.data.pricingVersion,
+      defaultDailyCloudQuotaUsd: parsedRequest.data.defaultDailyCloudQuotaUsd,
+      liveMeetingReservationCapUsd: parsedRequest.data.liveMeetingReservationCapUsd,
+      concurrencyPools: parsedRequest.data.concurrencyPools,
+      updatedBy: authenticatedOperator.id
+    });
+
+    await appendAdminAuditEntry(authenticatedOperator, {
+      action: 'ai-policy.updated',
+      target: 'ai-policy',
+      before: {
+        transcriptionProvider: before.transcriptionProvider,
+        transcriptionModel: before.transcriptionModel,
+        summaryProvider: before.summaryProvider,
+        summaryModel: before.summaryModel,
+        pricingVersion: before.pricingVersion,
+        defaultDailyCloudQuotaUsd: before.defaultDailyCloudQuotaUsd,
+        liveMeetingReservationCapUsd: before.liveMeetingReservationCapUsd,
+        concurrencyPools: before.concurrencyPools
+      },
+      after: {
+        transcriptionProvider: updated.transcriptionProvider,
+        transcriptionModel: updated.transcriptionModel,
+        summaryProvider: updated.summaryProvider,
+        summaryModel: updated.summaryModel,
+        pricingVersion: updated.pricingVersion,
+        defaultDailyCloudQuotaUsd: updated.defaultDailyCloudQuotaUsd,
+        liveMeetingReservationCapUsd: updated.liveMeetingReservationCapUsd,
+        concurrencyPools: updated.concurrencyPools
+      }
+    });
+
+    return response.status(200).json({
+      transcriptionProvider: updated.transcriptionProvider,
+      transcriptionModel: updated.transcriptionModel,
+      summaryProvider: updated.summaryProvider,
+      summaryModel: updated.summaryModel,
+      pricingVersion: updated.pricingVersion,
+      defaultDailyCloudQuotaUsd: updated.defaultDailyCloudQuotaUsd,
+      liveMeetingReservationCapUsd: updated.liveMeetingReservationCapUsd,
+      concurrencyPools: updated.concurrencyPools,
+      updatedAt: updated.updatedAt,
+      updatedBy: updated.updatedBy
+    });
+  });
+
+  app.get('/api/admin/cloud-quota/overrides', async (request, response) => {
+    const authenticatedOperator = await requireAdminOperator(request, response);
+
+    if (!authenticatedOperator) {
+      return;
+    }
+
+    return response.status(200).json({
+      overrides: await operatorCloudQuotaOverrideRepository.listAll()
+    });
+  });
+
+  app.put('/api/admin/cloud-quota/overrides', async (request, response) => {
+    const parsedRequest = updateOperatorQuotaOverrideSchema.safeParse(request.body);
+
+    if (!parsedRequest.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedRequest.error.issues[0]?.message ?? 'The request payload is invalid.'
+        }
+      });
+    }
+
+    const authenticatedOperator = await requireAdminOperator(request, response);
+
+    if (!authenticatedOperator) {
+      return;
+    }
+
+    const before = await operatorCloudQuotaOverrideRepository.getBySubmitterId(
+      parsedRequest.data.submitterId
+    );
+    const saved = await operatorCloudQuotaOverrideRepository.upsert({
+      submitterId: parsedRequest.data.submitterId,
+      dailyQuotaUsd: parsedRequest.data.dailyQuotaUsd,
+      updatedBy: authenticatedOperator.id
+    });
+
+    await appendAdminAuditEntry(authenticatedOperator, {
+      action: 'cloud-quota-override.updated',
+      target: parsedRequest.data.submitterId,
+      before: before
+        ? {
+            dailyQuotaUsd: before.dailyQuotaUsd
+          }
+        : undefined,
+      after: {
+        dailyQuotaUsd: saved.dailyQuotaUsd
+      }
+    });
+
+    return response.status(200).json(saved);
+  });
+
+  app.get('/api/admin/audit-log', async (request, response) => {
+    const authenticatedOperator = await requireAdminOperator(request, response);
+
+    if (!authenticatedOperator) {
+      return;
+    }
+
+    return response.status(200).json({
+      entries: await adminAuditLogRepository.listRecent(50)
+    });
+  });
+
+  app.get('/api/admin/cloud-usage/report', async (request, response) => {
+    const parsedQuery = adminCloudUsageReportQuerySchema.safeParse(request.query);
+
+    if (!parsedQuery.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedQuery.error.issues[0]?.message ?? 'The request query is invalid.'
+        }
+      });
+    }
+
+    const authenticatedOperator = await requireAdminOperator(request, response);
+
+    if (!authenticatedOperator) {
+      return;
+    }
+
+    const currentPolicy = await transcriptionProviderSettingsRepository.getCurrent();
+    const quotaDayKey = parsedQuery.data.quotaDayKey ?? buildQuotaDayKey(new Date());
+    const [entries, jobs] = await Promise.all([
+      cloudUsageLedgerRepository.listByQuotaDayKey(quotaDayKey),
+      repository.listByQuotaDayKey(quotaDayKey)
+    ]);
+    const submitterIds = [...new Set([...entries, ...jobs].map((item) => item.submitterId))].sort();
+
+    const rows = await Promise.all(
+      submitterIds.map(async (submitterId) => {
+        const override = await operatorCloudQuotaOverrideRepository.getBySubmitterId(submitterId);
+        const user = await authenticatedUserRepository?.getById(submitterId);
+        const dailyQuotaUsd = override?.dailyQuotaUsd ?? currentPolicy.defaultDailyCloudQuotaUsd;
+        const reservedUsd = sumReservedUsd(jobs, submitterId, quotaDayKey);
+        const consumedUsd = sumActualConsumedUsd(entries, submitterId, quotaDayKey);
+
+        return {
+          submitterId,
+          email: user?.email,
+          dailyQuotaUsd,
+          reservedUsd,
+          consumedUsd,
+          remainingUsd: calculateRemainingCloudQuotaUsd({
+            dailyQuotaUsd,
+            reservedUsd,
+            consumedUsd
+          }),
+          entries: entries
+            .filter((entry) => entry.submitterId === submitterId)
+            .map((entry) => ({
+              stage: entry.stage,
+              provider: entry.provider,
+              model: entry.model,
+              entryType: entry.entryType,
+              costUsd: entry.costUsd,
+              usageQuantity: entry.usageQuantity,
+              usageUnit: entry.usageUnit,
+              createdAt: entry.createdAt
+            }))
+        };
+      })
+    );
+
+    return response.status(200).json({
+      quotaDayKey,
+      totals: {
+        operatorCount: rows.length,
+        reservedUsd: roundUsd(rows.reduce((total, row) => total + row.reservedUsd, 0)),
+        consumedUsd: roundUsd(rows.reduce((total, row) => total + row.consumedUsd, 0))
+      },
+      rows
+    });
+  });
+
+  app.get('/api/admin/transcription-provider', async (request, response) => {
+    const authenticatedOperator = await requireAdminOperator(request, response);
+
+    if (!authenticatedOperator) {
+      return;
+    }
+
+    const currentProvider = await transcriptionProviderSettingsRepository.getCurrent();
+
+    return response.status(200).json({
+      currentProvider: currentProvider.transcriptionProvider,
+      currentSummaryModel: currentProvider.summaryModel,
+      updatedAt: currentProvider.updatedAt,
+      updatedBy: currentProvider.updatedBy,
+      options: transcriptionProviderCatalog.options.map((option) => ({
+        value: option.value,
+        label: option.label,
+        ready: option.ready,
+        ...(option.reason ? { reason: option.reason } : {})
+      }))
+    });
+  });
+
+  app.get('/api/admin/summary-model', async (request, response) => {
+    const authenticatedOperator = await requireAdminOperator(request, response);
+
+    if (!authenticatedOperator) {
+      return;
+    }
+
+    const currentSettings = await transcriptionProviderSettingsRepository.getCurrent();
+
+    return response.status(200).json({
+      summaryModel: currentSettings.summaryModel,
+      summaryProvider: currentSettings.summaryProvider,
+      updatedAt: currentSettings.updatedAt,
+      updatedBy: currentSettings.updatedBy
+    });
+  });
+
+  app.put('/api/admin/transcription-provider', async (request, response) => {
+    const parsedRequest = updateTranscriptionProviderSchema.safeParse(request.body);
+
+    if (!parsedRequest.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedRequest.error.issues[0]?.message ?? 'The request payload is invalid.'
+        }
+      });
+    }
+
+    const authenticatedOperator = await requireAdminOperator(request, response);
+
+    if (!authenticatedOperator) {
+      return;
+    }
+
+    if (!transcriptionProviderCatalog.isReady(parsedRequest.data.provider)) {
+      return response.status(409).json({
+        error: {
+          code: 'transcription-provider-not-ready',
+          message:
+            transcriptionProviderCatalog.readinessReason(parsedRequest.data.provider) ??
+            'The requested transcription provider is not ready.'
+        }
+      });
+    }
+
+    const before = await transcriptionProviderSettingsRepository.getCurrent();
+    const currentProvider = await transcriptionProviderSettingsRepository.setCurrent({
+      provider: parsedRequest.data.provider,
+      updatedBy: authenticatedOperator.id
+    });
+
+    await appendAdminAuditEntry(authenticatedOperator, {
+      action: 'transcription-provider.updated',
+      target: 'ai-policy.transcriptionProvider',
+      before: {
+        transcriptionProvider: before.transcriptionProvider
+      },
+      after: {
+        transcriptionProvider: currentProvider.transcriptionProvider
+      }
+    });
+
+    return response.status(200).json({
+      currentProvider: currentProvider.transcriptionProvider,
+      currentSummaryModel: currentProvider.summaryModel,
+      updatedAt: currentProvider.updatedAt,
+      updatedBy: currentProvider.updatedBy
+    });
+  });
+
+  app.put('/api/admin/summary-model', async (request, response) => {
+    const parsedRequest = updateSummaryModelSchema.safeParse(request.body);
+
+    if (!parsedRequest.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedRequest.error.issues[0]?.message ?? 'The request payload is invalid.'
+        }
+      });
+    }
+
+    const authenticatedOperator = await requireAdminOperator(request, response);
+
+    if (!authenticatedOperator) {
+      return;
+    }
+
+    const before = await transcriptionProviderSettingsRepository.getCurrent();
+    const currentSettings = await transcriptionProviderSettingsRepository.setSummaryModel({
+      summaryModel: parsedRequest.data.summaryModel,
+      updatedBy: authenticatedOperator.id
+    });
+
+    await appendAdminAuditEntry(authenticatedOperator, {
+      action: 'summary-model.updated',
+      target: 'ai-policy.summaryModel',
+      before: {
+        summaryModel: before.summaryModel
+      },
+      after: {
+        summaryModel: currentSettings.summaryModel
+      }
+    });
+
+    return response.status(200).json({
+      summaryModel: currentSettings.summaryModel,
+      updatedAt: currentSettings.updatedAt,
+      updatedBy: currentSettings.updatedBy
+    });
+  });
+
+  app.get('/api/operator/quota', async (request, response) => {
+    const submitterId = await resolveSubmitterIdFromRequest(
+      request,
+      response,
+      typeof request.query.submitterId === 'string' ? request.query.submitterId : undefined
+    );
+
+    if (!submitterId) {
+      return;
+    }
+
+    const quotaStatus = await getQuotaStatusForSubmitter(submitterId);
+
+    return response.status(200).json(quotaStatus);
+  });
+
   app.get('/api/operator/config', (_request, response) => {
     response.status(200).json({
       defaultJoinName: DEFAULT_JOIN_NAME,
-      maxActiveProcessingPerSubmitter: 1
+      maxActiveProcessingPerSubmitter: 1,
+      submissionTemplates: operatorWorkflowTemplates,
+      cloudQuotaEnabled: true,
+      notifications: {
+        emailConfigured: Boolean(jobNotificationSender)
+      }
     });
   });
 
@@ -822,9 +1635,34 @@ export const createApp = (
     const refreshedJobs = (await repository.listBySubmitter(submitterId)).filter((job) =>
       jobMatchesSearchQuery(job, parsedQuery.data.q)
     );
+    const jobsWithActualCost = await Promise.all(
+      refreshedJobs.map(async (job) => {
+        const ledgerEntries = await cloudUsageLedgerRepository.listByJob(job.id);
+        const actualTranscriptionCostUsd = roundUsd(
+          ledgerEntries
+            .filter((entry) => entry.entryType === 'actual' && entry.stage === 'transcription')
+            .reduce((total, entry) => total + entry.costUsd, 0)
+        );
+        const actualSummaryCostUsd = roundUsd(
+          ledgerEntries
+            .filter((entry) => entry.entryType === 'actual' && entry.stage === 'summary')
+            .reduce((total, entry) => total + entry.costUsd, 0)
+        );
+        const actualCloudCostUsd = roundUsd(
+          actualTranscriptionCostUsd + actualSummaryCostUsd
+        );
+
+        return {
+          ...job,
+          actualTranscriptionCostUsd,
+          actualSummaryCostUsd,
+          actualCloudCostUsd
+        };
+      })
+    );
 
     return response.status(200).json({
-      jobs: refreshedJobs.map((job) =>
+      jobs: jobsWithActualCost.map((job) =>
         toApiRecordingJob({
           ...job,
           displayState: deriveDisplayState(job, meetingBotBusy)
@@ -1068,13 +1906,44 @@ export const createApp = (
       });
     }
 
+    const workflowTemplate = getOperatorWorkflowTemplate(parsedRequest.data.submissionTemplateId);
+    const policySnapshot = await buildPolicySnapshotForJob({
+      submitterId,
+      inputSource: 'meeting-link'
+    });
+
+    if (!policySnapshot.accepted) {
+      return response
+        .status(409)
+        .json(
+          quotaExceededResponse(
+            policySnapshot.quotaStatus.remainingUsd,
+            policySnapshot.estimatedCloudReservationUsd
+          )
+        );
+    }
+
     const job = await saveJob(
       createRecordingJob({
         meetingUrl: parsedRequest.data.meetingUrl,
         platform: supportResult.platform,
         inputSource: 'meeting-link',
         submitterId,
-        requestedJoinName: resolveRequestedJoinName(parsedRequest.data.requestedJoinName)
+        requestedJoinName: resolveRequestedJoinName(
+          parsedRequest.data.requestedJoinName,
+          workflowTemplate.requestedJoinName
+        ),
+        submissionTemplateId: workflowTemplate.id,
+        summaryProfile: workflowTemplate.summaryProfile,
+        preferredExportFormat: workflowTemplate.preferredExportFormat,
+        transcriptionProvider: policySnapshot.policy.transcriptionProvider,
+        transcriptionModel: policySnapshot.policy.transcriptionModel,
+        summaryProvider: policySnapshot.policy.summaryProvider,
+        summaryModel: policySnapshot.policy.summaryModel,
+        pricingVersion: policySnapshot.policy.pricingVersion,
+        estimatedCloudReservationUsd: policySnapshot.estimatedCloudReservationUsd,
+        reservedCloudQuotaUsd: policySnapshot.estimatedCloudReservationUsd,
+        quotaDayKey: policySnapshot.quotaStatus.quotaDayKey
       })
     );
 
@@ -1122,14 +1991,45 @@ export const createApp = (
     }
 
     const normalizedFileName = normalizeUploadedFileName(file.originalname);
+    const workflowTemplate = getOperatorWorkflowTemplate(
+      typeof request.body.submissionTemplateId === 'string'
+        ? request.body.submissionTemplateId
+        : undefined
+    );
+    const policySnapshot = await buildPolicySnapshotForJob({
+      submitterId,
+      inputSource: 'uploaded-audio'
+    });
+
+    if (!policySnapshot.accepted) {
+      return response
+        .status(409)
+        .json(
+          quotaExceededResponse(
+            policySnapshot.quotaStatus.remainingUsd,
+            policySnapshot.estimatedCloudReservationUsd
+          )
+        );
+    }
 
     let job = createRecordingJob({
       meetingUrl: buildUploadedAudioMeetingUrl(normalizedFileName),
       platform: 'uploaded-audio',
       inputSource: 'uploaded-audio',
       submitterId,
-      requestedJoinName: DEFAULT_JOIN_NAME,
-      uploadedFileName: normalizedFileName
+      requestedJoinName: workflowTemplate.requestedJoinName,
+      submissionTemplateId: workflowTemplate.id,
+      summaryProfile: workflowTemplate.summaryProfile,
+      preferredExportFormat: workflowTemplate.preferredExportFormat,
+      uploadedFileName: normalizedFileName,
+      transcriptionProvider: policySnapshot.policy.transcriptionProvider,
+      transcriptionModel: policySnapshot.policy.transcriptionModel,
+      summaryProvider: policySnapshot.policy.summaryProvider,
+      summaryModel: policySnapshot.policy.summaryModel,
+      pricingVersion: policySnapshot.policy.pricingVersion,
+      estimatedCloudReservationUsd: policySnapshot.estimatedCloudReservationUsd,
+      reservedCloudQuotaUsd: policySnapshot.estimatedCloudReservationUsd,
+      quotaDayKey: policySnapshot.quotaStatus.quotaDayKey
     });
 
     const recordingArtifact = await uploadedAudioStorage.storeUpload({
@@ -1231,11 +2131,35 @@ export const createApp = (
       });
     }
 
+    const policySnapshot = await buildPolicySnapshotForJob({
+      submitterId: 'anonymous',
+      inputSource: 'meeting-link'
+    });
+
+    if (!policySnapshot.accepted) {
+      return response
+        .status(409)
+        .json(
+          quotaExceededResponse(
+            policySnapshot.quotaStatus.remainingUsd,
+            policySnapshot.estimatedCloudReservationUsd
+          )
+        );
+    }
+
     const job = await saveJob(
       createRecordingJob({
         meetingUrl: parsedRequest.data.meetingUrl,
         platform: supportResult.platform,
-        inputSource: 'meeting-link'
+        inputSource: 'meeting-link',
+        transcriptionProvider: policySnapshot.policy.transcriptionProvider,
+        transcriptionModel: policySnapshot.policy.transcriptionModel,
+        summaryProvider: policySnapshot.policy.summaryProvider,
+        summaryModel: policySnapshot.policy.summaryModel,
+        pricingVersion: policySnapshot.policy.pricingVersion,
+        estimatedCloudReservationUsd: policySnapshot.estimatedCloudReservationUsd,
+        reservedCloudQuotaUsd: policySnapshot.estimatedCloudReservationUsd,
+        quotaDayKey: policySnapshot.quotaStatus.quotaDayKey
       })
     );
 
@@ -1293,24 +2217,118 @@ export const createApp = (
       )
     );
 
-    const activeGpuTranscriptions = (await repository.listActiveProcessingJobs()).filter(
+    const currentPolicy = await transcriptionProviderSettingsRepository.getCurrent();
+    const activeTranscriptions = (await repository.listActiveProcessingJobs()).filter(
       (job) =>
         job.state === 'transcribing' &&
         Boolean(job.assignedTranscriptionWorkerId) &&
         !job.transcriptArtifact
     );
+    const activeLocalTranscriptions = activeTranscriptions.filter(
+      (job) =>
+        !job.transcriptionProvider || !isCloudTranscriptionProvider(job.transcriptionProvider)
+    );
+    const activeCloudTranscriptions = activeTranscriptions.filter(
+      (job) =>
+        typeof job.transcriptionProvider === 'string' &&
+        isCloudTranscriptionProvider(job.transcriptionProvider)
+    );
+    const allowedProviders = transcriptionProviders.filter((provider) =>
+      isCloudTranscriptionProvider(provider)
+        ? activeCloudTranscriptions.length < currentPolicy.concurrencyPools.cloudTranscription
+        : activeLocalTranscriptions.length < currentPolicy.concurrencyPools.localTranscription
+    );
 
-    if (activeGpuTranscriptions.length >= maxConcurrentTranscriptionJobs) {
+    if (allowedProviders.length === 0) {
       return response.status(204).send();
     }
 
-    const claimedJob = await repository.claimNextTranscriptionReady(parsedRequest.data.workerId);
+    const claimedJob = await repository.claimNextTranscriptionReady(
+      parsedRequest.data.workerId,
+      allowedProviders
+    );
 
     if (!claimedJob) {
       return response.status(204).send();
     }
 
     return response.status(200).json(toApiRecordingJob(claimedJob));
+  });
+
+  app.post('/transcription-workers/summary-claims', async (request, response) => {
+    const parsedRequest = claimSummarySlotRequestSchema.safeParse(request.body);
+
+    if (!parsedRequest.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedRequest.error.issues[0]?.message ?? 'The request payload is invalid.'
+        }
+      });
+    }
+
+    const job = await repository.getById(parsedRequest.data.jobId);
+
+    if (!job) {
+      return response.status(404).json(notFoundResponse(parsedRequest.data.jobId));
+    }
+
+    if (!job.transcriptArtifact || job.summaryArtifact) {
+      return response.status(409).json({
+        error: {
+          code: 'summary-slot-unavailable',
+          message: 'The requested job is not waiting for summary generation.'
+        }
+      });
+    }
+
+    const currentPolicy = await transcriptionProviderSettingsRepository.getCurrent();
+    const summaryProvider = job.summaryProvider ?? currentPolicy.summaryProvider;
+    const summaryJobs = await repository.listGeneratingSummaryJobs();
+    const nowMs = Date.now();
+    const liveSummaryJobs = summaryJobs.filter((candidate) => {
+      const updatedAtMs = Date.parse(candidate.updatedAt);
+
+      if (candidate.id === job.id) {
+        return false;
+      }
+
+      if (Number.isNaN(updatedAtMs)) {
+        return true;
+      }
+
+      return nowMs - updatedAtMs < staleTranscriptionJobAfterMs;
+    });
+    const activeLocalSummaries = liveSummaryJobs.filter(
+      (candidate) => !candidate.summaryProvider || !isCloudSummaryProvider(candidate.summaryProvider)
+    );
+    const activeCloudSummaries = liveSummaryJobs.filter(
+      (candidate) =>
+        typeof candidate.summaryProvider === 'string' &&
+        isCloudSummaryProvider(candidate.summaryProvider)
+    );
+    const summaryPoolAvailable = isCloudSummaryProvider(summaryProvider)
+      ? activeCloudSummaries.length < currentPolicy.concurrencyPools.cloudSummary
+      : activeLocalSummaries.length < currentPolicy.concurrencyPools.localSummary;
+
+    if (!summaryPoolAvailable && job.processingStage !== 'generating-summary') {
+      return response.status(204).send();
+    }
+
+    if (job.processingStage === 'generating-summary') {
+      return response.status(200).json(toApiRecordingJob(job));
+    }
+
+    const savedJob = await saveJob(
+      updateRecordingJobProgress(job, {
+        processingStage: 'generating-summary',
+        processingMessage: isCloudSummaryProvider(summaryProvider)
+          ? 'Waiting on cloud summary execution.'
+          : 'Waiting on local summary execution.'
+      })
+    );
+
+    return response.status(200).json(toApiRecordingJob(savedJob));
   });
 
   app.post('/integrations/meeting-bot/completions', async (request, response) => {
@@ -1459,6 +2477,13 @@ export const createApp = (
 
     const savedJob = await saveJob(updatedJob);
 
+    if (
+      parsedEvent.data.type === 'transcript-artifact-stored' ||
+      parsedEvent.data.type === 'summary-artifact-stored'
+    ) {
+      await appendActualUsageFromEvent(savedJob, parsedEvent.data);
+    }
+
     return response.status(202).json(toApiRecordingJob(savedJob));
   });
 
@@ -1473,6 +2498,10 @@ export const createApp = (
   });
 
   app.use(express.static(publicDir));
+
+  app.get('/admin', (_request, response) => {
+    response.sendFile(resolve(publicDir, 'admin.html'));
+  });
 
   app.get('/', (_request, response) => {
     response.sendFile(resolve(publicDir, 'index.html'));

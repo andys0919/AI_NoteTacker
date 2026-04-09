@@ -10,7 +10,34 @@ def _normalize_string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _build_summary_prompt(transcript_result: dict[str, Any]) -> str:
+def _build_profile_guidance(summary_profile: str) -> str:
+    profile = (summary_profile or "general").strip().lower()
+
+    if profile == "sales":
+        return (
+            "Treat this as a sales follow-up.\n"
+            "- Focus extra attention on customer concerns, buying signals, blockers, next steps, and promised follow-up.\n"
+        )
+
+    if profile == "product":
+        return (
+            "Treat this as a product decision discussion.\n"
+            "- Focus extra attention on requirements, trade-offs, owners, deadlines, and unresolved product questions.\n"
+        )
+
+    if profile == "hr":
+        return (
+            "Treat this as an HR or people conversation.\n"
+            "- Focus extra attention on people decisions, action owners, sensitive risks, and follow-up commitments.\n"
+        )
+
+    return (
+        "Treat this as a general internal meeting.\n"
+        "- Focus on the clearest summary, actionable work, decisions, risks, and open questions.\n"
+    )
+
+
+def _build_summary_prompt(transcript_result: dict[str, Any], summary_profile: str = "general") -> str:
     transcript_text = "\n".join(
         segment["text"].strip()
         for segment in transcript_result.get("segments", [])
@@ -24,6 +51,8 @@ def _build_summary_prompt(transcript_result: dict[str, Any]) -> str:
         "- Stay faithful to the transcript.\n"
         "- Do not invent facts.\n"
         "- Keep it scannable and practical.\n"
+        "- Produce a detailed summary and do not omit material discussion points, decisions, blockers, rationale, or follow-up items.\n"
+        f"{_build_profile_guidance(summary_profile)}"
         "- The JSON schema is: "
         '{"summary": string, "key_points": string[], "action_items": string[], "decisions": string[], "risks": string[], "open_questions": string[]}.\n'
         "- Use concise Traditional Chinese for content.\n"
@@ -120,8 +149,14 @@ class CodexTranscriptSummarizer:
         self._codex_cli_path = codex_cli_path
         self._runner = runner or subprocess.run
 
-    def summarize(self, transcript_result: dict[str, Any]) -> dict[str, Any]:
-        prompt = _build_summary_prompt(transcript_result)
+    def summarize(
+        self,
+        transcript_result: dict[str, Any],
+        summary_profile: str = "general",
+        model_override: str | None = None,
+    ) -> dict[str, Any]:
+        prompt = _build_summary_prompt(transcript_result, summary_profile=summary_profile)
+        model = model_override or self._model
         command = [
             self._codex_cli_path,
             "exec",
@@ -133,7 +168,7 @@ class CodexTranscriptSummarizer:
             "read-only",
             "--skip-git-repo-check",
             "--model",
-            self._model,
+            model,
             "-c",
             f"model_reasoning_effort={self._reasoning_effort}",
             "--",
@@ -158,7 +193,7 @@ class CodexTranscriptSummarizer:
         summary_payload = _coerce_summary_payload(summary_text)
 
         return {
-            "model": self._model,
+            "model": model,
             "reasoning_effort": self._reasoning_effort,
             "text": _render_summary_markdown(summary_payload),
             "structured": {

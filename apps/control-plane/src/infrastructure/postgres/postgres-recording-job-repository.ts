@@ -6,11 +6,18 @@ import type {
   SummaryArtifact,
   TranscriptArtifact
 } from '../../domain/recording-job.js';
+import type { SummaryProvider } from '../../domain/summary-provider.js';
+import type {
+  PreferredExportFormat,
+  SubmissionTemplateId,
+  SummaryProfile
+} from '../../domain/operator-workflow-template.js';
 import {
   assignRecordingJobToWorker,
   assignTranscriptionJobToWorker
 } from '../../domain/recording-job.js';
 import type { RecordingJobRepository } from '../../domain/recording-job-repository.js';
+import type { TranscriptionProvider } from '../../domain/transcription-provider.js';
 
 type Queryable = {
   query: <TRow extends Record<string, unknown>>(
@@ -26,6 +33,9 @@ type RecordingJobRow = {
   input_source: RecordingInputSource;
   submitter_id: string;
   requested_join_name: string;
+  submission_template_id: SubmissionTemplateId | null;
+  summary_profile: SummaryProfile | null;
+  preferred_export_format: PreferredExportFormat | null;
   uploaded_file_name: string | null;
   state: RecordingJob['state'];
   processing_stage: string | null;
@@ -35,6 +45,14 @@ type RecordingJobRow = {
   progress_total_ms: number | null;
   assigned_worker_id: string | null;
   assigned_transcription_worker_id: string | null;
+  transcription_provider: TranscriptionProvider | null;
+  transcription_model: string | null;
+  summary_provider: SummaryProvider | null;
+  summary_model: string | null;
+  pricing_version: string | null;
+  estimated_cloud_reservation_usd: number | string | null;
+  reserved_cloud_quota_usd: number | string | null;
+  quota_day_key: string | null;
   transcription_attempt_count: number | null;
   created_at: Date | string;
   updated_at: Date | string;
@@ -57,6 +75,9 @@ const recordingJobSchemaSql = `
     input_source TEXT NOT NULL DEFAULT 'meeting-link',
     submitter_id TEXT NOT NULL DEFAULT 'anonymous',
     requested_join_name TEXT NOT NULL DEFAULT 'Solomon - NoteTaker',
+    submission_template_id TEXT,
+    summary_profile TEXT,
+    preferred_export_format TEXT,
     uploaded_file_name TEXT,
     state TEXT NOT NULL,
     processing_stage TEXT,
@@ -66,6 +87,14 @@ const recordingJobSchemaSql = `
     progress_total_ms INTEGER,
     assigned_worker_id TEXT,
     assigned_transcription_worker_id TEXT,
+    transcription_provider TEXT,
+    transcription_model TEXT,
+    summary_provider TEXT,
+    summary_model TEXT,
+    pricing_version TEXT,
+    estimated_cloud_reservation_usd NUMERIC(12, 6),
+    reserved_cloud_quota_usd NUMERIC(12, 6),
+    quota_day_key TEXT,
     transcription_attempt_count INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
@@ -89,6 +118,12 @@ const recordingJobSchemaSql = `
   ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS requested_join_name TEXT NOT NULL DEFAULT 'Solomon - NoteTaker';
   ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS submission_template_id TEXT;
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS summary_profile TEXT;
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS preferred_export_format TEXT;
+  ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS uploaded_file_name TEXT;
   ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS processing_stage TEXT;
@@ -102,6 +137,22 @@ const recordingJobSchemaSql = `
   ADD COLUMN IF NOT EXISTS progress_total_ms INTEGER;
   ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS job_history JSONB;
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS transcription_provider TEXT;
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS transcription_model TEXT;
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS summary_provider TEXT;
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS summary_model TEXT;
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS pricing_version TEXT;
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS estimated_cloud_reservation_usd NUMERIC(12, 6);
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS reserved_cloud_quota_usd NUMERIC(12, 6);
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS quota_day_key TEXT;
   ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS terminal_notification_sent_at TIMESTAMPTZ;
   ALTER TABLE recording_jobs
@@ -120,6 +171,9 @@ const mapRowToRecordingJob = (row: RecordingJobRow): RecordingJob => ({
   inputSource: row.input_source,
   submitterId: row.submitter_id,
   requestedJoinName: row.requested_join_name,
+  submissionTemplateId: row.submission_template_id ?? undefined,
+  summaryProfile: row.summary_profile ?? undefined,
+  preferredExportFormat: row.preferred_export_format ?? undefined,
   uploadedFileName: row.uploaded_file_name ?? undefined,
   state: row.state,
   processingStage: row.processing_stage ?? undefined,
@@ -129,6 +183,20 @@ const mapRowToRecordingJob = (row: RecordingJobRow): RecordingJob => ({
   progressTotalMs: row.progress_total_ms ?? undefined,
   assignedWorkerId: row.assigned_worker_id ?? undefined,
   assignedTranscriptionWorkerId: row.assigned_transcription_worker_id ?? undefined,
+  transcriptionProvider: row.transcription_provider ?? undefined,
+  transcriptionModel: row.transcription_model ?? undefined,
+  summaryProvider: row.summary_provider ?? undefined,
+  summaryModel: row.summary_model ?? undefined,
+  pricingVersion: row.pricing_version ?? undefined,
+  estimatedCloudReservationUsd:
+    row.estimated_cloud_reservation_usd !== null && row.estimated_cloud_reservation_usd !== undefined
+      ? Number(row.estimated_cloud_reservation_usd)
+      : undefined,
+  reservedCloudQuotaUsd:
+    row.reserved_cloud_quota_usd !== null && row.reserved_cloud_quota_usd !== undefined
+      ? Number(row.reserved_cloud_quota_usd)
+      : undefined,
+  quotaDayKey: row.quota_day_key ?? undefined,
   transcriptionAttemptCount: row.transcription_attempt_count ?? 0,
   createdAt: toIsoString(row.created_at),
   updatedAt: toIsoString(row.updated_at),
@@ -162,6 +230,9 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           input_source,
           submitter_id,
           requested_join_name,
+          submission_template_id,
+          summary_profile,
+          preferred_export_format,
           uploaded_file_name,
           state,
           processing_stage,
@@ -171,6 +242,14 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           progress_total_ms,
           assigned_worker_id,
           assigned_transcription_worker_id,
+          transcription_provider,
+          transcription_model,
+          summary_provider,
+          summary_model,
+          pricing_version,
+          estimated_cloud_reservation_usd,
+          reserved_cloud_quota_usd,
+          quota_day_key,
           transcription_attempt_count,
           created_at,
           updated_at,
@@ -184,13 +263,16 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           terminal_notification_target,
           terminal_notification_state
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::timestamptz, $18::timestamptz, $19, $20, $21::jsonb, $22::jsonb, $23::jsonb, $24::jsonb, $25::timestamptz, $26, $27)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28::timestamptz, $29::timestamptz, $30, $31, $32::jsonb, $33::jsonb, $34::jsonb, $35::jsonb, $36::timestamptz, $37, $38)
         ON CONFLICT (id) DO UPDATE SET
           meeting_url = EXCLUDED.meeting_url,
           platform = EXCLUDED.platform,
           input_source = EXCLUDED.input_source,
           submitter_id = EXCLUDED.submitter_id,
           requested_join_name = EXCLUDED.requested_join_name,
+          submission_template_id = EXCLUDED.submission_template_id,
+          summary_profile = EXCLUDED.summary_profile,
+          preferred_export_format = EXCLUDED.preferred_export_format,
           uploaded_file_name = EXCLUDED.uploaded_file_name,
           state = EXCLUDED.state,
           processing_stage = EXCLUDED.processing_stage,
@@ -200,6 +282,14 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           progress_total_ms = EXCLUDED.progress_total_ms,
           assigned_worker_id = EXCLUDED.assigned_worker_id,
           assigned_transcription_worker_id = EXCLUDED.assigned_transcription_worker_id,
+          transcription_provider = EXCLUDED.transcription_provider,
+          transcription_model = EXCLUDED.transcription_model,
+          summary_provider = EXCLUDED.summary_provider,
+          summary_model = EXCLUDED.summary_model,
+          pricing_version = EXCLUDED.pricing_version,
+          estimated_cloud_reservation_usd = EXCLUDED.estimated_cloud_reservation_usd,
+          reserved_cloud_quota_usd = EXCLUDED.reserved_cloud_quota_usd,
+          quota_day_key = EXCLUDED.quota_day_key,
           transcription_attempt_count = EXCLUDED.transcription_attempt_count,
           created_at = EXCLUDED.created_at,
           updated_at = EXCLUDED.updated_at,
@@ -221,6 +311,9 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
         job.inputSource,
         job.submitterId,
         job.requestedJoinName,
+        job.submissionTemplateId ?? null,
+        job.summaryProfile ?? null,
+        job.preferredExportFormat ?? null,
         job.uploadedFileName ?? null,
         job.state,
         job.processingStage ?? null,
@@ -230,6 +323,14 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
         job.progressTotalMs ?? null,
         job.assignedWorkerId ?? null,
         job.assignedTranscriptionWorkerId ?? null,
+        job.transcriptionProvider ?? null,
+        job.transcriptionModel ?? null,
+        job.summaryProvider ?? null,
+        job.summaryModel ?? null,
+        job.pricingVersion ?? null,
+        job.estimatedCloudReservationUsd ?? null,
+        job.reservedCloudQuotaUsd ?? null,
+        job.quotaDayKey ?? null,
         job.transcriptionAttemptCount ?? 0,
         job.createdAt,
         job.updatedAt,
@@ -279,6 +380,20 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
     return result.rows.map(mapRowToRecordingJob);
   }
 
+  async listByQuotaDayKey(quotaDayKey: string): Promise<RecordingJob[]> {
+    const result = await this.database.query<RecordingJobRow>(
+      `
+        SELECT *
+        FROM recording_jobs
+        WHERE quota_day_key = $1
+        ORDER BY created_at DESC
+      `,
+      [quotaDayKey]
+    );
+
+    return result.rows.map(mapRowToRecordingJob);
+  }
+
   async deleteTerminalJobForSubmitter(id: string, submitterId: string): Promise<boolean> {
     const result = await this.database.query<{ id: string }>(
       `
@@ -314,6 +429,19 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
         SELECT *
         FROM recording_jobs
         WHERE state IN ('joining', 'recording', 'transcribing')
+      `
+    );
+
+    return result.rows.map(mapRowToRecordingJob);
+  }
+
+  async listGeneratingSummaryJobs(): Promise<RecordingJob[]> {
+    const result = await this.database.query<RecordingJobRow>(
+      `
+        SELECT *
+        FROM recording_jobs
+        WHERE processing_stage = 'generating-summary'
+          AND summary_artifact IS NULL
       `
     );
 
@@ -368,7 +496,15 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
     return await this.save(claimedJob);
   }
 
-  async claimNextTranscriptionReady(workerId: string): Promise<RecordingJob | undefined> {
+  async claimNextTranscriptionReady(
+    workerId: string,
+    allowedProviders?: TranscriptionProvider | TranscriptionProvider[]
+  ): Promise<RecordingJob | undefined> {
+    const normalizedProviders = !allowedProviders
+      ? undefined
+      : Array.isArray(allowedProviders)
+        ? allowedProviders
+        : [allowedProviders];
     const result = await this.database.query<RecordingJobRow>(
       `
         SELECT *
@@ -393,10 +529,12 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
       .map(mapRowToRecordingJob)
       .find(
         (job) =>
-          job.state === 'transcribing' ||
-          !activeJobs.some(
-            (activeJob) => activeJob.id !== job.id && activeJob.submitterId === job.submitterId
-          )
+          (!normalizedProviders?.length ||
+            normalizedProviders.includes(job.transcriptionProvider ?? 'self-hosted-whisper')) &&
+          (job.state === 'transcribing' ||
+            !activeJobs.some(
+              (activeJob) => activeJob.id !== job.id && activeJob.submitterId === job.submitterId
+            ))
       );
 
     if (!candidate) {
@@ -404,6 +542,13 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
     }
 
     const claimedJob = assignTranscriptionJobToWorker(candidate, workerId);
-    return await this.save(claimedJob);
+    return await this.save(
+      !claimedJob.transcriptionProvider && normalizedProviders?.length == 1
+        ? {
+            ...claimedJob,
+            transcriptionProvider: normalizedProviders[0]
+          }
+        : claimedJob
+    );
   }
 }

@@ -21,6 +21,12 @@ const main = async (): Promise<void> => {
   const app = createApp(persistenceContext.recordingJobRepository, {
     authenticatedUserRepository:
       persistenceContext.authenticatedUserRepository ?? new InMemoryAuthenticatedUserRepository(),
+    transcriptionProviderSettingsRepository:
+      persistenceContext.transcriptionProviderSettingsRepository,
+    operatorCloudQuotaOverrideRepository:
+      persistenceContext.operatorCloudQuotaOverrideRepository,
+    cloudUsageLedgerRepository: persistenceContext.cloudUsageLedgerRepository,
+    adminAuditLogRepository: persistenceContext.adminAuditLogRepository,
     operatorAuth,
     uploadedAudioStorage,
     meetingBotController,

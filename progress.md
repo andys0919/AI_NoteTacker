@@ -1,341 +1,135 @@
-# Progress
+# Progress Log
 
-## 2026-03-26
-- 初始化研究工作檔案。
-- 確認目前工作目錄為空目錄，非 git repository。
-- 下一步：搜尋 GitHub 上與 meeting bot / meeting recorder / AI note taker 相關專案。
-- 已完成第一輪 GitHub 搜尋，找到 bot API 與 captions 擷取兩大方向。
-- 下一步：逐一核對候選 repo 是否需要登入/帳密，以及是否能靠 meeting URL 加入。
-- 已核對主要候選 repo 的 readme 與限制條件。
-- 目前最符合需求的是：
-- `screenappai/meeting-bot`：最明確支援 guest/anonymous direct-link join。
-- `Vexa-ai/vexa`：Meet / Teams 很強，但 Zoom 有官方限制 caveat。
-- `joinly-ai/joinly`：可用 link 加入，但偏 agent middleware。
-- `Zerg00s/Live-Captions-Saver` / `google-meet-transcripts`：若接受 captions 路線，最簡單。
-- `hstr0100/LiveCaptionsLogger`：若只想留住所有語音內容，Windows 11 captions logger 是最輕量的旁路方案。
-- 已完成研究整理，準備輸出最終建議與 repo 清單。
-- 使用者確認不要本機系統音訊擷取，必須是完全獨立的會議 worker。
-- 已初始化 OpenSpec，建立 `add-autonomous-meeting-recorder` change。
-- 已開始撰寫 OpenSpec project context、proposal、design、specs、tasks。
-- 已完成 OpenSpec artifacts 並通過 `openspec validate add-autonomous-meeting-recorder`。
-- 已建立 monorepo skeleton：`apps/control-plane`、`workers/recording-worker`、`workers/transcription-worker`。
-- 已以 TDD 完成 control plane MVP：
-- `POST /recording-jobs`
-- `GET /recording-jobs/:id`
-- in-memory recording job repository
-- meeting link support-matrix validation
-- 已補 `.env.example`、`docker-compose.yml`、control-plane Dockerfile。
-- 驗證結果：
-- `npm test` 通過
-- `npm run build` 通過
-- `openspec validate add-autonomous-meeting-recorder --strict --no-interactive` 通過
-- `docker compose config` 通過
-- 已補 control plane phase 2/3 能力：
-- `POST /recording-jobs/:id/events`
-- worker lifecycle callbacks：`joining`、`recording`
-- worker artifact callbacks：recording artifact、transcript artifact、failed
-- `GET /recording-jobs/:id` 會回傳 artifact metadata
-- repository 介面已改為 async
-- 已新增 PostgreSQL repository 與 schema bootstrap
-- server 可透過 `PERSISTENCE_DRIVER=postgres` 切換到 PostgreSQL persistence
-- 最新驗證結果：
-- `npm test` 通過，10 tests passed
-- `npm run build` 通過
-- `openspec validate add-autonomous-meeting-recorder --strict --no-interactive` 通過
-- `docker compose config` 通過
-- 已補 worker dispatch 能力：
-- `POST /recording-workers/claims`
-- queued job 可被 recording worker claim，claim 後進入 `joining`
-- job 會保存 `assignedWorkerId`
-- 已建立 `@ai-notetacker/recording-worker` stub package
-- worker stub 可透過 HTTP client claim job、回報 `recording`、回報 recording artifact
-- `docker-compose.yml` 已加入 `recording-worker` service
-- 最新全量驗證結果：
-- `npm test` 通過，17 tests passed
-- `npm run build` 通過
-- `openspec validate add-autonomous-meeting-recorder --strict --no-interactive` 通過
-- `docker compose config` 通過
-- 已把 transcription 從 recording worker 拆成獨立 worker 流程：
-- `POST /transcription-workers/claims`
-- transcribing job 可被 transcription worker claim，並保存 `assignedTranscriptionWorkerId`
-- recording worker 現在只負責回報 recording artifact，不再直接回報 transcript artifact
-- 已建立 Python `transcription-worker` package，包含：
-- control plane client
-- artifact downloader
-- Faster-Whisper adapter
-- transcription worker loop
-- transcription worker main entrypoint
-- `docker-compose.yml` 已加入 `transcription-worker` service
-- root `npm test` / `npm run build` 現在同時驗 Node 與 Python worker
-- 最新全量驗證結果：
-- `npm test` 通過，Node 19 tests + Python 5 tests
-- `npm run build` 通過，Node build + Python compileall 通過
-- `openspec validate add-autonomous-meeting-recorder --strict --no-interactive` 通過
-- `docker compose config` 通過
-- 已補 transcription retry / failure handling：
-- transcription job 現在有 lease 概念，已被 transcriber claim 的 job 不會再被第二個 transcriber claim
-- transcription job 會記錄 `transcriptionAttemptCount`
-- `transcription-failed` event 會在未達上限時釋放 lease 並保留 `transcribing` 狀態供 retry
-- 達到上限後 job 會進入 `failed`
-- Python transcription worker 會在下載或 Whisper 轉錄失敗時回報 `transcription-failed`
-- 最新全量驗證結果：
-- `npm test` 通過，Node 24 tests + Python 6 tests
-- `npm run build` 通過，Node build + Python compileall 通過
-- `openspec validate add-autonomous-meeting-recorder --strict --no-interactive` 通過
-- `docker compose config` 通過
-- 已補 compose startup resilience：
-- control plane 會 retry PostgreSQL schema bootstrap
-- control plane / postgres 都有 healthcheck
-- recording worker / transcription worker 會等 control plane healthy 再啟動
-- recording worker / transcription worker 的 main loop 在 iteration error 時不會直接退出
-- 已完成 docker compose smoke：
-- `docker compose build` 通過
-- `docker compose up -d` 通過
-- 實際送入一筆 meeting job 後，recording worker 會 claim 並產生 recording artifact metadata
-- transcription worker 會 claim transcribing job，因下載 MinIO placeholder artifact 失敗而重試 3 次後把 job 標成 `failed`
-- `docker compose down -v` 已清理完成
-- 已將 recording worker 抽成 executor 架構：
-- `StubRecordingExecutor`
-- `ScreenappMeetingBotExecutor`
-- recording worker 可透過 `RECORDING_EXECUTOR=stub|screenapp` 切換
-- 已新增 control plane webhook ingestion：
-- `POST /integrations/meeting-bot/completions`
-- webhook 會以 `metadata.botId` 對應內部 job id，並把 meeting-bot storage metadata 轉成 recording artifact
-- 已新增 `docker-compose.screenapp.yml`
-- 包含 `meeting-bot` service、MinIO bucket bootstrap、recording-worker 的 `screenapp` override
-- 已完成 real integration 自測：
-- `docker compose -f docker-compose.yml -f docker-compose.screenapp.yml config` 通過
-- `docker compose -f docker-compose.yml -f docker-compose.screenapp.yml build meeting-bot` 通過
-- `docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up -d` 通過
-- 實際送入一筆 meeting job 後，recording worker 會 dispatch 到真實 meeting-bot
-- meeting-bot logs 顯示 `Google Meet job accepted and started processing`，且 `botId` 正確對應內部 job id
-- control plane 中該 job 狀態維持 `joining`，不再走 stub recording artifact 路徑
-- 尚未完成的邊界：
-- 尚未用真實可 guest join 的會議完成到 meeting-bot completion webhook，因此 recording artifact / transcript artifact 的真 E2E 仍待驗證
-- 已用使用者提供的真實 Teams Live meeting link 做實測：
-- control plane 現在已接受 `https://teams.live.com/meet/...` 這種連結格式
-- real `screenapp` stack 中，recording worker 確實 dispatch 到 meeting-bot
-- meeting-bot logs 顯示：
-- 找到 `Join meeting from this browser`
-- 成功進入 pre-join 畫面
-- 成功填入 bot name
-- 成功點擊 `Join now`
-- 在本次觀察窗口內，control plane job 仍停在 `joining`
-- 代表 live link 已經走到真實 Teams join flow，但還沒觀察到 meeting-bot completion webhook 回傳錄製成品
-- 2026-03-30：開始處理「commit / push 更新所有 md」工作
-- 已確認目前專案根目錄沒有 `.git`
-- 已將本次發布流程加入 `tasks/todo.md`
-- 已確認 GitHub `andys0919/AI_NoteTacker` 目前為空倉庫
-- 已初始化本地 Git 倉庫並建立 `main` 分支
-- 已更新根 `.gitignore`，排除 `_inspect_meeting_bot/`、`__pycache__/`、`.pytest_cache/` 等不應入庫內容
-- 驗證完成：
-- `npm test` 通過，Node 端 4 個 test files / 23 tests 全部通過，recording worker 4 個 test files / 7 tests 全部通過，Python 端 6 tests 通過
-- `npm run build` 通過，Node TypeScript build 與 Python compile script 均成功
-- 嘗試使用 `git-pushing` 技能腳本時遇到兩個邊界：
-- WSL 需使用 `/mnt/c/...` 路徑而非 `C:/...`
-- 腳本在空倉庫首次提交場景會因 `HEAD` 尚不存在而失敗
-- 因此改以原生 Git 命令完成首次發布
-- 已建立 root commit `f18737c feat: publish initial AI NoteTacker project`
-- 已成功推送到 `origin/main`
-- 2026-03-30：開始處理使用者提供的真實 Teams Live link smoke test
-- 已新增 `Live Test` 任務項目，準備檢查 Docker engine、起 screenapp stack、送入真實 meeting job
-- Docker Desktop 起動後，`docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up --build -d` 成功
-- 已建立真實 Teams Live job：`job_9abc7186ae7c4f1c92d218e24a0b1e44`
-- `meeting-bot` logs 已確認：
-- 真實點到 `Join meeting from this browser`
-- 真實點到 `Join now`
-- 進入會議並啟動 ffmpeg 錄製
-- 1 分鐘持續靜音後觸發 auto-exit
-- 成功上傳錄檔到 MinIO
-- 觀察到整合缺口：
-- `meeting-bot` 錄製完成後，control-plane job 仍停在 `joining`
-- 代表 completion webhook 沒有自動把 artifact metadata 寫回 control-plane
-- 已用 MinIO presigned URL 手動補 `POST /integrations/meeting-bot/completions`
-- 補送後 job 進入 `transcribing`，隨後成功到 `completed`
-- 已重現 root cause：
-- 直接用 `_inspect_meeting_bot` 目前實際 payload 形狀打 `POST /integrations/meeting-bot/completions`，control-plane 回 400
-- 錯誤訊息顯示缺少 `metadata.storage`
-- 已新增 control-plane regression test，覆蓋「沒有 `metadata.storage`、但有 `blobUrl`」的 completion payload
-- 修正後：
-- control-plane 允許 `metadata.storage` 缺失
-- 若缺少 `storage.key`，會由 `blobUrl` 推導 `recordingArtifact.storageKey`
-- 驗證：
-- targeted test 先 fail 後 pass
-- 全 repo `npm test` 通過
-- 全 repo `npm run build` 通過
-- runtime 容器現在可接受「無 storage / 有 blobUrl」的 payload，job 成功進入 `transcribing`
-- 2026-04-02：開始處理 operator dashboard 歷史工作清理能力
-- 已建立並驗證 OpenSpec change：`add-operator-job-history-controls`
-- 已手動從 PostgreSQL 刪除使用者指定的兩筆舊 failed jobs
-- 已以 TDD 補上：
-- `DELETE /api/operator/jobs/:id`
-- `POST /api/operator/jobs/clear-history`
-- repository terminal-history cleanup methods（in-memory + PostgreSQL）
-- dashboard 的 `Delete History` / `Clear History` controls
-- 新增測試覆蓋：
-- 單筆刪除 terminal job
-- 拒絕刪除 active job
-- 僅清除目前 operator 的 terminal history
-- PostgreSQL repository terminal-history cleanup
-- 最新驗證結果：
-- 全 repo `npm test` 通過，control-plane 42 tests、recording-worker 8 tests、Python transcription worker 10 tests
-- 全 repo `npm run build` 通過
-- `openspec validate add-operator-job-history-controls --strict --no-interactive` 通過
-- `node --check apps/control-plane/public/app.js` 通過
-- 2026-04-02：開始處理具名使用者、影音上傳、archive、100 人並發需求
-- 已與使用者確認身份方向為「只輸入 email」，並收斂成 passwordless magic-link
-- 以免費可行方案選定：
-- `Supabase Auth` 提供 email magic-link auth
-- `Brevo Free` 提供 custom SMTP 寄信
-- 保留本地 PostgreSQL + MinIO 作為 jobs / archives / artifacts 真相
-- 已實測 live `.m4a` upload：
-- 前端可成功建立 upload job
-- job 可由 queue 進入 `transcribing`
-- 問題不在 upload API 本身，而在缺少清楚進度與後段可觀測性
-- 已建立並驗證 OpenSpec change：`add-authenticated-media-archive`
-- 內容涵蓋：
-- authenticated dashboard
-- email magic-link auth
-- audio/video ingestion + media preparation
-- durable stage progress
-- transcript/summary archive
-- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
-- 2026-04-02：開始實作 `add-authenticated-media-archive` 第一切片，先處理 uploaded media + progress 可觀測性
-- 已完成：
-- control-plane job domain 新增 `processingStage` / `processingMessage`
-- `progress-updated` job event 已可持久保存到 PostgreSQL
-- transcription worker 已從黑盒 pipeline 改成顯式步驟：download -> prepare media -> Whisper -> summary
-- 新增 `FFmpegMediaPreparer`，對 `.mp4`/`.m4a` 先產生 canonical `.wav`
-- transcription-worker image 已安裝 `ffmpeg`
-- dashboard 現在顯示 `Pipeline Progress`
-- transcript UI 從 preview 改為 `Full Transcript`
-- 驗證：
-- 全 repo `npm test` 通過，control-plane 44 tests、recording-worker 8 tests、Python transcription worker 12 tests
-- 全 repo `npm run build` 通過
-- live `.mp4` 上傳驗證成功：
-- queue 顯示 progress 文案
-- job 成功完成到 `completed`
-- API/DB 可查到 `processing_stage = completed`
-- transcript 與 summary 均已持久保存
-- 已將舊的卡住 `.m4a` transcription lease 標記為 failed，避免同一 operator 的後續 upload 被過期 active job 卡住
-- 尚未開始的範圍：
-- `Supabase Auth + Brevo Free` magic-link sign-in
-- 具名使用者 archive ownership 與跨裝置回看
-- 2026-04-02：開始實作 auth slice（feature-flagged）
-- 已完成：
-- operator auth domain/infrastructure：`OperatorAuth`、`AuthenticatedUserRepository`
-- backend `/api/operator/*` 在 auth 啟用時改為從 bearer token 解析 authenticated user，不再信任 client 傳入的 `submitterId`
-- backend 新增 `/api/auth/config`
-- frontend 已加入 auth panel / session card 與 Supabase auth client scaffolding
-- 若未設定 `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY`，dashboard 仍維持目前匿名模式，不會中斷現有流程
-- 驗證：
-- 全 repo `npm test` 通過，control-plane 46 tests、recording-worker 8 tests、Python transcription worker 12 tests
-- 全 repo `npm run build` 通過
-- live `/api/auth/config` 目前回 `{\"enabled\":false}`，feature flag 運作正常
-- 2026-04-07：開始補第一批 archive / reliability 能力
-- 使用者已核准直接實作，不再只停留在功能建議。
-- 本批 scope 收斂為兩項：
-- `archive search`
-- `transcription stale lease recovery`
-- 已確認這兩項應併入既有 `add-authenticated-media-archive` active change，而不是另開新 change：
-- archive search 屬於 authenticated archive browsing 的自然延伸
-- stale transcription reclaim 屬於 durable progress / heartbeat / reclaim 的落地實作
-- 已更新並重新驗證 `add-authenticated-media-archive`：
-- proposal / design / tasks 已補 archive search 與 stale transcription recovery
-- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
-- 已以 TDD 補上兩個 regression tests：
-- authenticated operator archive search 會依 `q` 過濾自己的 jobs，匹配 file name / meeting link / transcript / summary
-- stale transcription lease 會在下一次 `/transcription-workers/claims` 時自動釋放並重新 claim
-- 已完成實作：
-- `/api/operator/jobs` 新增 `q` query filtering
-- dashboard 新增 archive search input，搜尋時會帶 query 並更新 empty-state 文案
-- control-plane 在 transcription claim 前會檢查 stale leased transcription jobs，並用既有 retry path 回收
-- 驗證：
-- `npm test --workspace @ai-notetacker/control-plane` 通過，9 files / 56 tests 全綠
-- `node --check apps/control-plane/public/app.js` 通過
-- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
-- `docker compose up -d --build control-plane` 完成，container healthy，`GET /health` 回 `{\"status\":\"ok\"}`
-- 2026-04-07：已補 archive detail timeline 第一刀
-- 已以 TDD 補上：
-- recording job state machine 會建立並附加 `jobHistory`
-- PostgreSQL repository 會持久保存 `jobHistory`
-- API job payload 會回傳 `jobHistory`
-- uploaded-media progress regression test 現在也驗證 history 內容
-- 已完成實作：
-- `RecordingJob` 新增 durable `jobHistory`
-- lifecycle / artifact / failure / progress 事件現在會 append history entry
-- 重複百分比更新若 stage/message 沒變，不會在 history 中爆量追加
-- dashboard job card 新增 `Job Timeline` 區塊
-- job meta 補 `Updated` timestamp
-- 驗證：
-- `npm test --workspace @ai-notetacker/control-plane` 通過，9 files / 58 tests 全綠
-- `npm run build --workspace @ai-notetacker/control-plane` 通過
-- `node --check apps/control-plane/public/app.js` 通過
-- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
-- 2026-04-07：已補 authenticated terminal email notifications
-- 已更新 OpenSpec：
-- `operator-notifications` spec 已加入 `add-authenticated-media-archive`
-- proposal / tasks / design 已補 terminal email notifications
-- 已以 TDD 補上兩個 regression tests：
-- authenticated completed job 只寄一次 terminal email
-- authenticated failed operator job 會寄 failed terminal email
-- 已完成實作：
-- 新增 `JobNotificationSender` domain interface
-- 新增 SMTP-backed `SmtpJobNotificationSender`
-- server 會從 env 建立 notification sender 並注入 control-plane
-- `RecordingJob` 新增 terminal notification persistence fields，避免 duplicate resend
-- control-plane 的 terminal saves 現在會在適用時寄通知，並把 notification-sent 寫回 job history
-- `.env.example` 已補 `SMTP_*` 設定欄位
-- 驗證：
-- `npm test --workspace @ai-notetacker/control-plane` 通過，9 files / 60 tests 全綠
-- `npm run build --workspace @ai-notetacker/control-plane` 通過
-- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
-- 2026-04-07：已補 archive export formats
-- 已更新 OpenSpec：
-- `operator-dashboard` / `transcript-archive` specs 已補 export requirements
-- proposal / tasks 已補 exportable archive formats
-- 已以 TDD 補上兩個 regression tests：
-- owner-scoped completed job 可匯出 `Markdown / TXT / SRT / JSON`
-- 非 owner 匯出被拒絕，unsupported format 會回 invalid-request
-- 已完成實作：
-- 新增 `GET /api/operator/jobs/:id/export?format=markdown|txt|srt|json`
-- server-side renderer 已支援 4 種輸出
-- dashboard job card 已加入 `Export MD / TXT / SRT / JSON` 按鈕
-- 下載流程走 authenticated fetch + blob download，不需要另開新頁
-- 驗證：
-- `npm test --workspace @ai-notetacker/control-plane` 通過，9 files / 62 tests 全綠
-- `npm run build --workspace @ai-notetacker/control-plane` 通過
-- `node --check apps/control-plane/public/app.js` 通過
-- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
-- 2026-04-08：已刷新使用文件
-- 已新增 root `README.md`
-- 已更新：
-- `workers/recording-worker/README.md`
+## Session: 2026-04-09
+
+### Phase 1: Requirements & Discovery
+- **Status:** complete
+- **Started:** 2026-04-09
+- Actions taken:
+- Reviewed OpenSpec instructions and project context.
+- Inspected current README, active changes, admin provider/model specs, and relevant control-plane/worker code.
+- Confirmed current gaps around cost ledger, quota, summary provider split, and concurrency pool separation.
+- Files created/modified:
+- `task_plan.md` (created)
+- `findings.md` (created)
+- `progress.md` (created)
+
+### Phase 2: Proposal Planning
+- **Status:** complete
+- Actions taken:
+- Selected proposal-first path and narrowed scope to cloud-only spend governance.
+- Selected change-id `add-cloud-usage-governance`.
+- Defined spec scope across job policy snapshot, quota/ledger governance, provider management, pipelines, and dashboard behavior.
+- Files created/modified:
+- `task_plan.md`
+- `findings.md`
+- `progress.md`
+
+### Phase 3: Proposal Authoring
+- **Status:** complete
+- Actions taken:
+- Wrote `proposal.md`, `design.md`, and `tasks.md` for `add-cloud-usage-governance`.
+- Added spec deltas for `job-execution-policy`, `cloud-usage-governance`, `transcription-provider-management`, `whisper-transcription-pipeline`, `meeting-summary-generation`, and `operator-dashboard`.
+- Files created/modified:
+- `openspec/changes/add-cloud-usage-governance/proposal.md` (created)
+- `openspec/changes/add-cloud-usage-governance/design.md` (created)
+- `openspec/changes/add-cloud-usage-governance/tasks.md` (created)
+- `openspec/changes/add-cloud-usage-governance/specs/job-execution-policy/spec.md` (created)
+- `openspec/changes/add-cloud-usage-governance/specs/cloud-usage-governance/spec.md` (created)
+- `openspec/changes/add-cloud-usage-governance/specs/transcription-provider-management/spec.md` (created)
+- `openspec/changes/add-cloud-usage-governance/specs/whisper-transcription-pipeline/spec.md` (created)
+- `openspec/changes/add-cloud-usage-governance/specs/meeting-summary-generation/spec.md` (created)
+- `openspec/changes/add-cloud-usage-governance/specs/operator-dashboard/spec.md` (created)
+
+### Phase 4: Validation
+- **Status:** complete
+- Actions taken:
+- Ran `openspec validate add-cloud-usage-governance --strict --no-interactive`.
+- Fixed two malformed MODIFIED requirement headings in the transcription pipeline delta.
+- Re-ran validation and confirmed the change is valid.
+- Files created/modified:
+- `openspec/changes/add-cloud-usage-governance/specs/whisper-transcription-pipeline/spec.md` (updated)
+- `task_plan.md` (updated)
+- `findings.md` (updated)
+- `progress.md` (updated)
+
+### Phase 5: Implementation & Verification
+- **Status:** complete
+- Actions taken:
+- Implemented AI policy persistence expansion, per-user cloud quota override storage, cloud usage ledger storage, and admin audit log storage.
+- Added submission-time job policy snapshotting and quota enforcement for operator meeting and upload submissions.
+- Added admin APIs for AI policy, quota overrides, and audit log access; added operator quota API.
+- Updated transcription claim flow to use job snapshots and provider-aware transcription concurrency pools.
+- Updated transcription worker to select summary providers from the claimed job snapshot and return usage metadata for cloud-routed stages.
+- Added a control-plane summary slot claim path and worker-side wait loop so local/cloud summary concurrency pools are enforced separately.
+- Extracted governance panel formatting/state logic into a dedicated browser helper module with unit tests.
+- Added dedicated unit tests for cloud usage helpers and summary provider catalog readiness logic.
+- Updated `.env.example` and worker runtime docs so cloud governance and summary routing env vars are documented.
+- Added an admin cloud usage report API and dashboard list so the existing usage ledger is visible without querying the database directly.
+- Wired the dashboard to show operator quota status and basic admin governance controls, override submission, and recent audit entries.
+- Verified control-plane tests, worker tests, root `npm test`, and root `npm run build`.
+- Files created/modified:
+- `apps/control-plane/src/app.ts`
+- `apps/control-plane/src/domain/cloud-usage.ts`
+- `apps/control-plane/src/domain/cloud-usage-ledger-repository.ts`
+- `apps/control-plane/src/domain/operator-cloud-quota-override-repository.ts`
+- `apps/control-plane/src/domain/admin-audit-log-repository.ts`
+- `apps/control-plane/src/domain/summary-provider.ts`
+- `apps/control-plane/src/domain/transcription-provider-settings-repository.ts`
+- `apps/control-plane/src/domain/recording-job.ts`
+- `apps/control-plane/src/domain/recording-job-repository.ts`
+- `apps/control-plane/src/infrastructure/repository-factory.ts`
+- `apps/control-plane/src/infrastructure/summary-provider-catalog.ts`
+- `apps/control-plane/src/infrastructure/in-memory-*.ts` governance repositories
+- `apps/control-plane/src/infrastructure/postgres/*.ts` governance repositories
+- `apps/control-plane/src/infrastructure/postgres/postgres-recording-job-repository.ts`
+- `apps/control-plane/public/index.html`
+- `apps/control-plane/public/app.js`
+- `apps/control-plane/public/styles.css`
+- `apps/control-plane/public/governance-panel.js`
+- `apps/control-plane/public/index.html`
+- `.env.example`
 - `workers/transcription-worker/README.md`
-- `openspec/project.md`
-- `tasks/todo.md`
-- `tasks/lessons.md`
-- 內容已反映目前真實可用流程：
-- compose 啟動方式
-- dashboard 用法
-- 上傳 / 會議 bot / 匯出 / 中斷
-- GPU 轉錄與 Codex summary 預設
-- 2026-04-07：已補 structured summary sections
-- 已更新 OpenSpec：
-- `add-codex-transcript-summaries` proposal / spec / tasks 已補 structured summary sections
-- 已以 TDD 補上：
-- `meeting-ai-pipeline` summarizer 會回 Markdown text + structured payload
-- transcription worker summary event 會帶出 structured summary
-- control-plane API 會持久保存並回傳 structured summary
-- 已完成實作：
-- Codex summarizer prompt 現在要求 JSON-only summary payload
-- 本地會把 JSON payload render 回 Markdown summary text
-- `summaryArtifact.structured` 現在包含 `summary / keyPoints / actionItems / decisions / risks / openQuestions`
-- dashboard summary block 現在會額外顯示 `Action Items / Decisions / Risks / Open Questions`
-- transcription-worker runtime import 已改成使用本地 wrapper summarizer，避免容器繼續吃舊版 GitHub package 行為
-- root Python test script 現在會先跑 `meeting-ai-pipeline` tests，再跑 worker tests
-- 驗證：
-- `npm test` 通過，Node 62 tests、recording-worker 8 tests、Python 16 tests 全綠
-- `npm run build` 通過
-- `openspec validate add-codex-transcript-summaries --strict --no-interactive` 通過
-- `openspec validate add-authenticated-media-archive --strict --no-interactive` 通過
+- `workers/transcription-worker/src/transcription_worker/main.py`
+- `workers/transcription-worker/src/transcription_worker/worker_loop.py`
+- `workers/transcription-worker/src/transcription_worker/azure_openai_transcriber.py`
+- `workers/transcription-worker/src/transcription_worker/azure_openai_transcript_summarizer.py`
+- `workers/transcription-worker/src/transcription_worker/control_plane_client.py`
+- `apps/control-plane/test/cloud-usage-governance-api.test.ts`
+- `apps/control-plane/test/governance-panel.test.ts`
+- `apps/control-plane/test/cloud-usage.test.ts`
+- `apps/control-plane/test/summary-provider-catalog.test.ts`
+- `apps/control-plane/test/cloud-usage-governance-api.test.ts`
+- `workers/transcription-worker/tests/test_worker_loop.py`
+
+## Test Results
+| Test | Input | Expected | Actual | Status |
+|------|-------|----------|--------|--------|
+| OpenSpec validation | `openspec validate add-cloud-usage-governance --strict --no-interactive` | Change validates successfully | Change validated successfully after one spec-format fix | ✓ |
+| Control-plane tests | `npm exec --workspace @ai-notetacker/control-plane -- vitest run` | Full control-plane test suite passes | 99/99 tests passed | ✓ |
+| Control-plane build | `npm exec --workspace @ai-notetacker/control-plane -- tsc -p tsconfig.json` | TypeScript compiles cleanly | Passed | ✓ |
+| Worker targeted tests | `python3 -m unittest workers.transcription-worker.tests.test_worker_loop workers.transcription-worker.tests.test_azure_openai_transcript_summarizer workers.transcription-worker.tests.test_azure_openai_transcriber` | Updated worker behavior passes targeted tests | 13 tests passed | ✓ |
+| Summary slot API test | `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/cloud-usage-governance-api.test.ts` | Summary pool behavior passes | Passed with 7/7 tests | ✓ |
+| Governance panel tests | `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/governance-panel.test.ts` | Governance UI helpers pass | 6/6 tests passed | ✓ |
+| Cloud usage helper tests | `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/cloud-usage.test.ts test/summary-provider-catalog.test.ts` | Governance helper modules pass | 7/7 tests passed | ✓ |
+| Usage report tests | `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/cloud-usage-governance-api.test.ts test/governance-panel.test.ts` | Admin usage report API and UI helpers pass | 16/16 tests passed | ✓ |
+| Worker compile | `python3 -m compileall workers/transcription-worker/src/transcription_worker` | Python worker sources compile | Passed | ✓ |
+| Full project tests | `npm test` | Root verification passes | Passed | ✓ |
+| Full project build | `npm run build` | Root build passes | Passed | ✓ |
+
+## Error Log
+| Timestamp | Error | Attempt | Resolution |
+|-----------|-------|---------|------------|
+| 2026-04-09 | OpenSpec rejected two MODIFIED requirements in `whisper-transcription-pipeline/spec.md` as missing requirement text | 1 | Split each requirement into a named heading and a separate SHALL statement, then revalidated successfully |
+| 2026-04-09 | `postgres-recording-job-repository` insert placeholders became misaligned after adding snapshot columns | 1 | Re-mapped the SQL placeholder order to match the expanded column list |
+| 2026-04-09 | pg-mem failed on `ANY($1::text[])` for provider filtering | 1 | Moved provider filtering back into JS after fetching candidate rows |
+| 2026-04-09 | Summary concurrency pools could not be enforced with the inline summary flow alone | 1 | Added a control-plane summary-slot claim endpoint and worker-side wait loop before summary generation |
+
+## 5-Question Reboot Check
+| Question | Answer |
+|----------|--------|
+| Where am I? | Phase 5: Delivery |
+| Where am I going? | Final handoff to the user |
+| What's the goal? | Produce a validated OpenSpec proposal for cloud usage governance |
+| What have I learned? | Deterministic cloud cost control requires submission-time snapshots, usage reporting from workers, and stage-specific routing |
+| What have I done? | Wrote the spec, implemented the backend/worker/dashboard core, and verified it with project test/build commands |

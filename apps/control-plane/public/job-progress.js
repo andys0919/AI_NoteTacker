@@ -1,36 +1,50 @@
-const uploadedAudioStageProgress = {
-  queued: { percent: 5, label: 'Queued' },
-  'preparing-media': { percent: 25, label: 'Preparing Media' },
-  transcribing: { percent: 65, label: 'Transcribing Audio' },
-  'transcribing-audio': { percent: 65, label: 'Transcribing Audio' },
-  'generating-summary': { percent: 88, label: 'Generating Summary' },
-  completed: { percent: 100, label: 'Completed' },
-  failed: { percent: 100, label: 'Failed' }
+const localizedStageLabels = {
+  queued: '排隊中',
+  'preparing-media': '媒體整理中',
+  joining: '準備加入會議',
+  recording: '錄製會議中',
+  'finalizing-recording': '整理錄音中',
+  transcribing: '語音轉寫中',
+  'transcribing-audio': '語音轉寫中',
+  'generating-summary': '摘要整理中',
+  completed: '已完成',
+  failed: '處理失敗'
 };
 
-const meetingLinkStageProgress = {
-  queued: { percent: 5, label: 'Queued' },
-  joining: { percent: 20, label: 'Joining Meeting' },
-  recording: { percent: 45, label: 'Recording Meeting' },
-  'finalizing-recording': { percent: 58, label: 'Finalizing Recording' },
-  transcribing: { percent: 72, label: 'Transcribing Audio' },
-  'transcribing-audio': { percent: 72, label: 'Transcribing Audio' },
-  'generating-summary': { percent: 90, label: 'Generating Summary' },
-  completed: { percent: 100, label: 'Completed' },
-  failed: { percent: 100, label: 'Failed' }
-};
-
-const prettifyProgressLabel = (value) =>
+export const getProgressLabel = (value) =>
+  localizedStageLabels[value] ??
   value
     .split('-')
     .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
     .join(' ');
 
+const uploadedAudioStageProgress = {
+  queued: { percent: 5, label: getProgressLabel('queued') },
+  'preparing-media': { percent: 25, label: getProgressLabel('preparing-media') },
+  transcribing: { percent: 65, label: getProgressLabel('transcribing') },
+  'transcribing-audio': { percent: 65, label: getProgressLabel('transcribing-audio') },
+  'generating-summary': { percent: 88, label: getProgressLabel('generating-summary') },
+  completed: { percent: 100, label: getProgressLabel('completed') },
+  failed: { percent: 100, label: getProgressLabel('failed') }
+};
+
+const meetingLinkStageProgress = {
+  queued: { percent: 5, label: getProgressLabel('queued') },
+  joining: { percent: 20, label: getProgressLabel('joining') },
+  recording: { percent: 45, label: getProgressLabel('recording') },
+  'finalizing-recording': { percent: 58, label: getProgressLabel('finalizing-recording') },
+  transcribing: { percent: 72, label: getProgressLabel('transcribing') },
+  'transcribing-audio': { percent: 72, label: getProgressLabel('transcribing-audio') },
+  'generating-summary': { percent: 90, label: getProgressLabel('generating-summary') },
+  completed: { percent: 100, label: getProgressLabel('completed') },
+  failed: { percent: 100, label: getProgressLabel('failed') }
+};
+
 export const getJobProgressModel = (job) => {
   if (typeof job.progressPercent === 'number') {
     return {
       percent: job.progressPercent,
-      label: prettifyProgressLabel(job.processingStage || job.displayState || job.state || 'queued'),
+      label: getProgressLabel(job.processingStage || job.displayState || job.state || 'queued'),
       tone: job.state === 'failed' ? 'failed' : job.state === 'completed' ? 'completed' : 'active',
       processedMs: job.progressProcessedMs,
       totalMs: job.progressTotalMs
@@ -41,7 +55,7 @@ export const getJobProgressModel = (job) => {
   const stageMap = job.inputSource === 'uploaded-audio' ? uploadedAudioStageProgress : meetingLinkStageProgress;
   const fallback = stageMap[stageKey] ?? {
     percent: job.state === 'completed' || job.state === 'failed' ? 100 : 15,
-    label: prettifyProgressLabel(stageKey)
+    label: getProgressLabel(stageKey)
   };
 
   return {

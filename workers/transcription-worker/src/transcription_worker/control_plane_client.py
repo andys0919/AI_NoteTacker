@@ -31,6 +31,15 @@ class ControlPlaneClient:
             body = response.read()
             return json.loads(body.decode("utf-8")) if body else None
 
+    def claim_summary_slot(self, job_id: str, worker_id: str) -> bool:
+        response = self._post_json(
+            f"{self.base_url}/transcription-workers/summary-claims",
+            {"jobId": job_id, "workerId": worker_id},
+            allow_no_content=True,
+        )
+
+        return response is not None
+
     def _post_json(self, url: str, payload: dict, allow_no_content: bool = False) -> dict | None:
         encoded_payload = json.dumps(payload).encode("utf-8")
         http_request = request.Request(

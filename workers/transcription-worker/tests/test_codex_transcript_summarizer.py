@@ -42,6 +42,38 @@ class CodexTranscriptSummarizerTests(unittest.TestCase):
         self.assertIn("## Decisions", result["text"])
         self.assertIn("## Risks", result["text"])
 
+    def test_applies_summary_profile_guidance_to_the_prompt(self) -> None:
+        captured = {}
+
+        def fake_runner(command, **_kwargs):
+            captured["command"] = command
+            return _FakeCompletedProcess(
+                '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"summary\\":\\"已整理業務重點\\",\\"key_points\\":[],\\"action_items\\":[],\\"decisions\\":[],\\"risks\\":[],\\"open_questions\\":[]}"}}'
+            )
+
+        summarizer = CodexTranscriptSummarizer(
+            model="gpt-5.3-codex-spark",
+            reasoning_effort="medium",
+            runner=fake_runner,
+        )
+
+        summarizer.summarize(
+            {
+                "language": "zh",
+                "segments": [
+                    {"start_ms": 0, "end_ms": 1000, "text": "客戶詢問導入時程"}
+                ],
+            },
+            summary_profile="sales",
+            model_override="gpt-5.4-nano",
+        )
+
+        prompt = captured["command"][-1]
+        self.assertIn("gpt-5.4-nano", captured["command"])
+        self.assertIn("do not omit material discussion points", prompt.lower())
+        self.assertIn("sales follow-up", prompt.lower())
+        self.assertIn("customer concerns", prompt.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

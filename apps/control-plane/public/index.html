@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/styles.css" />
@@ -18,27 +18,30 @@
     <div class="background-glow background-glow-right" aria-hidden="true"></div>
 
     <main class="shell">
-      <section class="hero panel">
-        <div class="hero-copy">
-          <p class="eyebrow">Distributed Queue Console</p>
-          <h1>Solomon NoteTaker</h1>
-          <p class="hero-text">
-            單頁控制台，支援匿名多人使用。每位使用者同時只會有一個工作進入處理，其餘工作會自動排隊。
-          </p>
+      <section class="dashboard-topbar panel">
+        <div class="dashboard-topbar-copy">
+          <p class="eyebrow">Shared Meeting Desk</p>
+          <h1>公司共用會議筆記台</h1>
+          <p class="dashboard-topbar-text">提交會議或錄音，直接看結果。</p>
         </div>
-        <div class="hero-meta">
-          <div class="meta-card">
-            <span id="submitter-id-label" class="meta-label">Workspace ID</span>
+        <div class="dashboard-topbar-meta">
+          <div class="meta-card compact-meta">
+            <span id="submitter-id-label" class="meta-label">目前身分</span>
             <code id="submitter-id">-</code>
           </div>
-          <div class="meta-card">
-            <span class="meta-label">Bot Name Default</span>
+          <div class="meta-card compact-meta">
+            <span class="meta-label">預設顯示名稱</span>
             <span id="default-join-name">Solomon - NoteTaker</span>
           </div>
-          <div id="session-card" class="meta-card" hidden>
-            <span class="meta-label">Signed In</span>
+          <div id="quota-card" class="meta-card compact-meta" hidden>
+            <span class="meta-label">今日雲端額度</span>
+            <strong id="quota-remaining">$0.000</strong>
+            <span id="quota-breakdown">已用 $0.000 / 保留 $0.000 / 總額 $0.000</span>
+          </div>
+          <div id="session-card" class="meta-card compact-meta session-meta" hidden>
+            <span class="meta-label">已登入帳號</span>
             <span id="session-email">-</span>
-            <button id="sign-out-button" class="toolbar-button compact" type="button">Sign Out</button>
+            <button id="sign-out-button" class="toolbar-button compact" type="button">登出</button>
           </div>
         </div>
       </section>
@@ -46,10 +49,10 @@
       <section id="auth-panel" class="panel form-panel auth-panel" hidden>
         <div class="section-heading">
           <p class="eyebrow">Email Access</p>
-          <h2>Sign In With Email OTP</h2>
+          <h2>Email 驗證登入</h2>
         </div>
         <p id="auth-copy" class="hero-text auth-copy">
-          輸入 email 後，系統會寄一組驗證碼到你的信箱。輸入驗證碼後，瀏覽器會記住登入狀態。
+          輸入公司 email 後，系統會寄出一次性驗證碼。驗證完成後，瀏覽器會記住你的登入狀態。
         </p>
         <form id="auth-form" class="stack-form auth-form">
           <label class="field">
@@ -57,102 +60,119 @@
             <input id="auth-email" name="email" type="email" placeholder="you@example.com" required />
           </label>
           <label id="otp-field" class="field" hidden>
-            <span>Verification Code</span>
-            <input id="auth-otp" name="otp" type="text" inputmode="numeric" maxlength="12" placeholder="Enter the code from your email" />
+            <span>驗證碼</span>
+            <input id="auth-otp" name="otp" type="text" inputmode="numeric" maxlength="12" placeholder="輸入信件中的驗證碼" />
           </label>
           <div class="auth-actions">
-            <button id="auth-submit-button" class="action-button" type="submit">Send Code</button>
-            <button id="otp-verify-button" class="action-button secondary" type="button" hidden>Verify Code</button>
+            <button id="auth-submit-button" class="action-button" type="submit">寄送驗證碼</button>
+            <button id="otp-verify-button" class="action-button secondary" type="button" hidden>驗證並登入</button>
           </div>
         </form>
       </section>
 
       <section class="dashboard-grid">
-        <section class="panel form-panel">
-          <div class="section-heading">
-            <p class="eyebrow">Meeting Entry</p>
-            <h2>Submit Meeting Link</h2>
-          </div>
-          <form id="meeting-form" class="stack-form">
-            <label class="field">
-              <span>Meeting URL</span>
-              <input
-                id="meeting-url"
-                name="meetingUrl"
-                type="url"
-                placeholder="https://teams.live.com/meet/..."
-                required
-              />
-            </label>
-            <label class="field">
-              <span>Join Name</span>
-              <input
-                id="join-name"
-                name="requestedJoinName"
-                type="text"
-                placeholder="Solomon - NoteTaker"
-              />
-            </label>
-            <button class="action-button" type="submit">Queue Meeting Job</button>
-          </form>
-        </section>
-
-        <section class="panel form-panel">
-          <div class="section-heading">
-            <p class="eyebrow">Audio Intake</p>
-            <h2>Upload Recording</h2>
-          </div>
-          <form id="upload-form" class="stack-form">
-            <label class="upload-dropzone" for="audio-file">
-              <input id="audio-file" name="audio" type="file" accept="audio/*,video/*" required />
-              <span id="upload-title" class="upload-title">Drop audio here or click to browse</span>
-              <span id="upload-subtitle" class="upload-subtitle">支援音訊或錄音檔，會直接進 Whisper + Codex 流程。</span>
-            </label>
-            <button class="action-button secondary" type="submit">Queue Upload Job</button>
-          </form>
-        </section>
-
-        <section class="panel queue-panel">
-          <div class="section-heading queue-header">
-            <div>
-              <p class="eyebrow">Operator Queue</p>
-              <h2>Your Jobs</h2>
+        <div class="dashboard-left-rail">
+          <section class="panel form-panel intake-panel">
+            <div class="section-heading">
+              <p class="eyebrow">Meeting Capture</p>
+              <h2>新增會議連結</h2>
             </div>
-            <div class="queue-side">
-              <label class="queue-search">
-                <span>Search Archive</span>
+            <p class="section-copy">支援 Google Meet、Microsoft Teams 與 Zoom 連結。</p>
+            <form id="meeting-form" class="stack-form">
+              <label class="field">
+                <span>會議連結</span>
                 <input
-                  id="archive-search"
-                  name="archiveSearch"
-                  type="text"
-                  placeholder="file name, meeting link, transcript, summary"
+                  id="meeting-url"
+                  name="meetingUrl"
+                  type="url"
+                  placeholder="https://teams.live.com/meet/..."
+                  required
                 />
               </label>
-              <div class="queue-stats">
-                <div class="stat-pill">
-                  <span>Active</span>
-                  <strong id="active-count">0</strong>
-                </div>
-                <div class="stat-pill">
-                  <span>Queued</span>
-                  <strong id="queued-count">0</strong>
-                </div>
+              <label class="field">
+                <span>入會顯示名稱</span>
+                <input
+                  id="join-name"
+                  name="requestedJoinName"
+                  type="text"
+                  placeholder="Solomon - NoteTaker"
+                />
+              </label>
+              <button class="action-button" type="submit">開始整理會議</button>
+            </form>
+          </section>
+
+          <section class="panel form-panel intake-panel">
+            <div class="section-heading">
+              <p class="eyebrow">Recording Intake</p>
+              <h2>上傳錄音檔</h2>
+            </div>
+            <p class="section-copy">適合會後補件或既有錄音整理，支援音訊與影片格式。</p>
+            <form id="upload-form" class="stack-form">
+              <label class="upload-dropzone" for="audio-file">
+                <input id="audio-file" name="audio" type="file" accept="audio/*,video/*" required />
+                <span id="upload-title" class="upload-title">拖曳檔案到這裡，或點擊選擇</span>
+                <span id="upload-subtitle" class="upload-subtitle">送出後會自動產生逐字稿與摘要。</span>
+              </label>
+              <button class="action-button secondary" type="submit">上傳並開始整理</button>
+            </form>
+          </section>
+        </div>
+
+        <div class="dashboard-right-stage">
+          <section class="panel queue-panel">
+            <div class="section-heading queue-header">
+              <div>
+                <p class="eyebrow">Jobs & Archive</p>
+                <h2>工作進度與歷史紀錄</h2>
               </div>
-              <button id="clear-history-button" class="toolbar-button" type="button" disabled>
-                Clear History
-              </button>
+              <div class="queue-side">
+                <label class="queue-search">
+                  <span>搜尋紀錄</span>
+                  <input
+                    id="archive-search"
+                    name="archiveSearch"
+                    type="text"
+                    placeholder="會議名稱、連結、逐字稿、摘要"
+                  />
+                </label>
+                <div class="queue-stats">
+                  <div class="stat-pill">
+                    <span>進行中</span>
+                    <strong id="active-count">0</strong>
+                  </div>
+                  <div class="stat-pill">
+                    <span>等待中</span>
+                    <strong id="queued-count">0</strong>
+                  </div>
+                  <div class="stat-pill">
+                    <span>已完成</span>
+                    <strong id="completed-count">0</strong>
+                  </div>
+                </div>
+                <button id="clear-history-button" class="toolbar-button" type="button" disabled>
+                  清除已完成紀錄
+                </button>
+              </div>
             </div>
-          </div>
-          <div id="status-banner" class="status-banner" hidden></div>
-          <div id="job-list" class="job-list">
-            <div class="empty-state">
-              <p>目前還沒有工作。送出會議連結或上傳錄音後，狀態會顯示在這裡。</p>
+            <div id="status-banner" class="status-banner" hidden></div>
+            <div id="job-filters" class="job-filters" role="tablist" aria-label="Job filters">
+              <button class="filter-chip active" data-filter="all" type="button">全部</button>
+              <button class="filter-chip" data-filter="active" type="button">進行中</button>
+              <button class="filter-chip" data-filter="completed" type="button">已完成</button>
+              <button class="filter-chip" data-filter="failed" type="button">失敗</button>
+              <button class="filter-chip" data-filter="recent" type="button">最近 7 天</button>
             </div>
-          </div>
-        </section>
+            <div id="job-list" class="job-list">
+              <div class="empty-state">
+                <p>目前還沒有任何工作。送出會議連結或上傳錄音後，系統會在這裡顯示進度與結果。</p>
+              </div>
+            </div>
+          </section>
+        </div>
       </section>
     </main>
 
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/operator.js"></script>
   </body>
 </html>
