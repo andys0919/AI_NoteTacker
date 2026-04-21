@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createApp } from '../src/app.js';
 import type { AuthenticatedUser } from '../src/domain/authenticated-user.js';
@@ -59,6 +59,14 @@ describe('summary model management API', () => {
     'operator-token': { id: 'operator-user', email: 'operator@example.com' }
   });
 
+  beforeEach(() => {
+    vi.stubEnv('SUMMARY_MODEL', 'gpt-5.4-mini');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   const buildApp = () =>
     createApp(undefined, {
       operatorAuth: auth,
@@ -75,7 +83,7 @@ describe('summary model management API', () => {
       .set('authorization', 'Bearer admin-token');
 
     expect(response.status).toBe(200);
-    expect(response.body.summaryModel).toBe('gpt-5-mini');
+    expect(response.body.summaryModel).toBe('gpt-5.4-mini');
   });
 
   it('rejects summary model management requests from non-admin operators', async () => {

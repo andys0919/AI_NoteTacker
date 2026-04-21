@@ -101,4 +101,34 @@ describe('ScreenappMeetingBotExecutor', () => {
     expect(requests[0]?.path).toBe('/microsoft/join');
     expect(requests[0]?.body.name).toBe('Solomon - NoteTaker Pro');
   });
+
+  it('dispatches a zoom job to the meeting-bot /zoom/join endpoint', async () => {
+    const executor = new ScreenappMeetingBotExecutor({
+      meetingBotBaseUrl: baseUrl,
+      bearerToken: 'internal-token',
+      botName: 'AI NoteTacker',
+      teamId: 'team-123',
+      timezone: 'UTC',
+      userId: 'worker-user'
+    });
+
+    await executor.execute({
+      id: 'job_zoom',
+      meetingUrl: 'https://us06web.zoom.us/j/123456789?pwd=7b18950c7815jk1hg5&omn=468791',
+      platform: 'zoom',
+      state: 'joining'
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.path).toBe('/zoom/join');
+    expect(requests[0]?.body).toMatchObject({
+      url: 'https://us06web.zoom.us/j/123456789?pwd=7b18950c7815jk1hg5&omn=468791',
+      name: 'AI NoteTacker',
+      bearerToken: 'internal-token',
+      teamId: 'team-123',
+      timezone: 'UTC',
+      userId: 'worker-user',
+      botId: 'job_zoom'
+    });
+  });
 });

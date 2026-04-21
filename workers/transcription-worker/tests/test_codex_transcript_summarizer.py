@@ -74,6 +74,37 @@ class CodexTranscriptSummarizerTests(unittest.TestCase):
         self.assertIn("sales follow-up", prompt.lower())
         self.assertIn("customer concerns", prompt.lower())
 
+    def test_raises_the_structured_codex_error_message_when_stdout_contains_it(self) -> None:
+        def fake_runner(*_args, **_kwargs):
+            return _FakeCompletedProcess(
+                stdout="\n".join(
+                    [
+                        '{"type":"thread.started","thread_id":"abc"}',
+                        '{"type":"turn.started"}',
+                        '{"type":"error","message":"The configured model is unavailable."}',
+                        '{"type":"turn.failed","error":{"message":"The configured model is unavailable."}}',
+                    ]
+                ),
+                stderr="Reading additional input from stdin...",
+                returncode=1,
+            )
+
+        summarizer = CodexTranscriptSummarizer(
+            model="gpt-5.3-codex-spark",
+            reasoning_effort="medium",
+            runner=fake_runner,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "configured model is unavailable"):
+            summarizer.summarize(
+                {
+                    "language": "zh",
+                    "segments": [
+                        {"start_ms": 0, "end_ms": 1000, "text": "測試摘要失敗"}
+                    ],
+                }
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: apps/control-plane/Dockerfile
+    restart: unless-stopped
     env_file:
       - .env.example
     environment:
@@ -16,6 +17,7 @@ services:
       DEFAULT_TRANSCRIPTION_PROVIDER: ${DEFAULT_TRANSCRIPTION_PROVIDER:-azure-openai-gpt-4o-mini-transcribe}
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-cloud}
       DOCKER_SOCKET_PATH: /var/run/docker.sock
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-internal-token}
       MEETING_BOT_CONTAINER_NAME: ${MEETING_BOT_CONTAINER_NAME:-ai_notetacker-meeting-bot-1}
     ports:
       - "3000:3000"
@@ -38,9 +40,11 @@ services:
     build:
       context: .
       dockerfile: workers/recording-worker/Dockerfile
+    restart: unless-stopped
     env_file:
       - .env.example
     environment:
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-internal-token}
       WORKER_ID: worker-alpha
     depends_on:
       control-plane:
@@ -50,6 +54,7 @@ services:
     build:
       context: .
       dockerfile: workers/transcription-worker/Dockerfile
+    restart: unless-stopped
     env_file:
       - .env.example
     environment:
@@ -60,8 +65,39 @@ services:
       AZURE_OPENAI_SUMMARY_API_KEY: ${AZURE_OPENAI_SUMMARY_API_KEY:-}
       AZURE_OPENAI_SUMMARY_ENDPOINT: ${AZURE_OPENAI_SUMMARY_ENDPOINT:-}
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-cloud}
-      SUMMARY_MODEL: ${SUMMARY_MODEL:-gpt-5-mini}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-internal-token}
+      SUMMARY_MODEL: ${SUMMARY_MODEL:-gpt-5.4-mini}
       WORKER_ID: transcriber-alpha
+      SUMMARY_ENABLED: "true"
+      CODEX_HOME: /codex-home
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    gpus: all
+    volumes:
+      - ${CODEX_HOME}:/codex-home
+    depends_on:
+      control-plane:
+        condition: service_healthy
+
+  summary-worker:
+    build:
+      context: .
+      dockerfile: workers/transcription-worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env.example
+    command: ["python", "-m", "transcription_worker.summary_main"]
+    environment:
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2025-03-01-preview}
+      AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_SUMMARY_API_KEY: ${AZURE_OPENAI_SUMMARY_API_KEY:-}
+      AZURE_OPENAI_SUMMARY_ENDPOINT: ${AZURE_OPENAI_SUMMARY_ENDPOINT:-}
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-cloud}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-internal-token}
+      SUMMARY_MODEL: ${SUMMARY_MODEL:-gpt-5.4-mini}
+      WORKER_ID: summarizer-alpha
       SUMMARY_ENABLED: "true"
       CODEX_HOME: /codex-home
       NVIDIA_VISIBLE_DEVICES: all
@@ -75,6 +111,7 @@ services:
 
   postgres:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ainotetacker
       POSTGRES_USER: postgres
@@ -91,11 +128,13 @@ services:
 
   redis:
     image: redis:7
+    restart: unless-stopped
     ports:
       - "6379:6379"
 
   minio:
     image: minio/minio:latest
+    restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin

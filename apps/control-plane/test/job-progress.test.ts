@@ -62,6 +62,58 @@ describe('job progress model', () => {
     });
   });
 
+  it('shows localized waiting and joining labels for meeting backlog states', () => {
+    expect(
+      getJobProgressModel({
+        inputSource: 'meeting-link',
+        state: 'queued',
+        processingStage: 'waiting-for-recording-capacity'
+      })
+    ).toEqual({
+      percent: 8,
+      label: '等待錄製容量',
+      tone: 'active'
+    });
+
+    expect(
+      getJobProgressModel({
+        inputSource: 'meeting-link',
+        state: 'joining',
+        processingStage: 'joining-meeting'
+      })
+    ).toEqual({
+      percent: 20,
+      label: '準備加入會議',
+      tone: 'active'
+    });
+
+    expect(
+      getJobProgressModel({
+        inputSource: 'meeting-link',
+        state: 'joining',
+        processingStage: 'waiting-for-host-admission'
+      })
+    ).toEqual({
+      percent: 28,
+      label: '等待主持人允許',
+      tone: 'active'
+    });
+  });
+
+  it('does not pretend lobby exits are recording finalization work when no recording artifact exists', () => {
+    expect(
+      getJobProgressModel({
+        inputSource: 'meeting-link',
+        state: 'joining',
+        processingStage: 'finalizing-recording'
+      })
+    ).toEqual({
+      percent: 18,
+      label: '取消入會中',
+      tone: 'active'
+    });
+  });
+
   it('marks failed jobs as failed even when they reached a terminal stage', () => {
     expect(
       getJobProgressModel({

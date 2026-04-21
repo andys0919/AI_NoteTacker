@@ -3,13 +3,15 @@ import type { RecordingWorkerExecutor } from './recording-executor.js';
 
 export interface RecordingWorkerControlPlaneClient {
   claimNextJob(workerId: string): Promise<WorkerClaimedJob | undefined>;
-  postJobEvent(jobId: string, payload: WorkerJobEvent): Promise<void>;
+  postJobEvent(jobId: string, payload: WorkerJobEvent, leaseToken?: string): Promise<void>;
+  postLeaseHeartbeat(jobId: string, stage: 'recording', leaseToken?: string): Promise<void>;
 }
 
 type RunRecordingWorkerIterationInput = {
   workerId: string;
   client: RecordingWorkerControlPlaneClient;
   executor: RecordingWorkerExecutor;
+  heartbeatIntervalMs?: number;
 };
 
 type WorkerIterationResult =
@@ -20,13 +22,23 @@ type WorkerIterationResult =
 export const runRecordingWorkerIteration = async ({
   workerId,
   client,
-  executor
+  executor,
+  heartbeatIntervalMs = 30_000
 }: RunRecordingWorkerIterationInput): Promise<WorkerIterationResult> => {
   const claimedJob = await client.claimNextJob(workerId);
 
   if (!claimedJob) {
     return { kind: 'idle' };
   }
+
+  const heartbeatTimer =
+    claimedJob.leaseToken && heartbeatIntervalMs > 0
+      ? setInterval(() => {
+          void client
+            .postLeaseHeartbeat(claimedJob.id, 'recording', claimedJob.leaseToken)
+            .catch(() => undefined);
+        }, heartbeatIntervalMs)
+      : undefined;
 
   try {
     await executor.execute(claimedJob, client);
@@ -37,12 +49,16 @@ export const runRecordingWorkerIteration = async ({
         code: 'recording-executor-failed',
         message: error instanceof Error ? error.message : String(error)
       }
-    });
+    }, claimedJob.leaseToken);
 
     return {
       kind: 'failed',
       jobId: claimedJob.id
     };
+  } finally {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+    }
   }
 
   return {

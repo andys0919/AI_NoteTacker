@@ -1,5 +1,9 @@
 export type WorkerClaimedJob = {
   id: string;
+  leaseToken?: string;
+  leaseAcquiredAt?: string;
+  leaseHeartbeatAt?: string;
+  leaseExpiresAt?: string;
   meetingUrl: string;
   platform: 'google-meet' | 'microsoft-teams' | 'zoom';
   inputSource?: 'meeting-link';
@@ -46,6 +50,7 @@ export type WorkerJobEvent =
 
 type ControlPlaneHttpClientOptions = {
   baseUrl: string;
+  internalServiceToken?: string;
 };
 
 export class ControlPlaneHttpClient {
@@ -55,7 +60,10 @@ export class ControlPlaneHttpClient {
     const response = await fetch(`${this.options.baseUrl}/recording-workers/claims`, {
       method: 'POST',
       headers: {
-        'content-type': 'application/json'
+        'content-type': 'application/json',
+        ...(this.options.internalServiceToken
+          ? { 'x-internal-service-token': this.options.internalServiceToken }
+          : {})
       },
       body: JSON.stringify({ workerId })
     });
@@ -71,17 +79,48 @@ export class ControlPlaneHttpClient {
     return (await response.json()) as WorkerClaimedJob;
   }
 
-  async postJobEvent(jobId: string, payload: WorkerJobEvent): Promise<void> {
+  async postJobEvent(
+    jobId: string,
+    payload: WorkerJobEvent,
+    leaseToken?: string
+  ): Promise<void> {
     const response = await fetch(`${this.options.baseUrl}/recording-jobs/${jobId}/events`, {
       method: 'POST',
       headers: {
-        'content-type': 'application/json'
+        'content-type': 'application/json',
+        ...(this.options.internalServiceToken
+          ? { 'x-internal-service-token': this.options.internalServiceToken }
+          : {})
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(leaseToken ? { ...payload, leaseToken } : payload)
     });
 
     if (!response.ok) {
       throw new Error(`Failed to post job event: ${response.status}`);
+    }
+  }
+
+  async postLeaseHeartbeat(
+    jobId: string,
+    stage: 'recording',
+    leaseToken?: string
+  ): Promise<void> {
+    const response = await fetch(`${this.options.baseUrl}/recording-jobs/${jobId}/leases/heartbeat`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(this.options.internalServiceToken
+          ? { 'x-internal-service-token': this.options.internalServiceToken }
+          : {})
+      },
+      body: JSON.stringify({
+        stage,
+        ...(leaseToken ? { leaseToken } : {})
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to post lease heartbeat: ${response.status}`);
     }
   }
 }

@@ -12,6 +12,10 @@ const badgeLabels = {
 const getBadgeLabel = (state) => badgeLabels[state] ?? '處理中';
 
 const getMeetingStatusSummary = (job, runtimeState) => {
+  if (job.processingStage === 'finalizing-recording' && !job.recordingArtifact && job.state === 'joining') {
+    return '系統正在取消尚未被允許入會的請求，這場會議不會產生錄音。';
+  }
+
   if (job.processingStage === 'finalizing-recording') {
     return '系統正在結束錄製並整理檔案，接著會繼續產出逐字稿與摘要。';
   }
@@ -42,6 +46,10 @@ const getUploadStatusSummary = (job) => {
 
   if (job.processingStage === 'generating-summary') {
     return '逐字稿已完成，系統正在整理重點摘要。';
+  }
+
+  if (job.processingStage === 'summary-pending') {
+    return '逐字稿已完成，正在等待摘要工作開始。';
   }
 
   if (job.state === 'queued') {

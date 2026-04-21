@@ -29,7 +29,8 @@ const createRecordingExecutor = (config: ReturnType<typeof readRecordingWorkerCo
 const main = async (): Promise<void> => {
   const config = readRecordingWorkerConfig(process.env);
   const client = new ControlPlaneHttpClient({
-    baseUrl: config.controlPlaneBaseUrl
+    baseUrl: config.controlPlaneBaseUrl,
+    internalServiceToken: config.internalServiceToken
   });
   const executor = createRecordingExecutor(config);
 

@@ -42,6 +42,7 @@ const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
 const child_process_1 = require("child_process");
 const util_1 = require("util");
+const { detectJoinRequestEvidence } = require("./join_request_evidence.cjs");
 const execAsync = (0, util_1.promisify)(child_process_1.exec);
 class MicrosoftTeamsBot extends MeetBotBase_1.MeetBotBase {
     constructor(logger, correlationId) {
@@ -93,7 +94,7 @@ class MicrosoftTeamsBot extends MeetBotBase_1.MeetBotBase {
             throw error;
         }
     }
-    async joinMeeting({ url, name, teamId, userId, eventId, botId, pushState, uploader }) {
+    async joinMeeting({ url, name, bearerToken, teamId, userId, eventId, botId, pushState, uploader }) {
         // First run: Navigate to pre-join screen to trigger Chrome dialogs, then close
         this._logger.info('Pre-warming: Opening browser to trigger first-run dialogs...');
         try {
@@ -275,11 +276,77 @@ class MicrosoftTeamsBot extends MeetBotBase_1.MeetBotBase {
         }, this._logger, 3, 15000, async () => {
             await (0, bugService_1.uploadDebugImage)(await this.page.screenshot({ type: 'png', fullPage: true }), 'join-button-click', userId, this._logger, botId);
         });
+        let joinRequestReported = false;
+        const reportJoinRequestSubmitted = async (bodyText) => {
+            if (joinRequestReported) {
+                return;
+            }
+            const evidence = detectJoinRequestEvidence({
+                platform: 'microsoft',
+                bodyText,
+            });
+            if (!evidence.submitted) {
+                return;
+            }
+            joinRequestReported = true;
+            await (0, botService_1.addBotLog)({
+                level: 'info',
+                message: 'Microsoft Teams join request was submitted and is waiting for host admission.',
+                provider: 'microsoft',
+                token: bearerToken,
+                botId,
+                eventId,
+                category: 'JoinRequest',
+                subCategory: 'Submitted',
+            }, this._logger);
+        };
         // Do this to ensure meeting bot has joined the meeting
         try {
             const wanderingTime = config_1.default.joinWaitTime * 60 * 1000; // Give some time to be let in
-            const callButton = this.page.getByRole('button', { name: /Leave/i });
-            await callButton.waitFor({ timeout: wanderingTime });
+            let waitTimeout;
+            let waitInterval;
+            const waitAtLobbyPromise = new Promise((resolveWaiting) => {
+                waitTimeout = setTimeout(() => {
+                    clearInterval(waitInterval);
+                    resolveWaiting(false);
+                }, wanderingTime);
+                waitInterval = setInterval(async () => {
+                    try {
+                        const bodyText = await this.page.evaluate(() => document.body.innerText).catch(() => '');
+                        const evidence = detectJoinRequestEvidence({
+                            platform: 'microsoft',
+                            bodyText,
+                        });
+                        await reportJoinRequestSubmitted(bodyText);
+                        if (evidence.status === 'denied') {
+                            clearInterval(waitInterval);
+                            clearTimeout(waitTimeout);
+                            resolveWaiting(false);
+                            return;
+                        }
+                        const callButtonVisible = await this.page.getByRole('button', { name: /Leave/i }).isVisible().catch(() => false);
+                        if (!callButtonVisible) {
+                            return;
+                        }
+                        clearInterval(waitInterval);
+                        clearTimeout(waitTimeout);
+                        resolveWaiting(true);
+                    }
+                    catch (_error) {
+                        // Keep waiting until the lobby signal or admitted state becomes clear.
+                    }
+                }, 2000);
+            });
+            const waitingAtLobbySuccess = await waitAtLobbyPromise;
+            if (!waitingAtLobbySuccess) {
+                const bodyText = await this.page.evaluate(() => document.body.innerText);
+                const userDenied = (bodyText || '')?.includes(constants_1.MICROSOFT_REQUEST_DENIED);
+                this._logger.error('Cant finish wait at the lobby check', { userDenied, waitingAtLobbySuccess: false, bodyText });
+                this._logger.error('Closing the browser on error...', 'Meeting not admitted after join request');
+                await this.page.context().browser()?.close();
+                // Don't retry lobby errors - if user doesn't admit bot, retrying won't help
+                throw new error_1.WaitingAtLobbyRetryError('Microsoft Teams Meeting bot could not enter the meeting...', bodyText ?? '', false, 0);
+            }
             this._logger.info('Bot is entering the meeting...');
         }
         catch (error) {
@@ -292,6 +359,16 @@ class MicrosoftTeamsBot extends MeetBotBase_1.MeetBotBase {
             throw new error_1.WaitingAtLobbyRetryError('Microsoft Teams Meeting bot could not enter the meeting...', bodyText ?? '', false, 0);
         }
         pushState('joined');
+        await (0, botService_1.addBotLog)({
+            level: 'info',
+            message: 'Microsoft Teams bot joined the meeting and started recording.',
+            provider: 'microsoft',
+            token: bearerToken,
+            botId,
+            eventId,
+            category: 'Recording',
+            subCategory: 'Started',
+        }, this._logger);
         const dismissDeviceChecksAndNotifications = async () => {
             const notificationCheck = async () => {
                 try {
@@ -433,6 +510,12 @@ class MicrosoftTeamsBot extends MeetBotBase_1.MeetBotBase {
         // Track FFmpeg status
         let ffmpegFailed = false;
         let ffmpegError = null;
+        // Hoist signal handler so it is visible in the finally block
+        let meetingEnded = false;
+        const handleStopSignal = () => {
+            this._logger.info('Process stop requested, finalizing current Microsoft Teams recording...');
+            meetingEnded = true;
+        };
         try {
             await recorder.start();
             this._logger.info('FFmpeg recording started successfully');
@@ -444,12 +527,6 @@ class MicrosoftTeamsBot extends MeetBotBase_1.MeetBotBase {
                     ffmpegError = new Error(`FFmpeg exited with code ${code} during recording`);
                 }
             });
-            // Set up browser-based inactivity detection
-            let meetingEnded = false;
-            const handleStopSignal = () => {
-                this._logger.info('Process stop requested, finalizing current Microsoft Teams recording...');
-                meetingEnded = true;
-            };
             process.once('SIGTERM', handleStopSignal);
             process.once('SIGINT', handleStopSignal);
             process.once('SIGABRT', handleStopSignal);

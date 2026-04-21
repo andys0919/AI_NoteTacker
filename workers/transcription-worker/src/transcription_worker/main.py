@@ -2,10 +2,8 @@ import os
 import time
 
 from meeting_ai_pipeline.artifact_downloader import RecordingArtifactDownloader, S3ArtifactStorage
-from transcription_worker.azure_openai_transcript_summarizer import AzureOpenAiTranscriptSummarizer
 from transcription_worker.azure_openai_transcriber import AzureOpenAiTranscriber
 from transcription_worker.config import read_transcription_worker_config
-from transcription_worker.codex_transcript_summarizer import CodexTranscriptSummarizer
 from transcription_worker.control_plane_client import ControlPlaneClient
 from transcription_worker.faster_whisper_engine import FasterWhisperTranscriber
 from transcription_worker.media_preparer import FFmpegMediaPreparer
@@ -35,7 +33,12 @@ def build_object_storage_from_environment(environment: dict[str, str]) -> S3Arti
 
 def main() -> None:
     config = read_transcription_worker_config(os.environ)
-    client = ControlPlaneClient(config["control_plane_base_url"])
+    client = ControlPlaneClient(
+        str(config["control_plane_base_url"]),
+        internal_service_token=str(config["internal_service_token"])
+        if config.get("internal_service_token")
+        else None,
+    )
     downloader = RecordingArtifactDownloader(
         object_storage=build_object_storage_from_environment(os.environ),
     )
@@ -59,26 +62,6 @@ def main() -> None:
             api_key=str(config["azure_openai_api_key"]),
             api_version=str(config["azure_openai_api_version"]),
         )
-    summarizer = None
-    summarizer_registry = None
-    if bool(config["summary_enabled"]):
-        summarizer_registry = {}
-        local_summarizer = CodexTranscriptSummarizer(
-            model=str(config["summary_model"]),
-            reasoning_effort=str(config["summary_reasoning_effort"]),
-            codex_cli_path=str(config["codex_cli_path"]),
-        )
-        summarizer = local_summarizer
-        summarizer_registry["local-codex"] = local_summarizer
-        if config.get("azure_openai_summary_endpoint") and config.get(
-            "azure_openai_summary_api_key"
-        ):
-            summarizer_registry["azure-openai"] = AzureOpenAiTranscriptSummarizer(
-                endpoint=str(config["azure_openai_summary_endpoint"]),
-                api_key=str(config["azure_openai_summary_api_key"]),
-                model=str(config["summary_model"]),
-            )
-
     while True:
         try:
             result = run_transcription_worker_iteration(
@@ -87,9 +70,7 @@ def main() -> None:
                 downloader=downloader,
                 media_preparer=media_preparer,
                 transcriber=transcriber,
-                summarizer=summarizer,
                 transcriber_registry=transcriber_registry,
-                summarizer_registry=summarizer_registry,
             )
 
             if result["kind"] == "idle":

@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 
@@ -9,7 +10,8 @@ import {
   attachSummaryArtifact,
   attachTranscriptArtifact,
   createRecordingJob,
-  markRecordingJobFailed
+  markRecordingJobFailed,
+  transitionRecordingJobState
 } from '../src/domain/recording-job.js';
 import { InMemoryRecordingJobRepository } from '../src/infrastructure/in-memory-recording-job-repository.js';
 
@@ -27,14 +29,15 @@ class FakeUploadedAudioStorage {
     submitterId: string;
     originalName: string;
     contentType: string;
-    bytes: Buffer;
+    bytes?: Buffer;
+    filePath?: string;
   }) {
     this.uploads.push({
       jobId: input.jobId,
       submitterId: input.submitterId,
       originalName: input.originalName,
       contentType: input.contentType,
-      size: input.bytes.length
+      size: input.bytes?.length ?? (input.filePath ? statSync(input.filePath).size : 0)
     });
 
     return {
@@ -147,6 +150,34 @@ describe('recording jobs API', () => {
     expect(response.body.platform).toBe('microsoft-teams');
   });
 
+  it('creates a queued recording job for a Zoom link with an embedded passcode', async () => {
+    const app = createApp();
+
+    const response = await request(app)
+      .post('/recording-jobs')
+      .send({
+        meetingUrl: 'https://us06web.zoom.us/j/123456789?pwd=7b18950c7815jk1hg5&omn=468791'
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.state).toBe('queued');
+    expect(response.body.platform).toBe('zoom');
+  });
+
+  it('creates a queued recording job for a Zoom web client link', async () => {
+    const app = createApp();
+
+    const response = await request(app)
+      .post('/recording-jobs')
+      .send({
+        meetingUrl: 'https://app.zoom.us/wc/join/123456789?pwd=7b18950c7815jk1hg5'
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.state).toBe('queued');
+    expect(response.body.platform).toBe('zoom');
+  });
+
   it('rejects a meeting link that requires authentication instead of direct join', async () => {
     const app = createApp();
 
@@ -196,6 +227,10 @@ describe('recording jobs API', () => {
     expect(claim.body.state).toBe('joining');
     expect(claim.body.assignedWorkerId).toBe('worker-alpha');
     expect(claim.body.platform).toBe('google-meet');
+    expect(claim.body.leaseToken).toBeTruthy();
+    expect(claim.body.leaseAcquiredAt).toBeTruthy();
+    expect(claim.body.leaseHeartbeatAt).toBeTruthy();
+    expect(claim.body.leaseExpiresAt).toBeTruthy();
   });
 
   it('returns 204 when no queued job is available for workers to claim', async () => {
@@ -240,6 +275,10 @@ describe('recording jobs API', () => {
     expect(claim.body.state).toBe('transcribing');
     expect(claim.body.assignedTranscriptionWorkerId).toBe('transcriber-alpha');
     expect(claim.body.recordingArtifact.storageKey).toBe('recordings/job_123/meeting.webm');
+    expect(claim.body.leaseToken).toBeTruthy();
+    expect(claim.body.leaseAcquiredAt).toBeTruthy();
+    expect(claim.body.leaseHeartbeatAt).toBeTruthy();
+    expect(claim.body.leaseExpiresAt).toBeTruthy();
   });
 
   it('gates transcription claims when the shared gpu transcription slot is full', async () => {
@@ -450,10 +489,14 @@ describe('recording jobs API', () => {
         }
       ),
       assignedTranscriptionWorkerId: 'transcriber-crashed',
+      transcriptionLeaseToken: 'lease_stale_transcription',
+      transcriptionLeaseAcquiredAt: '2026-03-30T00:00:00.000Z',
+      transcriptionLeaseHeartbeatAt: '2026-03-30T00:00:00.000Z',
+      transcriptionLeaseExpiresAt: '2026-03-30T00:15:00.000Z',
       transcriptionAttemptCount: 0,
       processingStage: 'transcribing-audio',
       processingMessage: 'Worker stopped heartbeating mid-transcription.',
-      updatedAt: '2026-03-30T00:00:00.000Z'
+      updatedAt: '2026-04-10T00:00:00.000Z'
     };
     await repository.save(staleJob);
     const app = createApp(repository, { maxTranscriptionAttempts: 3 });
@@ -468,6 +511,77 @@ describe('recording jobs API', () => {
     expect(claim.body.id).toBe(staleJob.id);
     expect(claim.body.assignedTranscriptionWorkerId).toBe('transcriber-retry');
     expect(claim.body.transcriptionAttemptCount).toBe(1);
+  });
+
+  it('refreshes a transcription lease heartbeat through the internal heartbeat route', async () => {
+    const app = createApp(undefined, { uploadedAudioStorage: new FakeUploadedAudioStorage() });
+
+    const created = await request(app)
+      .post('/api/operator/jobs/uploads')
+      .field('submitterId', 'operator-heartbeat')
+      .attach('audio', Buffer.from('fake-audio'), {
+        filename: 'heartbeat.m4a',
+        contentType: 'audio/mp4'
+      });
+
+    const claim = await request(app)
+      .post('/transcription-workers/claims')
+      .send({
+        workerId: 'transcriber-alpha'
+      });
+
+    expect(claim.status).toBe(200);
+
+    const heartbeat = await request(app)
+      .post(`/recording-jobs/${created.body.id}/leases/heartbeat`)
+      .send({
+        stage: 'transcription',
+        leaseToken: claim.body.leaseToken
+      });
+
+    expect(heartbeat.status).toBe(200);
+    expect(heartbeat.body.leaseHeartbeatAt).toBeTruthy();
+    expect(heartbeat.body.leaseExpiresAt).toBeTruthy();
+  });
+
+  it('does not reclaim a transcription lease that still has a fresh heartbeat even if updatedAt is old', async () => {
+    const repository = new InMemoryRecordingJobRepository();
+    const freshHeartbeatJob = {
+      ...attachRecordingArtifact(
+        createRecordingJob({
+          meetingUrl: 'uploaded://fresh-heartbeat.m4a',
+          platform: 'uploaded-audio',
+          inputSource: 'uploaded-audio',
+          submitterId: 'operator-fresh',
+          uploadedFileName: 'fresh-heartbeat.m4a'
+        }),
+        {
+          storageKey: 'uploads/operator-fresh/job_heartbeat/fresh-heartbeat.m4a',
+          downloadUrl:
+            'https://storage.example.test/uploads/operator-fresh/job_heartbeat/fresh-heartbeat.m4a',
+          contentType: 'audio/mp4'
+        }
+      ),
+      assignedTranscriptionWorkerId: 'transcriber-alive',
+      transcriptionLeaseToken: 'lease_alive_transcription',
+      transcriptionLeaseAcquiredAt: '2026-04-10T00:00:00.000Z',
+      transcriptionLeaseHeartbeatAt: new Date(Date.now() - 60_000).toISOString(),
+      transcriptionLeaseExpiresAt: new Date(Date.now() + 14 * 60_000).toISOString(),
+      transcriptionAttemptCount: 0,
+      processingStage: 'transcribing-audio',
+      processingMessage: 'Transcription worker is still heartbeating.',
+      updatedAt: '2026-03-30T00:00:00.000Z'
+    };
+    await repository.save(freshHeartbeatJob);
+    const app = createApp(repository, { maxTranscriptionAttempts: 3 });
+
+    const claim = await request(app)
+      .post('/transcription-workers/claims')
+      .send({
+        workerId: 'transcriber-retry'
+      });
+
+    expect(claim.status).toBe(204);
   });
 
   it('accepts a worker callback that stores recording artifact metadata', async () => {
@@ -595,6 +709,197 @@ describe('recording jobs API', () => {
     expect(fetched.body.summaryArtifact.structured.actionItems).toEqual(['send recap']);
   });
 
+  it('keeps a summary-enabled job non-terminal after transcript persistence until summary finishes', async () => {
+    const app = createApp();
+
+    const created = await request(app)
+      .post('/recording-jobs')
+      .send({
+        meetingUrl: 'https://meet.google.com/sum-mary-pnd'
+      });
+
+    await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'recording-artifact-stored',
+        recordingArtifact: {
+          storageKey: 'recordings/job_summary_pending/meeting.webm',
+          downloadUrl: 'https://storage.example.test/recordings/job_summary_pending/meeting.webm',
+          contentType: 'video/webm'
+        }
+      });
+
+    const transcriptCallback = await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'transcript-artifact-stored',
+        transcriptArtifact: {
+          storageKey: 'transcripts/job_summary_pending/transcript.json',
+          downloadUrl:
+            'https://storage.example.test/transcripts/job_summary_pending/transcript.json',
+          contentType: 'application/json',
+          language: 'en',
+          segments: [
+            {
+              startMs: 0,
+              endMs: 1200,
+              text: 'hello everyone'
+            }
+          ]
+        }
+      });
+
+    expect(transcriptCallback.status).toBe(202);
+    expect(transcriptCallback.body.state).toBe('transcribing');
+    expect(transcriptCallback.body.processingStage).toBe('summary-pending');
+
+    const summaryClaim = await request(app)
+      .post('/summary-workers/claims')
+      .send({
+        workerId: 'summary-alpha'
+      });
+
+    expect(summaryClaim.status).toBe(200);
+    expect(summaryClaim.body.id).toBe(created.body.id);
+    expect(summaryClaim.body.processingStage).toBe('generating-summary');
+
+    const summaryCallback = await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'summary-artifact-stored',
+        leaseToken: summaryClaim.body.leaseToken,
+        summaryArtifact: {
+          model: 'gpt-5.3-codex-spark',
+          reasoningEffort: 'medium',
+          text: 'Short summary',
+          structured: {
+            summary: 'Short summary',
+            keyPoints: ['hello everyone'],
+            actionItems: ['send recap'],
+            decisions: ['ship beta'],
+            risks: ['deadline risk'],
+            openQuestions: ['who owns rollout']
+          }
+        }
+      });
+
+    expect(summaryCallback.status).toBe(202);
+    expect(summaryCallback.body.state).toBe('completed');
+  });
+
+  it('ignores a summary callback with the wrong active lease token', async () => {
+    const app = createApp();
+
+    const created = await request(app)
+      .post('/recording-jobs')
+      .send({
+        meetingUrl: 'https://meet.google.com/wrg-summ-tok'
+      });
+
+    await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'recording-artifact-stored',
+        recordingArtifact: {
+          storageKey: 'recordings/job_wrong_summary/meeting.webm',
+          downloadUrl: 'https://storage.example.test/recordings/job_wrong_summary/meeting.webm',
+          contentType: 'video/webm'
+        }
+      });
+
+    await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'transcript-artifact-stored',
+        transcriptArtifact: {
+          storageKey: 'transcripts/job_wrong_summary/transcript.json',
+          downloadUrl:
+            'https://storage.example.test/transcripts/job_wrong_summary/transcript.json',
+          contentType: 'application/json',
+          language: 'en',
+          segments: [{ startMs: 0, endMs: 1200, text: 'hello everyone' }]
+        }
+      });
+
+    const summaryClaim = await request(app)
+      .post('/summary-workers/claims')
+      .send({
+        workerId: 'summary-alpha'
+      });
+
+    expect(summaryClaim.status).toBe(200);
+
+    const staleSummaryCallback = await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'summary-artifact-stored',
+        leaseToken: 'lease_wrong_summary_token',
+        summaryArtifact: {
+          model: 'gpt-5.3-codex-spark',
+          reasoningEffort: 'medium',
+          text: 'This should be ignored.'
+        }
+      });
+
+    expect(staleSummaryCallback.status).toBe(202);
+    expect(staleSummaryCallback.body.state).toBe('transcribing');
+    expect(staleSummaryCallback.body.processingStage).toBe('generating-summary');
+    expect(staleSummaryCallback.body.summaryArtifact).toBeUndefined();
+  });
+
+  it('ignores a stale recording callback after the recording lease has already been released', async () => {
+    const app = createApp();
+
+    const created = await request(app)
+      .post('/recording-jobs')
+      .send({
+        meetingUrl: 'https://meet.google.com/abc-defg-hij'
+      });
+
+    expect(created.status).toBe(201);
+
+    const claim = await request(app)
+      .post('/recording-workers/claims')
+      .send({
+        workerId: 'worker-alpha'
+      });
+
+    expect(claim.status).toBe(200);
+
+    const artifactStored = await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'recording-artifact-stored',
+        leaseToken: claim.body.leaseToken,
+        recordingArtifact: {
+          storageKey: 'recordings/job_stale_recording/meeting.webm',
+          downloadUrl: 'https://storage.example.test/recordings/job_stale_recording/meeting.webm',
+          contentType: 'video/webm'
+        }
+      });
+
+    expect(artifactStored.status).toBe(202);
+    expect(artifactStored.body.state).toBe('transcribing');
+
+    const staleFailed = await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'failed',
+        leaseToken: claim.body.leaseToken,
+        failure: {
+          code: 'stale-recording-worker',
+          message: 'This stale callback should be ignored.'
+        }
+      });
+
+    expect(staleFailed.status).toBe(202);
+    expect(staleFailed.body.state).toBe('transcribing');
+    expect(staleFailed.body.failureCode).toBeUndefined();
+    expect(staleFailed.body.recordingArtifact.storageKey).toBe(
+      'recordings/job_stale_recording/meeting.webm'
+    );
+  });
+
   it('accepts large transcript artifact callbacks for long recordings', async () => {
     const app = createApp();
 
@@ -633,12 +938,12 @@ describe('recording jobs API', () => {
       });
 
     expect(largeTranscriptCallback.status).toBe(202);
-    expect(largeTranscriptCallback.body.state).toBe('completed');
+    expect(largeTranscriptCallback.body.state).toBe('transcribing');
 
     const fetched = await request(app).get(`/recording-jobs/${created.body.id}`);
 
     expect(fetched.status).toBe(200);
-    expect(fetched.body.state).toBe('completed');
+    expect(fetched.body.state).toBe('transcribing');
     expect(fetched.body.transcriptArtifact.segments).toHaveLength(3000);
   });
 
@@ -680,6 +985,167 @@ describe('recording jobs API', () => {
     expect(listed.body.jobs).toHaveLength(1);
     expect(listed.body.jobs[0].submitterId).toBe('operator-a');
     expect(listed.body.jobs[0].requestedJoinName).toBe('Solomon - NoteTaker');
+  });
+
+  it('returns lightweight operator job lists and full job details separately', async () => {
+    const app = createApp();
+
+    const created = await request(app)
+      .post('/api/operator/jobs/meetings')
+      .send({
+        submitterId: 'operator-list',
+        meetingUrl: 'https://meet.google.com/lit-ejob-lst'
+      });
+
+    await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'recording-artifact-stored',
+        recordingArtifact: {
+          storageKey: 'recordings/job_list/meeting.webm',
+          downloadUrl: 'https://storage.example.test/recordings/job_list/meeting.webm',
+          contentType: 'video/webm'
+        }
+      });
+
+    await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'transcript-artifact-stored',
+        transcriptArtifact: {
+          storageKey: 'transcripts/job_list/transcript.json',
+          downloadUrl: 'https://storage.example.test/transcripts/job_list/transcript.json',
+          contentType: 'application/json',
+          language: 'en',
+          segments: [{ startMs: 0, endMs: 1000, text: 'hello list details' }]
+        }
+      });
+
+    const listed = await request(app)
+      .get('/api/operator/jobs')
+      .query({ submitterId: 'operator-list' });
+
+    expect(listed.status).toBe(200);
+    expect(listed.body.jobs[0].transcriptArtifact).toBeUndefined();
+    expect(listed.body.jobs[0].summaryArtifact).toBeUndefined();
+    expect(listed.body.jobs[0].hasTranscript).toBe(true);
+
+    const detailed = await request(app)
+      .get(`/api/operator/jobs/${created.body.id}`)
+      .query({ submitterId: 'operator-list' });
+
+    expect(detailed.status).toBe(200);
+    expect(detailed.body.transcriptArtifact.segments).toHaveLength(1);
+  });
+
+  it('paginates operator job lists and returns counts with a cursor', async () => {
+    const app = createApp();
+
+    const first = await request(app)
+      .post('/api/operator/jobs/meetings')
+      .send({
+        submitterId: 'operator-page',
+        meetingUrl: 'https://meet.google.com/aaa-bbbb-ccc'
+      });
+
+    const second = await request(app)
+      .post('/api/operator/jobs/meetings')
+      .send({
+        submitterId: 'operator-page',
+        meetingUrl: 'https://meet.google.com/ddd-eeee-fff'
+      });
+
+    const third = await request(app)
+      .post('/api/operator/jobs/meetings')
+      .send({
+        submitterId: 'operator-page',
+        meetingUrl: 'https://meet.google.com/ggg-hhhh-iii'
+      });
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(third.status).toBe(201);
+
+    const pageOne = await request(app)
+      .get('/api/operator/jobs')
+      .query({ submitterId: 'operator-page', pageSize: 2 });
+
+    expect(pageOne.status).toBe(200);
+    expect(pageOne.body.jobs).toHaveLength(2);
+    expect(pageOne.body.stats.totalCount).toBe(3);
+    expect(pageOne.body.stats.queuedCount).toBe(3);
+    expect(pageOne.body.pageInfo.hasMore).toBe(true);
+    expect(typeof pageOne.body.pageInfo.nextCursor).toBe('string');
+
+    const pageTwo = await request(app)
+      .get('/api/operator/jobs')
+      .query({
+        submitterId: 'operator-page',
+        pageSize: 2,
+        cursor: pageOne.body.pageInfo.nextCursor
+      });
+
+    expect(pageTwo.status).toBe(200);
+    expect(pageTwo.body.jobs).toHaveLength(1);
+    expect(pageTwo.body.pageInfo.hasMore).toBe(false);
+
+    const combinedIds = [...pageOne.body.jobs, ...pageTwo.body.jobs].map((job) => job.id);
+
+    expect(new Set(combinedIds).size).toBe(3);
+    expect(combinedIds).toEqual(
+      expect.arrayContaining([first.body.id, second.body.id, third.body.id])
+    );
+    expect(pageTwo.body.jobs[0].id).not.toBe(pageOne.body.jobs[0].id);
+    expect(pageTwo.body.jobs[0].id).not.toBe(pageOne.body.jobs[1].id);
+  });
+
+  it('requires an internal service token for worker routes when configured', async () => {
+    const app = createApp(undefined, {
+      internalServiceToken: 'internal-secret'
+    });
+
+    await request(app)
+      .post('/recording-jobs')
+      .send({
+        meetingUrl: 'https://meet.google.com/int-erna-ltk'
+      });
+
+    const unauthenticatedClaim = await request(app)
+      .post('/recording-workers/claims')
+      .send({
+        workerId: 'worker-alpha'
+      });
+
+    expect(unauthenticatedClaim.status).toBe(401);
+
+    const authenticatedClaim = await request(app)
+      .post('/recording-workers/claims')
+      .set('x-internal-service-token', 'internal-secret')
+      .send({
+        workerId: 'worker-alpha'
+      });
+
+    expect(authenticatedClaim.status).toBe(200);
+    expect(authenticatedClaim.body.leaseToken).toBeTruthy();
+
+    const unauthenticatedHeartbeat = await request(app)
+      .post(`/recording-jobs/${authenticatedClaim.body.id}/leases/heartbeat`)
+      .send({
+        stage: 'recording',
+        leaseToken: authenticatedClaim.body.leaseToken
+      });
+
+    expect(unauthenticatedHeartbeat.status).toBe(401);
+
+    const authenticatedHeartbeat = await request(app)
+      .post(`/recording-jobs/${authenticatedClaim.body.id}/leases/heartbeat`)
+      .set('x-internal-service-token', 'internal-secret')
+      .send({
+        stage: 'recording',
+        leaseToken: authenticatedClaim.body.leaseToken
+      });
+
+    expect(authenticatedHeartbeat.status).toBe(200);
   });
 
   it('keeps additional meeting jobs queued while another meeting bot job is already active', async () => {
@@ -753,6 +1219,35 @@ describe('recording jobs API', () => {
     expect(claim.body.recordingArtifact.storageKey).toContain('meeting-note.wav');
   });
 
+  it('rejects uploaded jobs after the configured transcription backlog limit is reached', async () => {
+    const uploadedAudioStorage = new FakeUploadedAudioStorage();
+    const app = createApp(undefined, {
+      uploadedAudioStorage,
+      maxTranscriptionJobBacklog: 1
+    });
+
+    const first = await request(app)
+      .post('/api/operator/jobs/uploads')
+      .field('submitterId', 'operator-a')
+      .attach('audio', Buffer.from('fake-audio-a'), {
+        filename: 'first.wav',
+        contentType: 'audio/wav'
+      });
+
+    const second = await request(app)
+      .post('/api/operator/jobs/uploads')
+      .field('submitterId', 'operator-b')
+      .attach('audio', Buffer.from('fake-audio-b'), {
+        filename: 'second.wav',
+        contentType: 'audio/wav'
+      });
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(409);
+    expect(second.body.error.code).toBe('transcription-capacity-exceeded');
+    expect(uploadedAudioStorage.uploads).toHaveLength(1);
+  });
+
   it('normalizes mojibake uploaded filenames back to readable utf-8 text', async () => {
     const uploadedAudioStorage = new FakeUploadedAudioStorage();
     const app = createApp(undefined, { uploadedAudioStorage });
@@ -772,7 +1267,7 @@ describe('recording jobs API', () => {
     expect(uploadedAudioStorage.uploads[0]?.originalName).toBe(readableName);
   });
 
-  it('requests meeting bot exit for the submitter without forcing an immediate failed outcome', async () => {
+  it('marks a joining meeting job as not admitted when the operator stops it before any recording starts', async () => {
     const meetingBotController = new FakeMeetingBotController();
     const app = createApp(undefined, { meetingBotController });
 
@@ -794,12 +1289,40 @@ describe('recording jobs API', () => {
     expect(stopped.status).toBe(202);
     expect(stopped.body.job.id).toBe(created.body.id);
     expect(meetingBotController.stopCount).toBe(1);
-    expect(stopped.body.job.failureCode).toBeUndefined();
-    expect(stopped.body.job.processingStage).toBe('finalizing-recording');
+    expect(stopped.body.job.state).toBe('failed');
+    expect(stopped.body.job.failureCode).toBe('meeting-not-admitted');
+    expect(stopped.body.job.processingStage).toBe('failed');
 
     const fetched = await request(app).get(`/recording-jobs/${created.body.id}`);
-    expect(fetched.body.state).toBe('joining');
-    expect(fetched.body.processingStage).toBe('finalizing-recording');
+    expect(fetched.body.state).toBe('failed');
+    expect(fetched.body.failureCode).toBe('meeting-not-admitted');
+  });
+
+  it('keeps finalizing a meeting job when the operator stops after recording has started', async () => {
+    const repository = new InMemoryRecordingJobRepository();
+    const meetingBotController = new FakeMeetingBotController();
+    const activeRecordingJob = transitionRecordingJobState(
+      assignRecordingJobToWorker(
+        createRecordingJob({
+          meetingUrl: 'https://teams.live.com/meet/9343114235416?p=I4yS5pia1gFxNYOOsV',
+          platform: 'microsoft-teams',
+          submitterId: 'operator-a'
+        }),
+        'worker-alpha'
+      ),
+      'recording'
+    );
+    await repository.save(activeRecordingJob);
+    const app = createApp(repository, { meetingBotController });
+
+    const stopped = await request(app)
+      .post('/api/operator/stop-current')
+      .send({ submitterId: 'operator-a' });
+
+    expect(stopped.status).toBe(202);
+    expect(stopped.body.job.state).toBe('recording');
+    expect(stopped.body.job.failureCode).toBeUndefined();
+    expect(stopped.body.job.processingStage).toBe('finalizing-recording');
   });
 
   it('still accepts a recording completion webhook after an operator requested bot exit', async () => {
@@ -843,7 +1366,7 @@ describe('recording jobs API', () => {
     expect(completion.body.state).toBe('transcribing');
   });
 
-  it('shows recording as the display state when the meeting bot runtime is busy', async () => {
+  it('keeps joining as the display state while the meeting bot is busy but no recording state was reported yet', async () => {
     const meetingBotRuntimeMonitor = new FakeMeetingBotRuntimeMonitor(true);
     const repository = new InMemoryRecordingJobRepository();
     await repository.save(
@@ -861,7 +1384,7 @@ describe('recording jobs API', () => {
     const listed = await request(app).get('/api/operator/jobs').query({ submitterId: 'operator-a' });
 
     expect(listed.status).toBe(200);
-    expect(listed.body.jobs[0].displayState).toBe('recording');
+    expect(listed.body.jobs[0].displayState).toBe('joining');
   });
 
   it('does not claim a queued meeting job while the meeting bot runtime is already busy', async () => {
@@ -881,6 +1404,54 @@ describe('recording jobs API', () => {
       .send({ workerId: 'worker-alpha' });
 
     expect(claim.status).toBe(204);
+  });
+
+  it('marks a meeting job as waiting for recording capacity when the shared meeting bot is busy', async () => {
+    const app = createApp(undefined, {
+      meetingBotRuntimeMonitor: new FakeMeetingBotRuntimeMonitor(true),
+      maxMeetingJobBacklog: 1
+    });
+
+    const created = await request(app)
+      .post('/api/operator/jobs/meetings')
+      .send({
+        submitterId: 'operator-a',
+        meetingUrl: 'https://teams.live.com/meet/9343114235416?p=I4yS5pia1gFxNYOOsV'
+      });
+
+    expect(created.status).toBe(201);
+    expect(created.body.state).toBe('queued');
+    expect(created.body.processingStage).toBe('waiting-for-recording-capacity');
+    expect(created.body.processingMessage).toBe('Waiting for meeting bot capacity.');
+
+    const listed = await request(app).get('/api/operator/jobs').query({ submitterId: 'operator-a' });
+    expect(listed.status).toBe(200);
+    expect(listed.body.jobs[0].processingStage).toBe('waiting-for-recording-capacity');
+  });
+
+  it('rejects new meeting submissions after the configured meeting backlog limit is reached', async () => {
+    const app = createApp(undefined, {
+      meetingBotRuntimeMonitor: new FakeMeetingBotRuntimeMonitor(true),
+      maxMeetingJobBacklog: 1
+    });
+
+    const first = await request(app)
+      .post('/api/operator/jobs/meetings')
+      .send({
+        submitterId: 'operator-a',
+        meetingUrl: 'https://teams.live.com/meet/9343114235416?p=I4yS5pia1gFxNYOOsV'
+      });
+
+    const second = await request(app)
+      .post('/api/operator/jobs/meetings')
+      .send({
+        submitterId: 'operator-b',
+        meetingUrl: 'https://meet.google.com/ddd-eeee-fff'
+      });
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(409);
+    expect(second.body.error.code).toBe('meeting-capacity-exceeded');
   });
 
   it('allows the next meeting job to start while another meeting job is already transcribing', async () => {
@@ -915,6 +1486,8 @@ describe('recording jobs API', () => {
         meetingUrl: 'https://meet.google.com/ddd-eeee-fff'
       });
 
+    expect(second.status).toBe(201);
+
     const claim = await request(app)
       .post('/recording-workers/claims')
       .send({ workerId: 'worker-beta' });
@@ -922,6 +1495,7 @@ describe('recording jobs API', () => {
     expect(claim.status).toBe(200);
     expect(claim.body.id).toBe(second.body.id);
     expect(claim.body.state).toBe('joining');
+    expect(claim.body.processingStage).toBe('joining-meeting');
   });
 
   it('automatically clears stale joining jobs when the meeting bot runtime is idle', async () => {
@@ -962,7 +1536,7 @@ describe('recording jobs API', () => {
     expect(staleFetched.body.failureCode).toBe('meeting-bot-stale');
   });
 
-  it('automatically clears stale finalizing meeting jobs when the runtime is idle', async () => {
+  it('marks stale finalizing meeting jobs without a recording artifact as not admitted when the runtime is idle', async () => {
     const repository = new InMemoryRecordingJobRepository();
     const staleFinalizingJob = {
       ...assignRecordingJobToWorker(
@@ -975,6 +1549,42 @@ describe('recording jobs API', () => {
       ),
       processingStage: 'finalizing-recording',
       processingMessage: 'The operator requested the meeting bot to leave and finalize the recording.',
+      updatedAt: '2026-03-30T00:00:00.000Z'
+    };
+    await repository.save(staleFinalizingJob);
+
+    const app = createApp(repository, {
+      meetingBotRuntimeMonitor: new FakeMeetingBotRuntimeMonitor(false)
+    });
+
+    const listed = await request(app).get('/api/operator/jobs').query({ submitterId: 'operator-stale' });
+
+    expect(listed.status).toBe(200);
+    expect(listed.body.jobs[0].state).toBe('failed');
+    expect(listed.body.jobs[0].failureCode).toBe('meeting-not-admitted');
+  });
+
+  it('still marks stale finalizing meeting jobs with a recording artifact as finalization timeouts', async () => {
+    const repository = new InMemoryRecordingJobRepository();
+    const staleFinalizingJob = {
+      ...transitionRecordingJobState(
+        assignRecordingJobToWorker(
+          createRecordingJob({
+            meetingUrl: 'https://teams.live.com/meet/9343114235416?p=I4yS5pia1gFxNYOOsV',
+            platform: 'microsoft-teams',
+            submitterId: 'operator-stale'
+          }),
+          'worker-stale'
+        ),
+        'recording'
+      ),
+      processingStage: 'finalizing-recording',
+      processingMessage: 'The operator requested the meeting bot to leave and finalize the recording.',
+      recordingArtifact: {
+        storageKey: 'recordings/job_stale_timeout/meeting.webm',
+        downloadUrl: 'https://storage.example.test/recordings/job_stale_timeout/meeting.webm',
+        contentType: 'video/webm'
+      },
       updatedAt: '2026-03-30T00:00:00.000Z'
     };
     await repository.save(staleFinalizingJob);

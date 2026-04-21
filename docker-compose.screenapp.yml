@@ -21,22 +21,34 @@ services:
 
   transcription-worker:
     environment:
-      WHISPER_MODEL: large-v3
+      WHISPER_MODEL: tiny
       WHISPER_DEVICE: cuda
       WHISPER_COMPUTE_TYPE: float16
       SUMMARY_ENABLED: "true"
-      SUMMARY_MODEL: gpt-5.3-codex-spark
+      SUMMARY_MODEL: gpt-5.4-mini
       SUMMARY_REASONING_EFFORT: medium
       CODEX_CLI_PATH: codex
       CODEX_HOME: /codex-home
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
-    gpus: all
+    volumes:
+      - ${CODEX_HOME}:/codex-home
+
+  summary-worker:
+    environment:
+      SUMMARY_ENABLED: "true"
+      SUMMARY_MODEL: gpt-5.4-mini
+      SUMMARY_REASONING_EFFORT: medium
+      CODEX_CLI_PATH: codex
+      CODEX_HOME: /codex-home
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - ${CODEX_HOME}:/codex-home
 
   meeting-bot:
     image: ghcr.io/screenappai/meeting-bot:latest
+    restart: unless-stopped
     entrypoint:
       - /bin/bash
       - /opt/ainotetacker/meeting-bot-entrypoint.sh
@@ -45,7 +57,7 @@ services:
       - dist/index.js
     environment:
       NODE_ENV: production
-      AUTH_BASE_URL_V2: http://control-plane:3000/v2
+      AUTH_BASE_URL_V2: http://control-plane:3000/v2/${INTERNAL_SERVICE_TOKEN:-internal-token}
       MEETING_INACTIVITY_MINUTES: "52560000"
       REDIS_CONSUMER_ENABLED: "false"
       STORAGE_PROVIDER: s3
@@ -57,11 +69,14 @@ services:
       S3_REGION: us-east-1
       S3_USE_MINIO_COMPATIBILITY: "true"
       NOTIFY_WEBHOOK_ENABLED: "true"
-      NOTIFY_WEBHOOK_URL: http://control-plane:3000/integrations/meeting-bot/completions
+      NOTIFY_WEBHOOK_URL: http://control-plane:3000/integrations/meeting-bot/completions?token=${INTERNAL_SERVICE_TOKEN:-internal-token}
       UPLOADER_FILE_EXTENSION: .webm
     volumes:
       - ./ops/meeting-bot/entrypoint.sh:/opt/ainotetacker/meeting-bot-entrypoint.sh:ro
+      - ./ops/meeting-bot/GoogleMeetBot.js:/usr/src/app/dist/bots/GoogleMeetBot.js:ro
       - ./ops/meeting-bot/MicrosoftTeamsBot.js:/usr/src/app/dist/bots/MicrosoftTeamsBot.js:ro
+      - ./ops/meeting-bot/ZoomBot.js:/usr/src/app/dist/bots/ZoomBot.js:ro
+      - ./ops/meeting-bot/join_request_evidence.cjs:/usr/src/app/dist/bots/join_request_evidence.cjs:ro
     depends_on:
       control-plane:
         condition: service_healthy

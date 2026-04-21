@@ -67,4 +67,32 @@ describe('ControlPlaneHttpClient', () => {
     expect(fetchedJob.state).toBe('recording');
     expect(fetchedJob.assignedWorkerId).toBe('worker-alpha');
   });
+
+  it('posts a recording lease heartbeat to the control plane', async () => {
+    await fetch(`${baseUrl}/recording-jobs`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        meetingUrl: 'https://meet.google.com/abc-defg-hij'
+      })
+    });
+
+    const client = new ControlPlaneHttpClient({
+      baseUrl
+    });
+
+    const claimedJob = await client.claimNextJob('worker-heartbeat');
+
+    expect(claimedJob).toBeDefined();
+    expect(claimedJob?.leaseToken).toBeTruthy();
+
+    await client.postLeaseHeartbeat(claimedJob!.id, 'recording', claimedJob!.leaseToken);
+
+    const fetchedResponse = await fetch(`${baseUrl}/recording-jobs/${claimedJob!.id}`);
+    const fetchedJob = await fetchedResponse.json();
+
+    expect(fetchedJob.assignedWorkerId).toBe('worker-heartbeat');
+  });
 });

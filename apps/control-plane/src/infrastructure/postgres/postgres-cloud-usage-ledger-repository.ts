@@ -1,8 +1,10 @@
 import type {
+  CloudUsageCostSummary,
   CloudUsageLedgerEntry,
   CloudUsageProvider,
   CloudUsageLedgerRepository
 } from '../../domain/cloud-usage-ledger-repository.js';
+import { roundUsd } from '../../domain/cloud-usage.js';
 
 type Queryable = {
   query: <TRow extends Record<string, unknown>>(
@@ -13,6 +15,7 @@ type Queryable = {
 
 type LedgerRow = {
   id: string;
+  entry_key: string | null;
   job_id: string;
   submitter_id: string;
   quota_day_key: string;
@@ -31,6 +34,7 @@ type LedgerRow = {
 const schemaSql = `
   CREATE TABLE IF NOT EXISTS cloud_usage_ledger (
     id TEXT PRIMARY KEY,
+    entry_key TEXT UNIQUE,
     job_id TEXT NOT NULL,
     submitter_id TEXT NOT NULL,
     quota_day_key TEXT NOT NULL,
@@ -45,6 +49,22 @@ const schemaSql = `
     detail JSONB,
     created_at TIMESTAMPTZ NOT NULL
   );
+
+  ALTER TABLE cloud_usage_ledger
+  ADD COLUMN IF NOT EXISTS entry_key TEXT;
+
+  CREATE UNIQUE INDEX IF NOT EXISTS cloud_usage_ledger_entry_key_key
+  ON cloud_usage_ledger (entry_key)
+  WHERE entry_key IS NOT NULL;
+
+  CREATE INDEX IF NOT EXISTS cloud_usage_ledger_job_created_at_idx
+  ON cloud_usage_ledger (job_id, created_at ASC);
+
+  CREATE INDEX IF NOT EXISTS cloud_usage_ledger_quota_day_created_at_idx
+  ON cloud_usage_ledger (quota_day_key, created_at ASC);
+
+  CREATE INDEX IF NOT EXISTS cloud_usage_ledger_submitter_day_created_at_idx
+  ON cloud_usage_ledger (submitter_id, quota_day_key, created_at ASC);
 `;
 
 const nextId = (): string => `usage_${crypto.randomUUID().replace(/-/g, '')}`;
@@ -55,6 +75,7 @@ const toNumber = (value: number | string): number =>
 
 const mapRow = (row: LedgerRow): CloudUsageLedgerEntry => ({
   id: row.id,
+  entryKey: row.entry_key ?? undefined,
   jobId: row.job_id,
   submitterId: row.submitter_id,
   quotaDayKey: row.quota_day_key,
@@ -85,6 +106,7 @@ export class PostgresCloudUsageLedgerRepository implements CloudUsageLedgerRepos
       `
         INSERT INTO cloud_usage_ledger (
           id,
+          entry_key,
           job_id,
           submitter_id,
           quota_day_key,
@@ -99,11 +121,16 @@ export class PostgresCloudUsageLedgerRepository implements CloudUsageLedgerRepos
           detail,
           created_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::timestamptz)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15::timestamptz)
+        ON CONFLICT (entry_key) DO UPDATE SET
+          usage_quantity = EXCLUDED.usage_quantity,
+          cost_usd = EXCLUDED.cost_usd,
+          detail = EXCLUDED.detail
         RETURNING *
       `,
       [
         nextId(),
+        input.entryKey ?? null,
         input.jobId,
         input.submitterId,
         input.quotaDayKey,
@@ -167,5 +194,59 @@ export class PostgresCloudUsageLedgerRepository implements CloudUsageLedgerRepos
     );
 
     return result.rows.map(mapRow);
+  }
+
+  async summarizeActualCostByJobIds(
+    jobIds: string[]
+  ): Promise<Record<string, CloudUsageCostSummary>> {
+    if (jobIds.length === 0) {
+      return {};
+    }
+
+    const placeholders = jobIds.map((_, index) => `$${index + 1}`).join(', ');
+    const result = await this.database.query<{
+      job_id: string;
+      actual_transcription_cost_usd: number | string;
+      actual_summary_cost_usd: number | string;
+    }>(
+      `
+        SELECT
+          job_id,
+          COALESCE(
+            SUM(CASE WHEN entry_type = 'actual' AND stage = 'transcription' THEN cost_usd ELSE 0 END),
+            0
+          ) AS actual_transcription_cost_usd,
+          COALESCE(
+            SUM(CASE WHEN entry_type = 'actual' AND stage = 'summary' THEN cost_usd ELSE 0 END),
+            0
+          ) AS actual_summary_cost_usd
+        FROM cloud_usage_ledger
+        WHERE job_id IN (${placeholders})
+        GROUP BY job_id
+      `,
+      jobIds
+    );
+
+    return Object.fromEntries(
+      result.rows.map((row) => {
+        const actualTranscriptionCostUsd =
+          typeof row.actual_transcription_cost_usd === 'number'
+            ? row.actual_transcription_cost_usd
+            : Number(row.actual_transcription_cost_usd);
+        const actualSummaryCostUsd =
+          typeof row.actual_summary_cost_usd === 'number'
+            ? row.actual_summary_cost_usd
+            : Number(row.actual_summary_cost_usd);
+
+        return [
+          row.job_id,
+          {
+            actualTranscriptionCostUsd: roundUsd(actualTranscriptionCostUsd),
+            actualSummaryCostUsd: roundUsd(actualSummaryCostUsd),
+            actualCloudCostUsd: roundUsd(actualTranscriptionCostUsd + actualSummaryCostUsd)
+          }
+        ];
+      })
+    );
   }
 }

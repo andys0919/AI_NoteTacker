@@ -16,6 +16,7 @@ describe('admin shell markup', () => {
     expect(html).toContain('AI 治理設定');
     expect(html).toContain('admin-provider-panel');
     expect(html).toContain('admin-usage-report-list');
+    expect(html).toContain('admin-runtime-health-panel');
     expect(html).toContain('/admin.js');
   });
 
@@ -26,6 +27,7 @@ describe('admin shell markup', () => {
 
     expect(response.status).toBe(200);
     expect(response.text).toContain('admin-provider-panel');
+    expect(response.text).toContain('admin-runtime-health-panel');
     expect(response.text).toContain('/admin.js');
   });
 });

@@ -13,7 +13,7 @@ export class StubRecordingExecutor implements RecordingWorkerExecutor {
     await client.postJobEvent(job.id, {
       type: 'state-updated',
       state: 'recording'
-    });
+    }, job.leaseToken);
 
     await client.postJobEvent(job.id, {
       type: 'recording-artifact-stored',
@@ -22,6 +22,6 @@ export class StubRecordingExecutor implements RecordingWorkerExecutor {
         downloadUrl: `${this.options.artifactBaseUrl}/recordings/${job.id}/meeting.webm`,
         contentType: 'video/webm'
       }
-    });
+    }, job.leaseToken);
   }
 }

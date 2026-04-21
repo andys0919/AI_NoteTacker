@@ -1,4 +1,5 @@
 import { createOperatorAuthClient } from '/auth-client.js';
+import { getAuthEntryViewModel } from '/auth-entry.js';
 import {
   formatJobTimestamp,
   getEmptyStateMessage,
@@ -63,6 +64,9 @@ const elements = {
   quotaBreakdown: document.querySelector('#quota-breakdown'),
   sessionCard: document.querySelector('#session-card'),
   sessionEmail: document.querySelector('#session-email'),
+  signInButton: document.querySelector('#sign-in-button'),
+  signInCard: document.querySelector('#sign-in-card'),
+  signInHint: document.querySelector('#sign-in-hint'),
   signOutButton: document.querySelector('#sign-out-button'),
   submitterId: document.querySelector('#submitter-id'),
   submitterIdLabel: document.querySelector('#submitter-id-label'),
@@ -128,13 +132,30 @@ let operatorConfig = {
 let selectedTemplateId = 'general';
 let currentQuickFilter = 'all';
 let pendingSharedJobId = '';
+let currentJobs = [];
+let currentJobStats = null;
+let currentJobsPageInfo = {
+  pageSize: 25,
+  hasMore: false,
+  nextCursor: null
+};
 
 const updateIdentityDisplay = () => {
+  const authEntryViewModel = getAuthEntryViewModel({
+    authEnabled,
+    currentOperatorEmail,
+    pendingAuthEmail
+  });
+
   elements.submitterId.textContent = authEnabled
     ? currentOperatorEmail || '待登入'
     : '訪客模式';
   elements.submitterId.title = authEnabled ? currentOperatorEmail || '' : currentSubmitterId;
   elements.submitterIdLabel.textContent = authEnabled ? '目前身分' : '使用模式';
+  elements.signInCard.hidden = authEntryViewModel.hidden;
+  elements.signInButton.disabled = authEntryViewModel.disabled;
+  elements.signInButton.textContent = authEntryViewModel.buttonText;
+  elements.signInHint.textContent = authEntryViewModel.hintText;
   elements.sessionCard.hidden = !authEnabled || !currentOperatorEmail;
   elements.sessionEmail.textContent = currentOperatorEmail || '-';
 };
@@ -187,6 +208,7 @@ const syncOtpUi = () => {
   elements.authCopy.textContent = hasPendingOtp
     ? `驗證碼已寄到 ${pendingAuthEmail}。請輸入信中的驗證碼完成登入。`
     : '輸入公司 email 後，系統會寄出一次性驗證碼。驗證完成後，瀏覽器會記住你的登入狀態。';
+  updateIdentityDisplay();
 };
 
 const collectFormElements = (root, selector) => (root ? [...root.querySelectorAll(selector)] : []);
@@ -558,6 +580,10 @@ const createActionBlock = (job, runtimeState) => {
       return '<button class="mini-button history" type="button" data-action="delete-history">刪除紀錄</button>';
     }
 
+    if (action === 'view-details') {
+      return '<button class="mini-button export" type="button" data-action="view-details">查看內容</button>';
+    }
+
     return '<button class="mini-button export" type="button" data-action="export-markdown">下載 MD</button>';
   });
 
@@ -580,13 +606,13 @@ const createJobCard = (job) => {
     typeof viewModel.progressProcessedMs === 'number' && typeof viewModel.progressTotalMs === 'number'
       ? `${formatDuration(viewModel.progressProcessedMs)} / ${formatDuration(viewModel.progressTotalMs)}`
       : '';
-  const summaryBlock = job.summaryArtifact
+  const summaryBlock = job.summaryArtifact || job.summaryPreview
     ? `
       <details open>
-        <summary>AI 摘要</summary>
-        <pre class="summary-text">${job.summaryArtifact.text}</pre>
+        <summary>AI 摘要${job.summaryArtifact ? '' : '（預覽）'}</summary>
+        <pre class="summary-text">${job.summaryArtifact?.text ?? job.summaryPreview}</pre>
         ${
-          job.summaryArtifact.structured
+          job.summaryArtifact?.structured
             ? `
               <div class="structured-summary">
                 ${[
@@ -616,13 +642,13 @@ const createJobCard = (job) => {
     `
     : '';
 
-  const transcriptPreview = job.transcriptArtifact
+  const transcriptPreview = job.transcriptArtifact || job.transcriptPreview
     ? `
       <details>
-        <summary>逐字稿</summary>
-        <pre class="transcript-preview">${job.transcriptArtifact.segments
-          .map((segment) => segment.text)
-          .join('\n')}</pre>
+        <summary>逐字稿${job.transcriptArtifact ? '' : '（預覽）'}</summary>
+        <pre class="transcript-preview">${job.transcriptArtifact
+          ? job.transcriptArtifact.segments.map((segment) => segment.text).join('\n')
+          : job.transcriptPreview}</pre>
       </details>
     `
     : '';
@@ -804,6 +830,19 @@ const createJobCard = (job) => {
     });
   }
 
+  const detailsButton = card.querySelector('[data-action="view-details"]');
+  if (detailsButton) {
+    detailsButton.addEventListener('click', async () => {
+      try {
+        setBanner('正在載入完整內容...');
+        await fetchJobDetails(job.id);
+        setBanner('');
+      } catch (error) {
+        setBanner(error instanceof Error ? error.message : String(error), 'error');
+      }
+    });
+  }
+
   const exportFormats = {
     'export-markdown': 'markdown'
   };
@@ -830,10 +869,14 @@ const createJobCard = (job) => {
 };
 
 const renderJobs = (jobs) => {
-  const activeCount = jobs.filter((job) => activeStates.has(job.state)).length;
-  const queuedCount = jobs.filter((job) => job.state === 'queued').length;
-  const completedCount = jobs.filter((job) => job.state === 'completed').length;
-  const terminalCount = jobs.filter((job) => isTerminalJob(job)).length;
+  currentJobs = jobs;
+  const activeCount = currentJobStats?.activeCount ?? jobs.filter((job) => activeStates.has(job.state)).length;
+  const queuedCount = currentJobStats?.queuedCount ?? jobs.filter((job) => job.state === 'queued').length;
+  const completedCount = currentJobStats?.completedCount ?? jobs.filter((job) => job.state === 'completed').length;
+  const terminalCount =
+    currentJobStats
+      ? (currentJobStats.completedCount || 0) + (currentJobStats.failedCount || 0)
+      : jobs.filter((job) => isTerminalJob(job)).length;
   const activeSearch = elements.archiveSearch?.value.trim() ?? '';
   let visibleJobs = filterJobsByQuickFilter(jobs, currentQuickFilter);
 
@@ -864,7 +907,31 @@ const renderJobs = (jobs) => {
     return;
   }
 
-  elements.jobList.replaceChildren(...visibleJobs.map(createJobCard));
+  const nodes = visibleJobs.map(createJobCard);
+
+  if (currentJobsPageInfo.hasMore && !activeSearch) {
+    const loadMore = document.createElement('div');
+    loadMore.className = 'empty-state';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'mini-button export';
+    button.textContent = '載入更多';
+    button.addEventListener('click', async () => {
+      try {
+        button.disabled = true;
+        setBanner('正在載入更多紀錄...');
+        await fetchJobs({ append: true });
+        setBanner('');
+      } catch (error) {
+        button.disabled = false;
+        setBanner(error instanceof Error ? error.message : String(error), 'error');
+      }
+    });
+    loadMore.append(button);
+    nodes.push(loadMore);
+  }
+
+  elements.jobList.replaceChildren(...nodes);
   focusSharedJobIfNeeded();
 };
 
@@ -936,8 +1003,29 @@ const fetchAdminProviderPanel = async () => {
   );
 };
 
-const fetchJobs = async () => {
+const mergeJobsById = (existingJobs, incomingJobs) => {
+  const nextById = new Map(existingJobs.map((job) => [job.id, job]));
+  incomingJobs.forEach((job) => {
+    nextById.set(job.id, job);
+  });
+
+  return [...nextById.values()].sort((left, right) => {
+    if (left.createdAt === right.createdAt) {
+      return right.id.localeCompare(left.id);
+    }
+
+    return right.createdAt.localeCompare(left.createdAt);
+  });
+};
+
+const fetchJobs = async ({ append = false } = {}) => {
   if (authEnabled && !currentOperatorEmail) {
+    currentJobStats = null;
+    currentJobsPageInfo = {
+      pageSize: 25,
+      hasMore: false,
+      nextCursor: null
+    };
     renderJobs([]);
     return;
   }
@@ -948,6 +1036,11 @@ const fetchJobs = async () => {
 
   if (searchQuery) {
     url.searchParams.set('q', searchQuery);
+  } else {
+    url.searchParams.set('pageSize', String(currentJobsPageInfo.pageSize || 25));
+    if (append && currentJobsPageInfo.nextCursor) {
+      url.searchParams.set('cursor', currentJobsPageInfo.nextCursor);
+    }
   }
 
   const response = await apiFetch(url);
@@ -956,7 +1049,37 @@ const fetchJobs = async () => {
   }
 
   const payload = await response.json();
-  renderJobs(payload.jobs);
+  currentJobStats = payload.stats || null;
+  currentJobsPageInfo = payload.pageInfo
+    ? {
+        pageSize: payload.pageInfo.pageSize || 25,
+        hasMore: Boolean(payload.pageInfo.hasMore),
+        nextCursor: payload.pageInfo.nextCursor || null
+      }
+    : {
+        pageSize: 25,
+        hasMore: false,
+        nextCursor: null
+      };
+  currentJobs = append ? mergeJobsById(currentJobs, payload.jobs) : payload.jobs;
+  renderJobs(currentJobs);
+};
+
+const fetchJobDetails = async (jobId) => {
+  const url = new URL(`/api/operator/jobs/${jobId}`, window.location.origin);
+
+  if (!authEnabled) {
+    url.searchParams.set('submitterId', currentSubmitterId);
+  }
+
+  const response = await apiFetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch job details: ${response.status}`);
+  }
+
+  const payload = await response.json();
+  currentJobs = currentJobs.map((job) => (job.id === jobId ? payload : job));
+  renderJobs(currentJobs);
 };
 
 const submitMeetingJob = async (event) => {
@@ -1128,6 +1251,21 @@ elements.otpVerifyButton.addEventListener('click', async () => {
   } finally {
     elements.otpVerifyButton.disabled = false;
   }
+});
+
+elements.signInButton.addEventListener('click', () => {
+  if (!authEnabled) {
+    setBanner('登入尚未啟用。請先設定 SUPABASE_URL 與 SUPABASE_PUBLISHABLE_KEY。', 'error');
+    return;
+  }
+
+  if (elements.authPanel.hidden) {
+    return;
+  }
+
+  elements.authPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const focusTarget = elements.otpField.hidden ? elements.authEmail : elements.authOtp;
+  focusTarget?.focus();
 });
 
 elements.meetingForm.addEventListener('submit', async (event) => {

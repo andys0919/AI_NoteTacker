@@ -17,13 +17,14 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
             config,
             {
                 "control_plane_base_url": "http://127.0.0.1:3000",
+                "internal_service_token": None,
                 "worker_id": "transcriber-alpha",
                 "deployment_mode": "default",
                 "whisper_model": "small",
                 "whisper_device": "cpu",
                 "whisper_compute_type": "int8",
                 "summary_enabled": False,
-                "summary_model": "gpt-5.3-codex-spark",
+                "summary_model": "gpt-5.4-mini",
                 "summary_reasoning_effort": "medium",
                 "codex_cli_path": "codex",
                 "azure_openai_summary_endpoint": None,
@@ -66,9 +67,9 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
 
         self.assertEqual(config["deployment_mode"], "local")
         self.assertEqual(config["whisper_device"], "cuda")
-        self.assertEqual(config["summary_model"], "gpt-5.3-codex-spark")
+        self.assertEqual(config["summary_model"], "gpt-5.4-mini")
 
-    def test_uses_cloud_deployment_defaults_for_azure_transcription_and_gpt_5_mini_summary(
+    def test_uses_cloud_deployment_defaults_for_azure_transcription_and_gpt_5_4_mini_summary(
         self,
     ) -> None:
         config = read_transcription_worker_config(
@@ -88,7 +89,7 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
             config["azure_openai_summary_endpoint"],
             "https://azure.example.test/openai/v1/chat/completions",
         )
-        self.assertEqual(config["summary_model"], "gpt-5-mini")
+        self.assertEqual(config["summary_model"], "gpt-5.4-mini")
 
 
 if __name__ == "__main__":

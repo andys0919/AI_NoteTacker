@@ -31,7 +31,7 @@ describe('PostgresTranscriptionProviderSettingsRepository', () => {
   it('persists and reloads the selected transcription provider', async () => {
     const initial = await repository.getCurrent();
     expect(initial.provider).toBe('self-hosted-whisper');
-    expect(initial.summaryModel).toBe('gpt-5-mini');
+    expect(initial.summaryModel).toBe('gpt-5.4-mini');
 
     const updated = await repository.setCurrent({
       provider: 'azure-openai-gpt-4o-mini-transcribe',
@@ -71,7 +71,7 @@ describe('PostgresTranscriptionProviderSettingsRepository', () => {
       localTranscriptionModel: 'large-v3',
       cloudTranscriptionModel: 'gpt-4o-mini-transcribe',
       summaryProvider: 'local-codex',
-      summaryModel: 'gpt-5-mini',
+      summaryModel: 'gpt-5.4-mini',
       pricingVersion: 'v1',
       defaultDailyCloudQuotaUsd: 5,
       liveMeetingReservationCapUsd: 1.5,
@@ -103,7 +103,7 @@ describe('PostgresTranscriptionProviderSettingsRepository', () => {
       localTranscriptionModel: 'large-v3',
       cloudTranscriptionModel: 'gpt-4o-mini-transcribe',
       summaryProvider: 'local-codex',
-      summaryModel: 'gpt-5-mini',
+      summaryModel: 'gpt-5.4-mini',
       pricingVersion: 'v1',
       defaultDailyCloudQuotaUsd: 5,
       liveMeetingReservationCapUsd: 1.5,

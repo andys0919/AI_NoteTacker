@@ -58,11 +58,51 @@ For full meeting-bot workflows:
 docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up -d --build
 ```
 
+After the first successful `up -d`, the long-running services use Docker's
+`restart: unless-stopped` policy, so they come back automatically after a host
+reboot as long as the Docker service starts on boot.
+
 Open:
 
 ```text
 http://localhost:3000
 ```
+
+## Auto Start On Boot
+
+This repo is configured so the long-running containers restart automatically
+after the machine reboots.
+
+One-time setup:
+
+```bash
+systemctl is-enabled docker
+```
+
+If that returns anything other than `enabled`, run:
+
+```bash
+sudo systemctl enable --now docker
+```
+
+Then start the stack once:
+
+Upload-only workflow:
+
+```bash
+docker compose up -d --build
+```
+
+Full meeting-bot workflow:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up -d --build
+```
+
+Notes:
+- A later reboot should bring the same containers back automatically.
+- If you run `docker compose down`, Docker removes the containers, so you must
+  run `docker compose up -d` again afterward.
 
 ## Use The Dashboard
 
@@ -75,7 +115,9 @@ http://localhost:3000
 
 Notes:
 - Meeting-link jobs are effectively single-slot because there is one shared meeting-bot runtime.
+- Additional meeting-link submissions wait in a bounded queue controlled by `MAX_MEETING_JOB_BACKLOG`.
 - `Exit Meeting` now asks the bot to finalize the current recording before transcription when possible.
+- For a platform-by-platform acceptance checklist that separates local self-verification from real host-admission proof, see [`docs/operations/meeting-platform-verification.md`](/home/solomon/Andy/AI_NoteTacker/docs/operations/meeting-platform-verification.md).
 
 ### Upload Recording
 
@@ -86,6 +128,7 @@ Notes:
 Notes:
 - Uploaded jobs share the transcription queue.
 - `MAX_CONCURRENT_TRANSCRIPTION_JOBS=1` by default, so later jobs queue instead of oversubscribing the GPU.
+- `MAX_TRANSCRIPTION_JOB_BACKLOG=10` limits how many jobs may wait for transcription capacity before later uploads are rejected.
 
 ### Admin Provider Switch
 
@@ -149,6 +192,8 @@ Important defaults from [`.env.example`](/home/solomon/Andy/AI_NoteTacker/.env.e
 - `DEFAULT_SUMMARY_PROVIDER=local-codex`
 - `SUMMARY_ENABLED=true`
 - `MAX_CONCURRENT_TRANSCRIPTION_JOBS=1`
+- `MAX_MEETING_JOB_BACKLOG=2`
+- `MAX_TRANSCRIPTION_JOB_BACKLOG=10`
 - `DEFAULT_DAILY_CLOUD_QUOTA_USD=5`
 - `LIVE_MEETING_RESERVATION_CAP_USD=1.5`
 - `AI_PRICING_VERSION=v1`
@@ -205,6 +250,14 @@ DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/ainotetacker \
 node scripts/fix_uploaded_audio_filenames.mjs
 ```
 
+Run the docker-compose runtime smoke:
+
+```bash
+export CODEX_HOME="${CODEX_HOME:-$HOME/.local/share/codex}"
+docker compose -f docker-compose.yml -f docker-compose.smoke.yml up -d --build --remove-orphans
+node scripts/run_runtime_smoke.mjs --base-url http://127.0.0.1:3000 --timeout-ms 300000
+```
+
 ## Troubleshooting
 
 ### `Codex Summary` does not appear
@@ -251,3 +304,7 @@ Check:
 
 - [Recording Worker README](/home/solomon/Andy/AI_NoteTacker/workers/recording-worker/README.md)
 - [Transcription Worker README](/home/solomon/Andy/AI_NoteTacker/workers/transcription-worker/README.md)
+
+## Rollout Guidance
+
+- [100-User Rollout Profile](/home/solomon/Andy/AI_NoteTacker/docs/operations/100-user-rollout.md)

@@ -18,6 +18,10 @@ export type RecordingJobState =
   | 'completed'
   | 'failed';
 
+export type RecordingJobLeaseStage = 'recording' | 'transcription' | 'summary';
+
+export const DEFAULT_WORKER_LEASE_DURATION_MS = 15 * 60 * 1000;
+
 export type RecordingFailure = {
   code: string;
   message: string;
@@ -81,10 +85,24 @@ export type RecordingJob = {
   progressTotalMs?: number;
   assignedWorkerId?: string;
   assignedTranscriptionWorkerId?: string;
+  assignedSummaryWorkerId?: string;
+  recordingLeaseToken?: string;
+  recordingLeaseAcquiredAt?: string;
+  recordingLeaseHeartbeatAt?: string;
+  recordingLeaseExpiresAt?: string;
+  transcriptionLeaseToken?: string;
+  transcriptionLeaseAcquiredAt?: string;
+  transcriptionLeaseHeartbeatAt?: string;
+  transcriptionLeaseExpiresAt?: string;
+  summaryLeaseToken?: string;
+  summaryLeaseAcquiredAt?: string;
+  summaryLeaseHeartbeatAt?: string;
+  summaryLeaseExpiresAt?: string;
   transcriptionProvider?: TranscriptionProvider;
   transcriptionModel?: string;
   summaryProvider?: SummaryProvider;
   summaryModel?: string;
+  summaryRequested?: boolean;
   pricingVersion?: string;
   estimatedCloudReservationUsd?: number;
   reservedCloudQuotaUsd?: number;
@@ -117,6 +135,7 @@ type CreateRecordingJobInput = {
   transcriptionModel?: string;
   summaryProvider?: SummaryProvider;
   summaryModel?: string;
+  summaryRequested?: boolean;
   pricingVersion?: string;
   estimatedCloudReservationUsd?: number;
   reservedCloudQuotaUsd?: number;
@@ -135,8 +154,35 @@ const validStateTransitions: Record<RecordingJobState, RecordingJobState[]> = {
 };
 
 const now = (): string => new Date().toISOString();
+const addDurationToIso = (value: string, durationMs: number): string =>
+  new Date(Date.parse(value) + durationMs).toISOString();
 
 const nextJobId = (): string => `job_${crypto.randomUUID().replace(/-/g, '')}`;
+const nextLeaseToken = (): string => `lease_${crypto.randomUUID().replace(/-/g, '')}`;
+
+const clearRecordingLeaseState = {
+  assignedWorkerId: undefined,
+  recordingLeaseToken: undefined,
+  recordingLeaseAcquiredAt: undefined,
+  recordingLeaseHeartbeatAt: undefined,
+  recordingLeaseExpiresAt: undefined
+};
+
+const clearTranscriptionLeaseState = {
+  assignedTranscriptionWorkerId: undefined,
+  transcriptionLeaseToken: undefined,
+  transcriptionLeaseAcquiredAt: undefined,
+  transcriptionLeaseHeartbeatAt: undefined,
+  transcriptionLeaseExpiresAt: undefined
+};
+
+const clearSummaryLeaseState = {
+  assignedSummaryWorkerId: undefined,
+  summaryLeaseToken: undefined,
+  summaryLeaseAcquiredAt: undefined,
+  summaryLeaseHeartbeatAt: undefined,
+  summaryLeaseExpiresAt: undefined
+};
 
 const appendJobHistoryEntry = (
   job: RecordingJob,
@@ -185,6 +231,7 @@ export const createRecordingJob = ({
   transcriptionModel,
   summaryProvider,
   summaryModel,
+  summaryRequested = Boolean(summaryProvider),
   pricingVersion,
   estimatedCloudReservationUsd,
   reservedCloudQuotaUsd,
@@ -204,6 +251,7 @@ export const createRecordingJob = ({
   transcriptionModel,
   summaryProvider,
   summaryModel,
+  summaryRequested,
   pricingVersion,
   estimatedCloudReservationUsd,
   reservedCloudQuotaUsd,
@@ -250,6 +298,9 @@ export const markRecordingJobFailed = (
   failure: RecordingFailure
 ): RecordingJob => ({
   ...job,
+  ...clearRecordingLeaseState,
+  ...clearTranscriptionLeaseState,
+  ...clearSummaryLeaseState,
   state: 'failed',
   updatedAt: now(),
   processingStage: 'failed',
@@ -270,6 +321,7 @@ export const attachRecordingArtifact = (
   recordingArtifact: RecordingArtifact
 ): RecordingJob => ({
   ...job,
+  ...clearRecordingLeaseState,
   recordingArtifact,
   transcriptionAttemptCount: job.transcriptionAttemptCount ?? 0,
   state: 'transcribing',
@@ -304,28 +356,47 @@ export const attachQueuedRecordingArtifact = (
 export const attachTranscriptArtifact = (
   job: RecordingJob,
   transcriptArtifact: TranscriptArtifact
-): RecordingJob => ({
-  ...job,
-  assignedTranscriptionWorkerId: undefined,
-  transcriptArtifact,
-  state: 'completed',
-  processingStage: 'completed',
-  processingMessage: 'Transcript generation completed.',
-  progressPercent: 100,
-  updatedAt: now(),
-  jobHistory: appendJobHistoryEntry(job, {
-    stage: 'completed',
-    message: 'Transcript generation completed.',
-    state: 'completed',
-    kind: 'artifact'
-  })
-});
+): RecordingJob =>
+  job.summaryRequested
+    ? {
+        ...job,
+        ...clearTranscriptionLeaseState,
+        transcriptArtifact,
+        state: 'transcribing',
+        processingStage: 'summary-pending',
+        processingMessage: 'Transcript generation completed. Waiting for summary generation.',
+        progressPercent: 90,
+        updatedAt: now(),
+        jobHistory: appendJobHistoryEntry(job, {
+          stage: 'summary-pending',
+          message: 'Transcript generation completed. Waiting for summary generation.',
+          state: 'transcribing',
+          kind: 'artifact'
+        })
+      }
+    : {
+        ...job,
+        ...clearTranscriptionLeaseState,
+        transcriptArtifact,
+        state: 'completed',
+        processingStage: 'completed',
+        processingMessage: 'Transcript generation completed.',
+        progressPercent: 100,
+        updatedAt: now(),
+        jobHistory: appendJobHistoryEntry(job, {
+          stage: 'completed',
+          message: 'Transcript generation completed.',
+          state: 'completed',
+          kind: 'artifact'
+        })
+      };
 
 export const attachSummaryArtifact = (
   job: RecordingJob,
   summaryArtifact: SummaryArtifact
 ): RecordingJob => ({
   ...job,
+  ...clearSummaryLeaseState,
   summaryArtifact,
   state: 'completed',
   processingStage: 'completed',
@@ -340,46 +411,88 @@ export const attachSummaryArtifact = (
   })
 });
 
+export const markMeetingJobWaitingForCapacity = (job: RecordingJob): RecordingJob =>
+  updateRecordingJobProgress(job, {
+    processingStage: 'waiting-for-recording-capacity',
+    processingMessage: 'Waiting for meeting bot capacity.'
+  });
+
 export const assignRecordingJobToWorker = (
   job: RecordingJob,
   workerId: string
-): RecordingJob => ({
-  ...job,
-  assignedWorkerId: workerId,
-  state: 'joining',
-  updatedAt: now(),
-  jobHistory: appendJobHistoryEntry(job, {
-    stage: 'joining',
-    message: stateHistoryMessage.joining,
-    state: 'joining',
-    kind: 'lifecycle'
-  })
-});
+): RecordingJob =>
+  activateLeaseForStage(
+    {
+      ...job,
+      assignedWorkerId: workerId,
+      recordingLeaseToken: nextLeaseToken(),
+      state: 'joining',
+      processingStage: 'joining-meeting',
+      processingMessage: stateHistoryMessage.joining,
+      updatedAt: now(),
+      jobHistory: appendJobHistoryEntry(job, {
+        stage: 'joining',
+        message: stateHistoryMessage.joining,
+        state: 'joining',
+        kind: 'lifecycle'
+      })
+    },
+    'recording',
+    DEFAULT_WORKER_LEASE_DURATION_MS
+  );
+
+export const markMeetingRecordingInProgress = (
+  job: RecordingJob,
+  processingMessage = stateHistoryMessage.recording
+): RecordingJob => {
+  const nextState = job.state === 'joining' ? 'recording' : job.state;
+
+  return {
+    ...job,
+    state: nextState,
+    processingStage: 'recording',
+    processingMessage,
+    progressPercent: job.progressPercent ?? 45,
+    updatedAt: now(),
+    jobHistory: appendJobHistoryEntry(job, {
+      stage: 'recording',
+      message: processingMessage,
+      state: nextState,
+      kind: job.state === 'joining' ? 'lifecycle' : 'progress'
+    })
+  };
+};
 
 export const assignTranscriptionJobToWorker = (
   job: RecordingJob,
   workerId: string
-): RecordingJob => ({
-  ...job,
-  assignedTranscriptionWorkerId: workerId,
-  state: 'transcribing',
-  processingStage: job.inputSource === 'uploaded-audio' ? 'preparing-media' : 'transcribing-audio',
-  processingMessage:
-    job.inputSource === 'uploaded-audio'
-      ? 'Preparing uploaded media for transcription.'
-      : 'Preparing recording for transcription.',
-  progressPercent: job.inputSource === 'uploaded-audio' ? 25 : 65,
-  updatedAt: now(),
-  jobHistory: appendJobHistoryEntry(job, {
-    stage: job.inputSource === 'uploaded-audio' ? 'preparing-media' : 'transcribing-audio',
-    message:
-      job.inputSource === 'uploaded-audio'
-        ? 'Preparing uploaded media for transcription.'
-        : 'Preparing recording for transcription.',
-    state: 'transcribing',
-    kind: 'lifecycle'
-  })
-});
+): RecordingJob =>
+  activateLeaseForStage(
+    {
+      ...job,
+      assignedTranscriptionWorkerId: workerId,
+      transcriptionLeaseToken: nextLeaseToken(),
+      state: 'transcribing',
+      processingStage: job.inputSource === 'uploaded-audio' ? 'preparing-media' : 'transcribing-audio',
+      processingMessage:
+        job.inputSource === 'uploaded-audio'
+          ? 'Preparing uploaded media for transcription.'
+          : 'Preparing recording for transcription.',
+      progressPercent: job.inputSource === 'uploaded-audio' ? 25 : 65,
+      updatedAt: now(),
+      jobHistory: appendJobHistoryEntry(job, {
+        stage: job.inputSource === 'uploaded-audio' ? 'preparing-media' : 'transcribing-audio',
+        message:
+          job.inputSource === 'uploaded-audio'
+            ? 'Preparing uploaded media for transcription.'
+            : 'Preparing recording for transcription.',
+        state: 'transcribing',
+        kind: 'lifecycle'
+      })
+    },
+    'transcription',
+    DEFAULT_WORKER_LEASE_DURATION_MS
+  );
 
 export const releaseTranscriptionJobForRetry = (
   job: RecordingJob,
@@ -391,7 +504,7 @@ export const releaseTranscriptionJobForRetry = (
   if (nextAttemptCount >= maxAttempts) {
     return {
       ...job,
-      assignedTranscriptionWorkerId: undefined,
+      ...clearTranscriptionLeaseState,
       transcriptionAttemptCount: nextAttemptCount,
       state: 'failed',
       processingStage: 'failed',
@@ -411,7 +524,7 @@ export const releaseTranscriptionJobForRetry = (
 
   return {
     ...job,
-    assignedTranscriptionWorkerId: undefined,
+    ...clearTranscriptionLeaseState,
     transcriptionAttemptCount: nextAttemptCount,
     state: 'transcribing',
     processingStage: 'transcribing-audio',
@@ -425,9 +538,55 @@ export const releaseTranscriptionJobForRetry = (
       message: failure.message,
       state: 'transcribing',
       kind: 'failure'
-    })
+      })
   };
 };
+
+export const releaseSummaryJobForRetry = (
+  job: RecordingJob,
+  failure: RecordingFailure
+): RecordingJob => ({
+  ...job,
+  ...clearSummaryLeaseState,
+  state: 'transcribing',
+  processingStage: 'summary-pending',
+  processingMessage: failure.message,
+  progressPercent: 90,
+  failureCode: failure.code,
+  failureMessage: failure.message,
+  updatedAt: now(),
+  jobHistory: appendJobHistoryEntry(job, {
+    stage: 'summary-pending',
+    message: failure.message,
+    state: 'transcribing',
+    kind: 'failure'
+  })
+});
+
+export const assignSummaryJobToWorker = (
+  job: RecordingJob,
+  workerId: string
+): RecordingJob =>
+  activateLeaseForStage(
+    {
+      ...job,
+      assignedSummaryWorkerId: workerId,
+      summaryLeaseToken: nextLeaseToken(),
+      state: 'transcribing',
+      processingStage: 'generating-summary',
+      processingMessage: 'Generating meeting summary.',
+      progressPercent: 92,
+      updatedAt: now(),
+      jobHistory: appendJobHistoryEntry(job, {
+        stage: 'generating-summary',
+        message: 'Generating meeting summary.',
+        state: 'transcribing',
+        kind: 'lifecycle'
+      })
+    },
+    'summary',
+    DEFAULT_WORKER_LEASE_DURATION_MS
+  );
 
 export const updateRecordingJobProgress = (
   job: RecordingJob,
@@ -477,3 +636,85 @@ export const markTerminalJobNotificationSent = (
     kind: 'notification'
   })
 });
+
+export const activateLeaseForStage = (
+  job: RecordingJob,
+  stage: RecordingJobLeaseStage,
+  durationMs: number
+): RecordingJob => {
+  const activatedAt = now();
+  const expiresAt = addDurationToIso(activatedAt, durationMs);
+
+  if (stage === 'recording' && job.recordingLeaseToken) {
+    return {
+      ...job,
+      recordingLeaseAcquiredAt: activatedAt,
+      recordingLeaseHeartbeatAt: activatedAt,
+      recordingLeaseExpiresAt: expiresAt,
+      updatedAt: activatedAt
+    };
+  }
+
+  if (stage === 'transcription' && job.transcriptionLeaseToken) {
+    return {
+      ...job,
+      transcriptionLeaseAcquiredAt: activatedAt,
+      transcriptionLeaseHeartbeatAt: activatedAt,
+      transcriptionLeaseExpiresAt: expiresAt,
+      updatedAt: activatedAt
+    };
+  }
+
+  if (stage === 'summary' && job.summaryLeaseToken) {
+    return {
+      ...job,
+      summaryLeaseAcquiredAt: activatedAt,
+      summaryLeaseHeartbeatAt: activatedAt,
+      summaryLeaseExpiresAt: expiresAt,
+      updatedAt: activatedAt
+    };
+  }
+
+  return job;
+};
+
+export const refreshLeaseHeartbeatForStage = (
+  job: RecordingJob,
+  stage: RecordingJobLeaseStage,
+  durationMs: number
+): RecordingJob => {
+  const heartbeatAt = now();
+  const expiresAt = addDurationToIso(heartbeatAt, durationMs);
+
+  if (stage === 'recording' && job.recordingLeaseToken) {
+    return {
+      ...job,
+      recordingLeaseAcquiredAt: job.recordingLeaseAcquiredAt ?? heartbeatAt,
+      recordingLeaseHeartbeatAt: heartbeatAt,
+      recordingLeaseExpiresAt: expiresAt,
+      updatedAt: heartbeatAt
+    };
+  }
+
+  if (stage === 'transcription' && job.transcriptionLeaseToken) {
+    return {
+      ...job,
+      transcriptionLeaseAcquiredAt: job.transcriptionLeaseAcquiredAt ?? heartbeatAt,
+      transcriptionLeaseHeartbeatAt: heartbeatAt,
+      transcriptionLeaseExpiresAt: expiresAt,
+      updatedAt: heartbeatAt
+    };
+  }
+
+  if (stage === 'summary' && job.summaryLeaseToken) {
+    return {
+      ...job,
+      summaryLeaseAcquiredAt: job.summaryLeaseAcquiredAt ?? heartbeatAt,
+      summaryLeaseHeartbeatAt: heartbeatAt,
+      summaryLeaseExpiresAt: expiresAt,
+      updatedAt: heartbeatAt
+    };
+  }
+
+  return job;
+};

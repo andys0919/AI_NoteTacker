@@ -1,135 +1,181 @@
 # Progress Log
 
-## Session: 2026-04-09
+## 2026-04-09
 
-### Phase 1: Requirements & Discovery
-- **Status:** complete
-- **Started:** 2026-04-09
-- Actions taken:
-- Reviewed OpenSpec instructions and project context.
-- Inspected current README, active changes, admin provider/model specs, and relevant control-plane/worker code.
-- Confirmed current gaps around cost ledger, quota, summary provider split, and concurrency pool separation.
-- Files created/modified:
-- `task_plan.md` (created)
-- `findings.md` (created)
-- `progress.md` (created)
+- Started repo-wide architecture review for 100-person company readiness.
+- Read root `README.md`, `package.json`, `docker-compose.yml`, `docker-compose.screenapp.yml`, and `.env.example`.
+- Confirmed single-stack, mostly single-instance runtime with explicit single-slot transcription defaults.
+- Inspected control-plane claim paths, quota accounting, Postgres schema, worker loops, upload storage, and frontend polling behavior.
+- Ran `npm test`; Node and Python suites both passed in the current workspace.
+- Read `openspec/AGENTS.md` and `openspec/project.md`; confirmed this repo expects proposal-first handling for architecture/performance/security changes.
+- Checked OpenSpec status: active changes exist, but no current published specs are present.
+- Added `openspec/changes/refactor-company-scale-runtime/` with `proposal.md`, `tasks.md`, `design.md`, and seven spec delta files.
+- Validated the new OpenSpec change successfully with strict non-interactive validation.
 
-### Phase 2: Proposal Planning
-- **Status:** complete
-- Actions taken:
-- Selected proposal-first path and narrowed scope to cloud-only spend governance.
-- Selected change-id `add-cloud-usage-governance`.
-- Defined spec scope across job policy snapshot, quota/ledger governance, provider management, pipelines, and dashboard behavior.
-- Files created/modified:
-- `task_plan.md`
-- `findings.md`
-- `progress.md`
+## 2026-04-10
 
-### Phase 3: Proposal Authoring
-- **Status:** complete
-- Actions taken:
-- Wrote `proposal.md`, `design.md`, and `tasks.md` for `add-cloud-usage-governance`.
-- Added spec deltas for `job-execution-policy`, `cloud-usage-governance`, `transcription-provider-management`, `whisper-transcription-pipeline`, `meeting-summary-generation`, and `operator-dashboard`.
-- Files created/modified:
-- `openspec/changes/add-cloud-usage-governance/proposal.md` (created)
-- `openspec/changes/add-cloud-usage-governance/design.md` (created)
-- `openspec/changes/add-cloud-usage-governance/tasks.md` (created)
-- `openspec/changes/add-cloud-usage-governance/specs/job-execution-policy/spec.md` (created)
-- `openspec/changes/add-cloud-usage-governance/specs/cloud-usage-governance/spec.md` (created)
-- `openspec/changes/add-cloud-usage-governance/specs/transcription-provider-management/spec.md` (created)
-- `openspec/changes/add-cloud-usage-governance/specs/whisper-transcription-pipeline/spec.md` (created)
-- `openspec/changes/add-cloud-usage-governance/specs/meeting-summary-generation/spec.md` (created)
-- `openspec/changes/add-cloud-usage-governance/specs/operator-dashboard/spec.md` (created)
+- Re-opened the runtime-hardening change to supplement the 100-user readiness story rather than leaving it as a generic reliability refactor.
+- Tightened the proposal and design around rollout-profile definition, explicit admission control, bounded backlog behavior, and required go-live verification.
+- Added `openspec/changes/refactor-company-scale-runtime/specs/deployment-readiness/spec.md`.
+- Extended the `recording-job-management` and `operator-dashboard` deltas to require explicit capacity-waiting states and queue/backlog enforcement.
+- Re-ran `openspec validate refactor-company-scale-runtime --strict --no-interactive` successfully after the expansion.
+- Implemented the first code slice from that change in the control-plane:
+- added configurable meeting backlog enforcement in submission routes
+- added explicit `waiting-for-recording-capacity` and `joining-meeting` processing stages
+- documented `MAX_MEETING_JOB_BACKLOG` in `.env.example` and `README.md`
+- fixed two pre-existing Postgres repository SQL issues uncovered by the broader control-plane suite
+- Implemented the second code slice in the control-plane:
+- added superseded-lease no-op handling for worker callbacks on `/recording-jobs/:id/events`
+- added regression tests for stale recording and summary callbacks carrying old or wrong lease tokens
+- Implemented additional rollout-hardening slices:
+- added cursor-based pagination and aggregate stats for `/api/operator/jobs`
+- replaced per-job cost lookups in the list hot path with batched actual-cost summaries
+- added dashboard-side incremental archive loading support
+- added `MAX_TRANSCRIPTION_JOB_BACKLOG` enforcement for uploaded jobs
+- added `docs/operations/100-user-rollout.md` and `scripts/run_runtime_load_probe.mjs`
+- verification evidence:
+- `npm test --workspace @ai-notetacker/control-plane`
+- `npm run build --workspace @ai-notetacker/control-plane`
+- `npm test`
+- Implemented the first Phase 2 hardening slice for archive hot-path reduction.
+- `listBySubmitterPage` now returns lightweight archive rows with persisted `hasTranscript` / `hasSummary` flags and preview fields instead of full transcript, summary, and history payloads.
+- Added preview persistence to the Postgres save path so operator polling can render archive cards without loading full transcript or summary bodies.
+- Preserved full archive detail, export, and search behavior by keeping heavyweight payload access on detail paths and non-paginated search paths.
+- verification evidence:
+- `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/postgres-recording-job-repository.test.ts`
+- `npm exec --workspace @ai-notetacker/control-plane -- vitest run`
+- Implemented the Postgres indexing slice for runtime hot paths.
+- Added named indexes for submitter-scoped archive pagination, submitter/state scans, quota-day lookups, active-processing scans, meeting queue checks, transcription claims, summary claims, and active summary scheduling in `recording_jobs`.
+- Added named indexes for job-scoped, quota-day-scoped, and submitter-day-scoped reporting in `cloud_usage_ledger`, plus an explicit unique index for non-null `entry_key` backfill safety.
+- Tightened a flaky cursor-pagination API test so it validates page coverage and de-duplication without assuming insertion order when multiple jobs share the same millisecond timestamp.
+- verification evidence:
+- `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/postgres-recording-job-repository.test.ts test/postgres-cloud-usage-ledger-repository.test.ts`
+- `npm exec --workspace @ai-notetacker/control-plane -- vitest run`
+- Re-scoped `openspec/changes/refactor-company-scale-runtime` to match the initial rollout-hardening slices that were actually implemented and verified instead of leaving later operational roadmap items inside the same change.
+- Kept deferred work explicit in proposal/design/tasks as follow-on topics: richer heartbeat metadata, artifact lifecycle cleanup, runtime observability, autoscaling, multi-instance rollout guidance, and richer reporting.
+- verification evidence:
+- `openspec validate refactor-company-scale-runtime --strict --no-interactive`
+- `openspec validate --changes --strict --no-interactive`
+- Archived `refactor-company-scale-runtime` into `openspec/changes/archive/2026-04-10-refactor-company-scale-runtime/` and promoted its deltas into published specs under `openspec/specs/`.
+- Replaced the archive-generated `Purpose: TBD` placeholders in the new published specs with concise current-truth summaries.
+- Added follow-up change `add-runtime-operations-hardening` to capture the deferred runtime-operations scope: explicit lease heartbeats, artifact lifecycle cleanup, runtime observability, privileged health surfaces, and multi-instance rollout guidance.
+- Started a dedicated verification pass to confirm the runtime-hardening work actually behaves correctly rather than relying on prior partial checks.
+- Re-ran root `npm test` as the baseline and captured failing heartbeat regressions in control-plane API tests and recording-worker tests.
+- Confirmed with targeted Python tests that the transcription and summary worker heartbeat paths were also incomplete: the client lacked `post_lease_heartbeat`, and both worker loops rejected the `heartbeat_interval_ms` test hook.
+- Added regression tests for recording-worker and transcription-worker heartbeat client behavior, plus internal-service auth coverage for the control-plane heartbeat route.
+- Implemented the missing heartbeat contract:
+- worker claim responses now expose generic lease timestamps
+- control-plane now serves `/recording-jobs/:id/leases/heartbeat`
+- recording, transcription, and summary workers now post periodic lease heartbeats while long-running work is in progress
+- stale transcription reclaim now honors lease heartbeat/expiry metadata instead of trusting only `updatedAt`
+- verification evidence:
+- `npm exec --workspace @ai-notetacker/recording-worker -- vitest run test/control-plane-http-client.test.ts test/worker-loop.test.ts`
+- `python3 -m unittest workers.transcription-worker.tests.test_http_client workers.transcription-worker.tests.test_worker_loop.RunTranscriptionWorkerIterationTests.test_posts_transcription_lease_heartbeats_while_transcribing workers.transcription-worker.tests.test_summary_worker_loop.RunSummaryWorkerIterationTests.test_posts_summary_lease_heartbeats_while_generating_summary`
+- `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/recording-jobs-api.test.ts`
+- `npm test`
+- `npm run build`
+- Added local smoke infrastructure:
+- `docker-compose.smoke.yml` for local-provider compose overrides, MinIO bucket init, and a stub artifact server
+- `ops/smoke/stub_artifact_server.py` to serve a deterministic smoke artifact for meeting-link jobs
+- `scripts/run_runtime_smoke.mjs` to exercise upload, summary, list/detail, and export behavior against a live stack
+- Recreated the compose stack with the smoke override, reset persisted provider-policy rows to local defaults, and ran the live smoke successfully.
+- verification evidence:
+- `docker compose -f docker-compose.yml -f docker-compose.smoke.yml config --quiet`
+- `docker compose -f docker-compose.yml -f docker-compose.smoke.yml up -d --build --remove-orphans`
+- `node scripts/run_runtime_smoke.mjs --base-url http://127.0.0.1:3000 --timeout-ms 300000`
+- `npm test`
+- `npm run build`
+- Continued `add-runtime-operations-hardening` with the runtime observability slice.
+- Added an admin-only `/api/admin/runtime-health` response that aggregates queue depth, active lease age, latency, throughput, failure, and saturation signals from durable repository state.
+- Added `public/runtime-health-panel.js` plus a dedicated runtime health panel in `public/admin.html` / `public/admin.js` so administrators can see runtime-wide queue and lease health without exposing that data on the operator dashboard.
+- Extended the recording job repositories with `countPendingSummaryJobs()` so summary backlog is included alongside meeting and transcription queue depth.
+- verification evidence:
+- `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/runtime-health-api.test.ts test/runtime-health-panel.test.ts test/admin-shell.test.ts`
+- `npm exec --workspace @ai-notetacker/control-plane -- vitest run`
+- `npm run build --workspace @ai-notetacker/control-plane`
+- Continued the dashboard auth UX so the main page has an explicit login entry point instead of only showing visitor/session cards.
+- Added `public/auth-entry.js` and a topbar login card on the main dashboard; when auth is enabled it scrolls the user into the existing email/OTP panel, and when auth is disabled it clearly says login is not configured.
+- Confirmed the current local `.env` does not set `SUPABASE_URL` or `SUPABASE_PUBLISHABLE_KEY`, which explains why this environment previously surfaced visitor mode without a usable login path.
+- verification evidence:
+- `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/auth-entry.test.ts test/dashboard-shell.test.ts`
+- `npm exec --workspace @ai-notetacker/control-plane -- vitest run`
+- `npm run build --workspace @ai-notetacker/control-plane`
+- Added a platform-verification runbook under `docs/operations/meeting-platform-verification.md` and linked it from `README.md` plus the rollout profile doc.
+- Captured the exact self-verification boundary for Google Meet, Teams, and Zoom: local tests prove link acceptance, join-endpoint dispatch, callback handling, and downstream artifact processing, but real admission and recording still require a live host-controlled meeting on each upstream platform.
+- verification evidence:
+- `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/recording-jobs-api.test.ts test/meeting-bot-status-api.test.ts test/meeting-bot-integration.test.ts`
+- `npm exec --workspace @ai-notetacker/recording-worker -- vitest run test/screenapp-meeting-bot-executor.test.ts`
+- `openspec validate add-runtime-operations-hardening --strict --no-interactive`
+- Executed one real Google Meet external verification run using a fresh Google Meet link created from the connected Google Calendar account.
+- Verified manually in browser that the unauthenticated join page for that Meet link blocked direct entry with `你無法加入這場視訊通話`, then verified the ScreenApp bot could still reach the Google Meet guest flow, submit `Ask to join`, and wait in the lobby for host admission.
+- Observed the bot remain in repeated lobby-wait timeouts rather than producing a recording artifact, which confirms the remaining external dependency is host-side admission / access settings rather than a local dispatch failure.
+- Checked Teams self-create feasibility in browser: `teams.live.com/free/` exposes `免費開始會議`, but the flow redirects to Microsoft account sign-in before a meeting can be hosted from this environment.
+- Checked Zoom self-create feasibility in browser: the web entry point requires Zoom sign-in before a meeting can be hosted from this environment.
+- Cleaned up the temporary Google Meet verification job and restarted `meeting-bot` plus `recording-worker` after the run so the stack returned to an idle state.
 
-### Phase 4: Validation
-- **Status:** complete
-- Actions taken:
-- Ran `openspec validate add-cloud-usage-governance --strict --no-interactive`.
-- Fixed two malformed MODIFIED requirement headings in the transcription pipeline delta.
-- Re-ran validation and confirmed the change is valid.
-- Files created/modified:
-- `openspec/changes/add-cloud-usage-governance/specs/whisper-transcription-pipeline/spec.md` (updated)
-- `task_plan.md` (updated)
-- `findings.md` (updated)
-- `progress.md` (updated)
+## 2026-04-20
 
-### Phase 5: Implementation & Verification
-- **Status:** complete
-- Actions taken:
-- Implemented AI policy persistence expansion, per-user cloud quota override storage, cloud usage ledger storage, and admin audit log storage.
-- Added submission-time job policy snapshotting and quota enforcement for operator meeting and upload submissions.
-- Added admin APIs for AI policy, quota overrides, and audit log access; added operator quota API.
-- Updated transcription claim flow to use job snapshots and provider-aware transcription concurrency pools.
-- Updated transcription worker to select summary providers from the claimed job snapshot and return usage metadata for cloud-routed stages.
-- Added a control-plane summary slot claim path and worker-side wait loop so local/cloud summary concurrency pools are enforced separately.
-- Extracted governance panel formatting/state logic into a dedicated browser helper module with unit tests.
-- Added dedicated unit tests for cloud usage helpers and summary provider catalog readiness logic.
-- Updated `.env.example` and worker runtime docs so cloud governance and summary routing env vars are documented.
-- Added an admin cloud usage report API and dashboard list so the existing usage ledger is visible without querying the database directly.
-- Wired the dashboard to show operator quota status and basic admin governance controls, override submission, and recent audit entries.
-- Verified control-plane tests, worker tests, root `npm test`, and root `npm run build`.
-- Files created/modified:
-- `apps/control-plane/src/app.ts`
-- `apps/control-plane/src/domain/cloud-usage.ts`
-- `apps/control-plane/src/domain/cloud-usage-ledger-repository.ts`
-- `apps/control-plane/src/domain/operator-cloud-quota-override-repository.ts`
-- `apps/control-plane/src/domain/admin-audit-log-repository.ts`
-- `apps/control-plane/src/domain/summary-provider.ts`
-- `apps/control-plane/src/domain/transcription-provider-settings-repository.ts`
-- `apps/control-plane/src/domain/recording-job.ts`
-- `apps/control-plane/src/domain/recording-job-repository.ts`
-- `apps/control-plane/src/infrastructure/repository-factory.ts`
-- `apps/control-plane/src/infrastructure/summary-provider-catalog.ts`
-- `apps/control-plane/src/infrastructure/in-memory-*.ts` governance repositories
-- `apps/control-plane/src/infrastructure/postgres/*.ts` governance repositories
-- `apps/control-plane/src/infrastructure/postgres/postgres-recording-job-repository.ts`
-- `apps/control-plane/public/index.html`
-- `apps/control-plane/public/app.js`
-- `apps/control-plane/public/styles.css`
-- `apps/control-plane/public/governance-panel.js`
-- `apps/control-plane/public/index.html`
-- `.env.example`
-- `workers/transcription-worker/README.md`
-- `workers/transcription-worker/src/transcription_worker/main.py`
-- `workers/transcription-worker/src/transcription_worker/worker_loop.py`
-- `workers/transcription-worker/src/transcription_worker/azure_openai_transcriber.py`
-- `workers/transcription-worker/src/transcription_worker/azure_openai_transcript_summarizer.py`
-- `workers/transcription-worker/src/transcription_worker/control_plane_client.py`
-- `apps/control-plane/test/cloud-usage-governance-api.test.ts`
-- `apps/control-plane/test/governance-panel.test.ts`
-- `apps/control-plane/test/cloud-usage.test.ts`
-- `apps/control-plane/test/summary-provider-catalog.test.ts`
-- `apps/control-plane/test/cloud-usage-governance-api.test.ts`
-- `workers/transcription-worker/tests/test_worker_loop.py`
+- Re-baselined the current workspace with fresh full `npm test` and `npm run build`; both passed in the present worktree.
+- Compared current meeting-platform behavior against official Google Meet, Microsoft Teams, and Zoom docs to separate repo-owned blockers from host-side admission policy.
+- Identified one repo-owned Zoom blocker: the control-plane rejects direct `/j/<meeting-id>?pwd=...` join URLs even though embedded passcodes are a normal official Zoom join pattern.
+- Added a focused control-plane regression test for passcode-bearing Zoom links and am verifying the expected RED failure before changing production code.
+- Ran platform-focused local verification: control-plane meeting API/integration tests passed, and recording-worker ScreenApp dispatch tests now cover Google Meet, Teams, and Zoom endpoints.
+- Fixed the Zoom blocker by accepting embedded-passcode Zoom join URLs in `meeting-link-policy` and added executor coverage for `/zoom/join` dispatch.
+- Rebuilt the smoke stack and used the live docker-compose smoke driver to verify downstream completion for:
+- `https://us06web.zoom.us/j/123456789?pwd=...&omn=...`
+- `https://meet.google.com/abc-defg-hij`
+- `https://teams.live.com/meet/9343114235416?...`
+- The first post-fix Zoom smoke exposed a second repo-owned blocker in local summary generation:
+- the local Codex path defaulted to unsupported or quota-limited models in this environment
+- the summarizer surfaced the generic stderr warning instead of the structured Codex stdout error
+- Fixed the summary blocker by:
+- switching runtime/default local summary models to `gpt-5.4-mini`
+- surfacing structured Codex stdout errors before falling back to stderr text
+- stabilizing affected API tests by pinning `SUMMARY_MODEL` explicitly where the suite previously depended on ambient env state
+- verification evidence:
+- `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/recording-jobs-api.test.ts test/meeting-bot-status-api.test.ts test/meeting-bot-integration.test.ts`
+- `npm exec --workspace @ai-notetacker/recording-worker -- vitest run test/screenapp-meeting-bot-executor.test.ts`
+- `node scripts/run_runtime_smoke.mjs --base-url http://127.0.0.1:3000 --timeout-ms 300000 --id-prefix zoom-smoke-20260420b --meeting-url 'https://us06web.zoom.us/j/123456789?pwd=7b18950c7815jk1hg5&omn=468791'`
+- `node scripts/run_runtime_smoke.mjs --base-url http://127.0.0.1:3000 --timeout-ms 300000 --id-prefix meet-smoke-20260420 --meeting-url 'https://meet.google.com/abc-defg-hij'`
+- `node scripts/run_runtime_smoke.mjs --base-url http://127.0.0.1:3000 --timeout-ms 300000 --id-prefix teams-smoke-20260420 --meeting-url 'https://teams.live.com/meet/9343114235416?p=I4yS5pia1gFxNYOOsV'`
+- `npm test`
+- `npm run build`
+- Continued meeting-platform hardening by verifying a remaining Zoom edge case: direct web-client URLs under `app.zoom.us/wc/join/<meeting-id>` were still rejected locally.
+- Added a RED control-plane API test for Zoom `wc/join` links, widened `meeting-link-policy` to accept them, and updated the meeting-platform runbook to document both `/j/<id>` and `/wc/join/<id>` support.
 
-## Test Results
-| Test | Input | Expected | Actual | Status |
-|------|-------|----------|--------|--------|
-| OpenSpec validation | `openspec validate add-cloud-usage-governance --strict --no-interactive` | Change validates successfully | Change validated successfully after one spec-format fix | ✓ |
-| Control-plane tests | `npm exec --workspace @ai-notetacker/control-plane -- vitest run` | Full control-plane test suite passes | 99/99 tests passed | ✓ |
-| Control-plane build | `npm exec --workspace @ai-notetacker/control-plane -- tsc -p tsconfig.json` | TypeScript compiles cleanly | Passed | ✓ |
-| Worker targeted tests | `python3 -m unittest workers.transcription-worker.tests.test_worker_loop workers.transcription-worker.tests.test_azure_openai_transcript_summarizer workers.transcription-worker.tests.test_azure_openai_transcriber` | Updated worker behavior passes targeted tests | 13 tests passed | ✓ |
-| Summary slot API test | `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/cloud-usage-governance-api.test.ts` | Summary pool behavior passes | Passed with 7/7 tests | ✓ |
-| Governance panel tests | `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/governance-panel.test.ts` | Governance UI helpers pass | 6/6 tests passed | ✓ |
-| Cloud usage helper tests | `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/cloud-usage.test.ts test/summary-provider-catalog.test.ts` | Governance helper modules pass | 7/7 tests passed | ✓ |
-| Usage report tests | `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/cloud-usage-governance-api.test.ts test/governance-panel.test.ts` | Admin usage report API and UI helpers pass | 16/16 tests passed | ✓ |
-| Worker compile | `python3 -m compileall workers/transcription-worker/src/transcription_worker` | Python worker sources compile | Passed | ✓ |
-| Full project tests | `npm test` | Root verification passes | Passed | ✓ |
-| Full project build | `npm run build` | Root build passes | Passed | ✓ |
+## 2026-04-21
 
-## Error Log
-| Timestamp | Error | Attempt | Resolution |
-|-----------|-------|---------|------------|
-| 2026-04-09 | OpenSpec rejected two MODIFIED requirements in `whisper-transcription-pipeline/spec.md` as missing requirement text | 1 | Split each requirement into a named heading and a separate SHALL statement, then revalidated successfully |
-| 2026-04-09 | `postgres-recording-job-repository` insert placeholders became misaligned after adding snapshot columns | 1 | Re-mapped the SQL placeholder order to match the expanded column list |
-| 2026-04-09 | pg-mem failed on `ANY($1::text[])` for provider filtering | 1 | Moved provider filtering back into JS after fetching candidate rows |
-| 2026-04-09 | Summary concurrency pools could not be enforced with the inline summary flow alone | 1 | Added a control-plane summary-slot claim endpoint and worker-side wait loop before summary generation |
-
-## 5-Question Reboot Check
-| Question | Answer |
-|----------|--------|
-| Where am I? | Phase 5: Delivery |
-| Where am I going? | Final handoff to the user |
-| What's the goal? | Produce a validated OpenSpec proposal for cloud usage governance |
-| What have I learned? | Deterministic cloud cost control requires submission-time snapshots, usage reporting from workers, and stage-specific routing |
-| What have I done? | Wrote the spec, implemented the backend/worker/dashboard core, and verified it with project test/build commands |
+- Continued meeting-platform hardening around the specific guarantee that matters for host-approved meetings: proving the bot actually submitted a join request and reached a lobby / waiting-room state.
+- Added RED tests for:
+- control-plane persistence of `JoinRequest.Submitted` bot logs as `waiting-for-host-admission`
+- localized progress rendering for the new waiting-for-host-admission stage
+- shared body-text evidence detection for Google Meet, Microsoft Teams, and Zoom
+- Implemented control-plane support for info-level meeting-bot progress logs so a verified join request is now stored as:
+- `state=joining`
+- `processingStage=waiting-for-host-admission`
+- `processingMessage=<platform-specific waiting message>`
+- Added `ops/meeting-bot/join_request_evidence.cjs` and wired the Google Meet, Microsoft Teams, and local Zoom overlays to emit `JoinRequest.Submitted` only after detecting lobby / waiting-room evidence, not merely after clicking a button.
+- Added a local `ops/meeting-bot/ZoomBot.js` overlay and mounted it in `docker-compose.screenapp.yml` so Zoom now reports the same join-request evidence signal as Meet and Teams.
+- verification evidence:
+- `node --check ops/meeting-bot/GoogleMeetBot.js`
+- `node --check ops/meeting-bot/MicrosoftTeamsBot.js`
+- `node --check ops/meeting-bot/ZoomBot.js`
+- `node --check ops/meeting-bot/join_request_evidence.cjs`
+- `npm exec --workspace @ai-notetacker/control-plane -- vitest run test/join-request-evidence.test.ts test/meeting-bot-status-api.test.ts test/job-progress.test.ts`
+- `npm test`
+- `npm run build`
+- Continued with a real Google Meet run against `https://meet.google.com/uug-rfdf-umn`.
+- Live meeting-bot logs prove the bot filled the guest name, clicked `Ask to join`, got admitted, and began recording, so the repo is not blocked at the upstream Meet join path.
+- The same live run exposed two runtime gaps:
+- the old meeting-bot container did not persist any mid-recording progress back to control-plane, so the live job stayed `state=joining` even while recording
+- `transcription-worker` was crash-looping on a broken `large-v3` cache snapshot missing `model.bin`
+- Added RED tests for:
+- control-plane promotion of `Recording.Started` info logs into `state=recording` / `processingStage=recording`
+- English Google Meet denial detection inside the shared join-request evidence helper
+- Implemented those fixes, re-ran the targeted tests, and re-checked the local meeting-bot overlays with `node --check`.
+- Switched the live screenapp runtime back to `WHISPER_MODEL=tiny`, rebuilt the affected services, and confirmed the new transcription-worker container is now running with `WHISPER_MODEL=tiny` instead of crashing on startup.
+- Ran a live Microsoft Teams verification against `https://teams.live.com/meet/9338426661233?p=dotKQWNa6OyMwI4xyg`.
+- First graceful-shutdown attempt exposed a `handleStopSignal is not defined` ReferenceError in `MicrosoftTeamsBot.js` — `const` declared inside `try` block was invisible in `finally` block.
+- Fixed the scoping bug by hoisting `handleStopSignal` and `meetingEnded` above the `try` block.
+- Second Teams run completed full end-to-end: join → 106 s recording → graceful ffmpeg quit → 7.99 MB S3 upload → webhook → Whisper transcription → Codex summary → `state=completed`.
+- Full verification: 220 tests green, build zero errors, 8 containers healthy.

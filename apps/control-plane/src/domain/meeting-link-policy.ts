@@ -27,7 +27,8 @@ const isTeamsJoinLink = (url: URL): boolean =>
   (url.hostname === 'teams.live.com' && url.pathname.startsWith('/meet/'));
 
 const isZoomJoinLink = (url: URL): boolean =>
-  /(^|\.)zoom\.us$/i.test(url.hostname) && /^\/j\/\d+/.test(url.pathname) && !url.searchParams.has('pwd');
+  /(^|\.)zoom\.us$/i.test(url.hostname) &&
+  (/^\/j\/\d+/.test(url.pathname) || /^\/wc\/join\/\d+/.test(url.pathname));
 
 export const evaluateMeetingLinkPolicy = (meetingUrl: string): MeetingLinkPolicyResult => {
   let url: URL;
@@ -61,10 +62,6 @@ export const evaluateMeetingLinkPolicy = (meetingUrl: string): MeetingLinkPolicy
       supported: true,
       platform: 'zoom'
     };
-  }
-
-  if (/(^|\.)zoom\.us$/i.test(url.hostname) && url.searchParams.has('pwd')) {
-    return unsupported('Zoom links with embedded passwords are not supported in the current guest-join policy.');
   }
 
   return unsupported('The meeting URL does not match a supported direct guest-join meeting pattern.');

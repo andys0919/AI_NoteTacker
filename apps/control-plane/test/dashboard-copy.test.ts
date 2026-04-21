@@ -33,6 +33,37 @@ describe('dashboard copy helpers', () => {
     });
   });
 
+  it('explains lobby exits without pretending the system is finalizing a recording', () => {
+    const model = getJobCardViewModel({
+      id: 'job_meeting_lobby_exit',
+      inputSource: 'meeting-link',
+      state: 'joining',
+      meetingUrl: 'https://meet.google.com/lobby-exit-demo',
+      requestedJoinName: 'Solomon NoteTaker',
+      processingStage: 'finalizing-recording',
+      createdAt: '2026-04-08T09:00:00.000Z',
+      updatedAt: '2026-04-08T09:05:00.000Z'
+    });
+
+    expect(model.statusSummary).toBe('系統正在取消尚未被允許入會的請求，這場會議不會產生錄音。');
+    expect(model.progressLabel).toBe('取消入會中');
+  });
+
+  it('shows finalization copy when recording state exits without artifact yet', () => {
+    const model = getJobCardViewModel({
+      id: 'job_recording_finalizing',
+      inputSource: 'meeting-link',
+      state: 'recording',
+      meetingUrl: 'https://teams.live.com/meet/123',
+      requestedJoinName: 'Solomon NoteTaker',
+      processingStage: 'finalizing-recording',
+      createdAt: '2026-04-21T02:00:00.000Z',
+      updatedAt: '2026-04-21T02:05:00.000Z'
+    });
+
+    expect(model.statusSummary).toBe('系統正在結束錄製並整理檔案，接著會繼續產出逐字稿與摘要。');
+  });
+
   it('marks completed uploaded audio jobs as ready to review and export', () => {
     const model = getJobCardViewModel({
       id: 'job_upload_1',

@@ -17,7 +17,7 @@ The transcription worker handles uploaded-media and completed recording artifact
 
 Current expected runtime:
 
-- `WHISPER_MODEL=large-v3`
+- `WHISPER_MODEL=tiny`
 - `WHISPER_DEVICE=cuda`
 - `WHISPER_COMPUTE_TYPE=float16`
 - `SUMMARY_ENABLED=true`

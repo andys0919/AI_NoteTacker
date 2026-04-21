@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createApp } from '../src/app.js';
 import type { AuthenticatedUser } from '../src/domain/authenticated-user.js';
@@ -63,6 +63,10 @@ describe('cloud usage governance API', () => {
     'operator-token': { id: 'operator-user', email: 'operator@example.com' }
   });
 
+  beforeEach(() => {
+    vi.stubEnv('SUMMARY_MODEL', 'gpt-5.4-mini');
+  });
+
   const buildApp = () =>
     createApp(undefined, {
       operatorAuth: auth,
@@ -97,7 +101,7 @@ describe('cloud usage governance API', () => {
     expect(response.body.transcriptionProvider).toBe('self-hosted-whisper');
     expect(response.body.transcriptionModel).toBe('large-v3');
     expect(response.body.summaryProvider).toBe('local-codex');
-    expect(response.body.summaryModel).toBe('gpt-5-mini');
+    expect(response.body.summaryModel).toBe('gpt-5.4-mini');
     expect(response.body.pricingVersion).toBe('v1');
     expect(response.body.defaultDailyCloudQuotaUsd).toBeGreaterThan(0);
     expect(response.body.concurrencyPools).toEqual({
@@ -381,6 +385,173 @@ describe('cloud usage governance API', () => {
     expect(jobs.body.jobs[0].actualCloudCostUsd).toBe(
       jobs.body.jobs[0].actualTranscriptionCostUsd + jobs.body.jobs[0].actualSummaryCostUsd
     );
+  });
+
+  it('keeps summary reservation held after cloud transcription settles but before summary finishes', async () => {
+    const app = buildApp();
+
+    await request(app)
+      .put('/api/admin/ai-policy')
+      .set('authorization', 'Bearer admin-token')
+      .send({
+        transcriptionProvider: 'azure-openai-gpt-4o-mini-transcribe',
+        transcriptionModel: 'gpt-4o-mini-transcribe',
+        summaryProvider: 'azure-openai',
+        summaryModel: 'gpt-5.4-nano',
+        pricingVersion: 'v1',
+        defaultDailyCloudQuotaUsd: 2,
+        liveMeetingReservationCapUsd: 1.5,
+        concurrencyPools: {
+          localTranscription: 1,
+          cloudTranscription: 1,
+          localSummary: 1,
+          cloudSummary: 1
+        }
+      });
+
+    const created = await request(app)
+      .post('/api/operator/jobs/uploads')
+      .set('authorization', 'Bearer operator-token')
+      .attach('audio', Buffer.from('audio-summary-held'), {
+        filename: 'summary-held.wav',
+        contentType: 'audio/wav'
+      });
+
+    expect(created.status).toBe(201);
+
+    const transcriptStored = await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'transcript-artifact-stored',
+        transcriptArtifact: {
+          storageKey: `transcripts/${created.body.id}/transcript.json`,
+          downloadUrl: `https://storage.example.test/transcripts/${created.body.id}/transcript.json`,
+          contentType: 'application/json',
+          language: 'zh',
+          segments: [{ startMs: 0, endMs: 1000, text: 'quota summary held' }]
+        },
+        usage: {
+          audioMs: 600000
+        }
+      });
+
+    expect(transcriptStored.status).toBe(202);
+    expect(transcriptStored.body.state).toBe('transcribing');
+    expect(transcriptStored.body.processingStage).toBe('summary-pending');
+
+    const quota = await request(app)
+      .get('/api/operator/quota')
+      .set('authorization', 'Bearer operator-token');
+
+    expect(quota.status).toBe(200);
+    expect(quota.body.consumedUsd).toBeGreaterThan(0);
+    expect(quota.body.reservedUsd).toBeGreaterThan(0);
+  });
+
+  it('does not duplicate consumed cloud usage when a terminal callback is retried', async () => {
+    const app = buildApp();
+
+    await request(app)
+      .put('/api/admin/ai-policy')
+      .set('authorization', 'Bearer admin-token')
+      .send({
+        transcriptionProvider: 'azure-openai-gpt-4o-mini-transcribe',
+        transcriptionModel: 'gpt-4o-mini-transcribe',
+        summaryProvider: 'azure-openai',
+        summaryModel: 'gpt-5.4-nano',
+        pricingVersion: 'v1',
+        defaultDailyCloudQuotaUsd: 2,
+        liveMeetingReservationCapUsd: 1.5,
+        concurrencyPools: {
+          localTranscription: 1,
+          cloudTranscription: 1,
+          localSummary: 1,
+          cloudSummary: 1
+        }
+      });
+
+    const created = await request(app)
+      .post('/api/operator/jobs/uploads')
+      .set('authorization', 'Bearer operator-token')
+      .attach('audio', Buffer.from('audio-duplicate'), {
+        filename: 'duplicate.wav',
+        contentType: 'audio/wav'
+      });
+
+    expect(created.status).toBe(201);
+
+    const transcriptPayload = {
+      type: 'transcript-artifact-stored' as const,
+      transcriptArtifact: {
+        storageKey: `transcripts/${created.body.id}/transcript.json`,
+        downloadUrl: `https://storage.example.test/transcripts/${created.body.id}/transcript.json`,
+        contentType: 'application/json',
+        language: 'zh',
+        segments: [{ startMs: 0, endMs: 1000, text: 'quota duplicate' }]
+      },
+      usage: {
+        audioMs: 600000
+      }
+    };
+
+    const firstTranscript = await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send(transcriptPayload);
+
+    const secondTranscript = await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send(transcriptPayload);
+
+    expect(firstTranscript.status).toBe(202);
+    expect(secondTranscript.status).toBe(202);
+
+    const quotaAfterDuplicateTranscript = await request(app)
+      .get('/api/operator/quota')
+      .set('authorization', 'Bearer operator-token');
+
+    expect(quotaAfterDuplicateTranscript.status).toBe(200);
+    expect(quotaAfterDuplicateTranscript.body.consumedUsd).toBe(0.03);
+
+    const summaryPayload = {
+      type: 'summary-artifact-stored' as const,
+      summaryArtifact: {
+        model: 'gpt-5.4-nano',
+        reasoningEffort: 'cloud-default',
+        text: 'summary',
+        structured: {
+          summary: 'summary',
+          keyPoints: [],
+          actionItems: [],
+          decisions: [],
+          risks: [],
+          openQuestions: []
+        }
+      },
+      usage: {
+        promptTokens: 1000,
+        completionTokens: 500,
+        totalTokens: 1500
+      }
+    };
+
+    const firstSummary = await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send(summaryPayload);
+
+    const secondSummary = await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send(summaryPayload);
+
+    expect(firstSummary.status).toBe(202);
+    expect(secondSummary.status).toBe(202);
+
+    const quotaAfterDuplicateSummary = await request(app)
+      .get('/api/operator/quota')
+      .set('authorization', 'Bearer operator-token');
+
+    expect(quotaAfterDuplicateSummary.status).toBe(200);
+    expect(quotaAfterDuplicateSummary.body.reservedUsd).toBe(0);
+    expect(quotaAfterDuplicateSummary.body.consumedUsd).toBe(0.032);
   });
 
   it('records admin policy and override changes in the audit log', async () => {

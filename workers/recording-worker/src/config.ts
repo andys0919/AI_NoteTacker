@@ -9,6 +9,7 @@ export type RecordingWorkerConfig = {
   meetingBotTeamId?: string;
   meetingBotTimezone?: string;
   meetingBotUserId?: string;
+  internalServiceToken?: string;
   pollIntervalMs: number;
 };
 
@@ -38,6 +39,7 @@ export const readRecordingWorkerConfig = (environment: WorkerEnvironment): Recor
   const meetingBotTeamId = environment.MEETING_BOT_TEAM_ID;
   const meetingBotTimezone = environment.MEETING_BOT_TIMEZONE;
   const meetingBotUserId = environment.MEETING_BOT_USER_ID;
+  const internalServiceToken = environment.INTERNAL_SERVICE_TOKEN;
 
   if (executorKind === 'screenapp') {
     for (const [key, value] of [
@@ -65,6 +67,7 @@ export const readRecordingWorkerConfig = (environment: WorkerEnvironment): Recor
     meetingBotTeamId,
     meetingBotTimezone,
     meetingBotUserId,
+    internalServiceToken,
     pollIntervalMs: Number(environment.POLL_INTERVAL_MS ?? '1000')
   };
 };

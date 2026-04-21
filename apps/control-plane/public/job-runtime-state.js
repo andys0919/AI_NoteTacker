@@ -5,6 +5,10 @@ export const getMeetingBotStatusCopy = (job) => {
 
   const runtimeState = job.displayState || job.state;
 
+  if (job.processingStage === 'finalizing-recording' && !job.recordingArtifact) {
+    return 'AI Bot is leaving the lobby because the meeting never admitted it.';
+  }
+
   if (job.processingStage === 'finalizing-recording') {
     return 'AI Bot is leaving the meeting and finalizing the recording.';
   }

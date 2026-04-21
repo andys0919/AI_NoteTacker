@@ -117,7 +117,7 @@ export class PostgresTranscriptionProviderSettingsRepository
           concurrencyPools: ConcurrencyPools;
         }
       | TranscriptionProvider,
-    legacyDefaultSummaryModel = 'gpt-5-mini'
+    legacyDefaultSummaryModel = 'gpt-5.4-mini'
   ) {
     if (typeof defaultsOrProvider === 'string') {
       this.defaults = {

@@ -80,6 +80,27 @@ def _extract_summary_text(stdout_text: str) -> str:
     return "\n".join(parts).strip()
 
 
+def _extract_codex_error_message(stdout_text: str) -> str | None:
+    for line in stdout_text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        if event.get("type") == "error" and str(event.get("message", "")).strip():
+            return str(event["message"]).strip()
+
+        turn_error = event.get("error")
+        if isinstance(turn_error, dict) and str(turn_error.get("message", "")).strip():
+            return str(turn_error["message"]).strip()
+
+    return None
+
+
 def _coerce_summary_payload(summary_text: str) -> dict[str, Any]:
     normalized = summary_text.strip()
 
@@ -182,6 +203,10 @@ class CodexTranscriptSummarizer:
         )
 
         if result.returncode != 0:
+            stdout_error = _extract_codex_error_message(result.stdout or "")
+            if stdout_error:
+                raise RuntimeError(stdout_error)
+
             stderr_text = (result.stderr or "").strip()
             raise RuntimeError(stderr_text or f"codex exited with status {result.returncode}")
 

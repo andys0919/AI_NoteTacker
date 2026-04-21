@@ -16,11 +16,20 @@ import {
 } from '../src/infrastructure/postgres/postgres-recording-job-repository.js';
 
 describe('PostgresRecordingJobRepository', () => {
+  let db: ReturnType<typeof newDb>;
   let repository: PostgresRecordingJobRepository;
   let end: (() => Promise<void>) | undefined;
 
+  const getTableIndexNames = (tableName: string): string[] => {
+    const table = db.public.getTable(tableName);
+
+    return [...table.indexByHashAndName.values()]
+      .flatMap((indexesByName: Map<string, unknown>) => [...indexesByName.keys()])
+      .sort();
+  };
+
   beforeEach(async () => {
-    const db = newDb();
+    db = newDb();
     const adapter = db.adapters.createPg();
     const pool = new adapter.Pool();
 
@@ -283,5 +292,84 @@ describe('PostgresRecordingJobRepository', () => {
     expect(reloaded?.jobHistory?.[0]?.stage).toBe('queued');
     expect(reloaded?.jobHistory?.some((entry) => entry.stage === 'preparing-media')).toBe(true);
     expect(reloaded?.jobHistory?.at(-1)?.stage).toBe('completed');
+  });
+
+  it('returns lightweight archive rows for paginated operator history lookups', async () => {
+    const created = createRecordingJob({
+      meetingUrl: 'https://meet.google.com/postgres-lightweight',
+      platform: 'google-meet',
+      submitterId: 'operator-lightweight'
+    });
+
+    const summarized = attachSummaryArtifact(
+      attachTranscriptArtifact(
+        attachRecordingArtifact(created, {
+          storageKey: 'recordings/job_pg_lightweight/meeting.webm',
+          downloadUrl:
+            'https://storage.example.test/recordings/job_pg_lightweight/meeting.webm',
+          contentType: 'video/webm'
+        }),
+        {
+          storageKey: 'transcripts/job_pg_lightweight/transcript.json',
+          downloadUrl:
+            'https://storage.example.test/transcripts/job_pg_lightweight/transcript.json',
+          contentType: 'application/json',
+          language: 'en',
+          segments: [
+            {
+              startMs: 0,
+              endMs: 1000,
+              text: 'hello lightweight archive'
+            },
+            {
+              startMs: 1000,
+              endMs: 2000,
+              text: 'second transcript line'
+            }
+          ]
+        }
+      ),
+      {
+        model: 'gpt-5.3-codex-spark',
+        reasoningEffort: 'medium',
+        text: 'summary preview text for archive history'
+      }
+    );
+
+    await repository.save(summarized);
+
+    const page = await repository.listBySubmitterPage('operator-lightweight', { limit: 10 });
+    const listItem = page.jobs[0] as (typeof summarized) & {
+      hasTranscript?: boolean;
+      hasSummary?: boolean;
+      transcriptPreview?: string;
+      summaryPreview?: string;
+    };
+
+    expect(listItem.hasTranscript).toBe(true);
+    expect(listItem.hasSummary).toBe(true);
+    expect(listItem.transcriptPreview).toContain('hello lightweight archive');
+    expect(listItem.summaryPreview).toBe('summary preview text for archive history');
+    expect(listItem.transcriptArtifact).toBeUndefined();
+    expect(listItem.summaryArtifact).toBeUndefined();
+    expect(listItem.jobHistory).toBeUndefined();
+  });
+
+  it('creates the hot-path indexes required for archive retrieval and stage claims', async () => {
+    expect(getTableIndexNames('recording_jobs')).toEqual(
+      expect.arrayContaining([
+        'recording_jobs_submitter_archive_idx',
+        'recording_jobs_submitter_state_idx',
+        'recording_jobs_quota_day_created_at_idx',
+        'recording_jobs_active_processing_idx',
+        'recording_jobs_meeting_queue_idx',
+        'recording_jobs_meeting_active_idx',
+        'recording_jobs_submitter_active_idx',
+        'recording_jobs_transcription_claim_idx',
+        'recording_jobs_summary_claim_idx',
+        'recording_jobs_summary_active_idx',
+        'recording_jobs_pkey'
+      ])
+    );
   });
 });

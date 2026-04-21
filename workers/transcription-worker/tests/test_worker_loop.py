@@ -1,3 +1,4 @@
+import time
 import unittest
 
 from transcription_worker.worker_loop import run_transcription_worker_iteration
@@ -7,6 +8,7 @@ class FakeClient:
     def __init__(self, claimed_job, job_statuses=None, summary_slot_results=None):
         self.claimed_job = claimed_job
         self.events = []
+        self.heartbeats = []
         self.job_statuses = job_statuses or []
         self.summary_slot_results = summary_slot_results or [True]
         self.summary_slot_requests = []
@@ -14,8 +16,13 @@ class FakeClient:
     def claim_next_job(self, worker_id):
         return self.claimed_job
 
-    def post_job_event(self, job_id, payload):
+    def post_job_event(self, job_id, payload, lease_token=None):
+        if lease_token:
+            payload = {**payload, "leaseToken": lease_token}
         self.events.append((job_id, payload))
+
+    def post_lease_heartbeat(self, job_id, stage, lease_token=None):
+        self.heartbeats.append((job_id, stage, lease_token))
 
     def get_job(self, job_id):
         if self.job_statuses:
@@ -53,6 +60,17 @@ class FakeTranscriber:
         if on_progress:
             for update in self.progress_updates:
                 on_progress(update)
+        return self.transcript_result
+
+
+class SlowTranscriber(FakeTranscriber):
+    def __init__(self, delay_seconds, transcript_result=None):
+        super().__init__(transcript_result=transcript_result or {"language": "en", "segments": []})
+        self.delay_seconds = delay_seconds
+
+    def transcribe(self, local_audio_path, on_progress=None):
+        self.inputs.append(local_audio_path)
+        time.sleep(self.delay_seconds)
         return self.transcript_result
 
 
@@ -170,7 +188,7 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         self.assertEqual(downloader.downloaded[0]["storageKey"], "recordings/job_abc/meeting.webm")
         self.assertEqual(media_preparer.inputs, [("/tmp/job_abc.wav", "video/webm")])
         self.assertEqual(transcriber.inputs, ["/tmp/prepared.wav"])
-        self.assertEqual(summarizer.inputs[0]["segments"][0]["text"], "hello team")
+        self.assertEqual(summarizer.inputs, [])
         self.assertEqual(client.events[0][0], "job_abc")
         self.assertEqual(client.events[0][1]["type"], "progress-updated")
         self.assertEqual(client.events[0][1]["processingStage"], "preparing-media")
@@ -183,13 +201,9 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         self.assertEqual(client.events[4][1]["progressPercent"], 66)
         self.assertEqual(client.events[4][1]["progressProcessedMs"], 600000)
         self.assertEqual(client.events[5][1]["type"], "transcript-artifact-stored")
-        self.assertEqual(client.events[6][1]["type"], "progress-updated")
-        self.assertEqual(client.events[6][1]["processingStage"], "generating-summary")
-        self.assertEqual(client.events[7][1]["type"], "summary-artifact-stored")
-        self.assertEqual(client.events[7][1]["summaryArtifact"]["model"], "gpt-5.3-codex-spark")
-        self.assertEqual(client.events[7][1]["summaryArtifact"]["structured"]["actionItems"], ["send recap"])
-        self.assertEqual(summarizer.summary_profiles, ["general"])
-        self.assertEqual(summarizer.model_overrides, [None])
+        self.assertEqual(len(client.events), 6)
+        self.assertEqual(summarizer.summary_profiles, [])
+        self.assertEqual(summarizer.model_overrides, [])
 
     def test_reports_transcription_failure_instead_of_crashing(self) -> None:
         client = FakeClient(
@@ -268,6 +282,36 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         self.assertEqual(client.events[2][1]["type"], "progress-updated")
         self.assertEqual(client.events[3][1]["type"], "progress-updated")
         self.assertEqual(len(client.events), 4)
+
+    def test_posts_transcription_lease_heartbeats_while_transcribing(self) -> None:
+        client = FakeClient(
+            {
+                "id": "job_heartbeat",
+                "leaseToken": "lease_transcription_heartbeat",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_heartbeat/meeting.webm",
+                    "downloadUrl": "https://storage.example.test/recordings/job_heartbeat/meeting.webm",
+                    "contentType": "video/webm",
+                },
+            }
+        )
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_heartbeat.wav"),
+            media_preparer=FakeMediaPreparer(local_audio_path="/tmp/job_heartbeat.wav"),
+            transcriber=SlowTranscriber(delay_seconds=0.05),
+            summarizer=None,
+            heartbeat_interval_ms=10,
+        )
+
+        self.assertEqual(result, {"kind": "processed", "job_id": "job_heartbeat"})
+        self.assertGreaterEqual(len(client.heartbeats), 2)
+        self.assertEqual(
+            client.heartbeats[0],
+            ("job_heartbeat", "transcription", "lease_transcription_heartbeat"),
+        )
 
     def test_uses_the_claimed_azure_provider_when_the_job_requests_it(self) -> None:
         azure_transcriber = FakeTranscriber(
@@ -364,7 +408,7 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"kind": "processed", "job_id": "job_sales"})
-        self.assertEqual(summarizer.summary_profiles, ["sales"])
+        self.assertEqual(summarizer.summary_profiles, [])
 
     def test_forwards_the_claimed_cloud_summary_model_to_the_summarizer(self) -> None:
         summarizer = FakeSummarizer(
@@ -410,7 +454,7 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"kind": "processed", "job_id": "job_model_override"})
-        self.assertEqual(summarizer.model_overrides, ["gpt-5.4-nano"])
+        self.assertEqual(summarizer.model_overrides, [])
 
     def test_ignores_the_claimed_summary_model_when_using_local_codex(self) -> None:
         summarizer = FakeSummarizer(
@@ -456,7 +500,7 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"kind": "processed", "job_id": "job_local_summary_mode"})
-        self.assertEqual(summarizer.model_overrides, [None])
+        self.assertEqual(summarizer.model_overrides, [])
 
     def test_uses_the_claimed_summary_provider_and_posts_stage_usage(self) -> None:
         azure_summarizer = FakeSummarizer(
@@ -533,17 +577,12 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"kind": "processed", "job_id": "job_summary_provider"})
-        self.assertEqual(summarizer_registry.selected, ["azure-openai"])
+        self.assertEqual(summarizer_registry.selected, [])
         self.assertEqual(local_summarizer.inputs, [])
-        self.assertEqual(azure_summarizer.model_overrides, ["gpt-5.4-nano"])
-        self.assertEqual(client.summary_slot_requests, [("job_summary_provider", "transcriber-alpha")])
+        self.assertEqual(azure_summarizer.model_overrides, [])
+        self.assertEqual(client.summary_slot_requests, [])
         self.assertEqual(client.events[3][1]["transcriptArtifact"]["language"], "zh")
         self.assertEqual(client.events[3][1]["usage"], {"audioMs": 900000})
-        self.assertEqual(client.events[5][1]["summaryArtifact"]["model"], "gpt-5.4-nano")
-        self.assertEqual(
-            client.events[5][1]["usage"],
-            {"promptTokens": 120, "completionTokens": 80, "totalTokens": 200},
-        )
 
     def test_waits_until_a_summary_slot_is_available(self) -> None:
         summarizer = FakeSummarizer(
@@ -591,14 +630,8 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"kind": "processed", "job_id": "job_wait_summary_slot"})
-        self.assertEqual(
-            client.summary_slot_requests,
-            [
-                ("job_wait_summary_slot", "transcriber-alpha"),
-                ("job_wait_summary_slot", "transcriber-alpha"),
-            ],
-        )
-        self.assertEqual(sleep_calls, [1])
+        self.assertEqual(client.summary_slot_requests, [])
+        self.assertEqual(sleep_calls, [])
 
 
 if __name__ == "__main__":

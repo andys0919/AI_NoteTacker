@@ -8,6 +8,7 @@ export type CloudUsageProvider = TranscriptionProvider | SummaryProvider;
 
 export type CloudUsageLedgerEntry = {
   id: string;
+  entryKey?: string;
   jobId: string;
   submitterId: string;
   quotaDayKey: string;
@@ -23,6 +24,12 @@ export type CloudUsageLedgerEntry = {
   detail?: Record<string, unknown>;
 };
 
+export type CloudUsageCostSummary = {
+  actualTranscriptionCostUsd: number;
+  actualSummaryCostUsd: number;
+  actualCloudCostUsd: number;
+};
+
 export interface CloudUsageLedgerRepository {
   append(
     input: Omit<CloudUsageLedgerEntry, 'id' | 'createdAt'>
@@ -33,4 +40,5 @@ export interface CloudUsageLedgerRepository {
     quotaDayKey: string
   ): Promise<CloudUsageLedgerEntry[]>;
   listByJob(jobId: string): Promise<CloudUsageLedgerEntry[]>;
+  summarizeActualCostByJobIds(jobIds: string[]): Promise<Record<string, CloudUsageCostSummary>>;
 }

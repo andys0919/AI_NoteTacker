@@ -30,4 +30,15 @@ describe('dashboard shell markup', () => {
     expect(html).toContain('Recording Intake');
     expect(html).toContain('Jobs & Archive');
   });
+
+  it('renders a visible login entry point in the dashboard shell', () => {
+    const html = readFileSync(
+      resolve(import.meta.dirname, '../public/index.html'),
+      'utf-8'
+    );
+
+    expect(html).toContain('sign-in-button');
+    expect(html).toContain('登入');
+    expect(html).toContain('Email 驗證登入');
+  });
 });

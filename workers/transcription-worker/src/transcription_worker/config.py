@@ -22,7 +22,7 @@ def read_transcription_worker_config(environment: Mapping[str, str | None]) -> d
 
     summary_model = environment.get("SUMMARY_MODEL")
     if not summary_model:
-        summary_model = "gpt-5-mini" if deployment_mode == "cloud" else "gpt-5.3-codex-spark"
+        summary_model = "gpt-5.4-mini"
 
     azure_openai_summary_endpoint = environment.get("AZURE_OPENAI_SUMMARY_ENDPOINT")
     if not azure_openai_summary_endpoint and environment.get("AZURE_OPENAI_ENDPOINT"):
@@ -32,6 +32,7 @@ def read_transcription_worker_config(environment: Mapping[str, str | None]) -> d
 
     return {
         "control_plane_base_url": control_plane_base_url,
+        "internal_service_token": environment.get("INTERNAL_SERVICE_TOKEN"),
         "worker_id": worker_id,
         "deployment_mode": deployment_mode,
         "whisper_model": whisper_model,

@@ -1104,6 +1104,40 @@ summary {
   gap: 1.15rem;
 }
 
+.runtime-health-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin-bottom: 0.9rem;
+}
+
+.runtime-health-card {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.95rem 1rem;
+  border-radius: 1.15rem;
+  border: 1px solid rgba(160, 183, 202, 0.18);
+  background: rgba(6, 11, 17, 0.78);
+}
+
+.runtime-health-card strong {
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+.runtime-health-card small {
+  color: var(--muted);
+}
+
+.runtime-health-card-warn {
+  border-color: rgba(242, 188, 107, 0.28);
+  background: rgba(45, 29, 9, 0.38);
+}
+
+.runtime-health-card-ok {
+  border-color: rgba(125, 225, 192, 0.2);
+}
+
 .admin-governance-panel {
   padding: 1.4rem;
 }
@@ -1118,7 +1152,8 @@ summary {
   .workflow-grid,
   .template-picker,
   .template-preview-grid,
-  .job-meta-grid {
+  .job-meta-grid,
+  .runtime-health-card-grid {
     grid-template-columns: 1fr;
   }
 

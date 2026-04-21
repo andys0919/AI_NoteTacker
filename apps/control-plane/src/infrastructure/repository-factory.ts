@@ -90,7 +90,7 @@ export const createPersistenceContextFromEnvironment = async (): Promise<Persist
     defaultProvider === 'azure-openai-gpt-4o-mini-transcribe'
       ? defaultCloudTranscriptionModel
       : defaultLocalTranscriptionModel;
-  const defaultSummaryModel = process.env.SUMMARY_MODEL ?? 'gpt-5-mini';
+  const defaultSummaryModel = process.env.SUMMARY_MODEL ?? 'gpt-5.4-mini';
   const defaultSummaryProvider = summaryCatalog.defaultProvider;
   const defaultDailyCloudQuotaUsd = Number(process.env.DEFAULT_DAILY_CLOUD_QUOTA_USD ?? '5');
   const defaultLiveMeetingReservationCapUsd = Number(

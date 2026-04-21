@@ -1,4 +1,4 @@
-import time
+import threading
 
 
 def _transcription_progress_message(provider: str) -> str:
@@ -8,14 +8,13 @@ def _transcription_progress_message(provider: str) -> str:
     return "Running Whisper transcription."
 
 
-def _summary_progress_message(provider: str) -> str:
-    if provider == "azure-openai":
-        return "Generating Azure OpenAI summary."
-
-    return "Generating Codex summary."
-
-
-def _post_progress(client, job_id: str, processing_stage: str, processing_message: str) -> None:
+def _post_progress(
+    client,
+    job_id: str,
+    processing_stage: str,
+    processing_message: str,
+    lease_token: str | None = None,
+) -> None:
     client.post_job_event(
         job_id,
         {
@@ -23,11 +22,32 @@ def _post_progress(client, job_id: str, processing_stage: str, processing_messag
             "processingStage": processing_stage,
             "processingMessage": processing_message,
         },
+        lease_token=lease_token,
     )
 
 
 class JobCancelledError(RuntimeError):
     pass
+
+
+def _start_lease_heartbeat(client, job_id: str, stage: str, lease_token: str | None, heartbeat_interval_ms: int):
+    if not lease_token or heartbeat_interval_ms <= 0:
+        return None, None
+
+    stop_event = threading.Event()
+
+    def heartbeat_loop() -> None:
+        interval_seconds = heartbeat_interval_ms / 1000
+
+        while not stop_event.wait(interval_seconds):
+            try:
+                client.post_lease_heartbeat(job_id, stage, lease_token)
+            except Exception:  # noqa: BLE001
+                return
+
+    thread = threading.Thread(target=heartbeat_loop, daemon=True)
+    thread.start()
+    return stop_event, thread
 
 
 def run_transcription_worker_iteration(
@@ -40,11 +60,20 @@ def run_transcription_worker_iteration(
     transcriber_registry=None,
     summarizer_registry=None,
     sleep_fn=None,
+    heartbeat_interval_ms=30_000,
 ):
     claimed_job = client.claim_next_job(worker_id)
 
     if not claimed_job:
         return {"kind": "idle"}
+
+    heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(
+        client,
+        claimed_job["id"],
+        "transcription",
+        claimed_job.get("leaseToken"),
+        heartbeat_interval_ms,
+    )
 
     try:
         transcription_provider = claimed_job.get("transcriptionProvider") or "self-hosted-whisper"
@@ -60,6 +89,7 @@ def run_transcription_worker_iteration(
             claimed_job["id"],
             "preparing-media",
             "Downloading source media for transcription.",
+            lease_token=claimed_job.get("leaseToken"),
         )
         local_media_path = downloader.download(recording_artifact)
 
@@ -68,6 +98,7 @@ def run_transcription_worker_iteration(
             claimed_job["id"],
             "preparing-media",
             "Preparing canonical audio for transcription.",
+            lease_token=claimed_job.get("leaseToken"),
         )
         prepared_audio = media_preparer.prepare(
             local_media_path,
@@ -79,6 +110,7 @@ def run_transcription_worker_iteration(
             claimed_job["id"],
             "transcribing-audio",
             progress_message,
+            lease_token=claimed_job.get("leaseToken"),
         )
         last_reported_percent = None
 
@@ -101,6 +133,7 @@ def run_transcription_worker_iteration(
                     "progressProcessedMs": update["processed_ms"],
                     "progressTotalMs": update["total_ms"],
                 },
+                lease_token=claimed_job.get("leaseToken"),
             )
 
             latest_job = client.get_job(claimed_job["id"])
@@ -116,8 +149,16 @@ def run_transcription_worker_iteration(
             on_progress=report_transcription_progress,
         )
     except JobCancelledError:
+        if heartbeat_stop:
+            heartbeat_stop.set()
+        if heartbeat_thread:
+            heartbeat_thread.join(timeout=1)
         return {"kind": "cancelled", "job_id": claimed_job["id"]}
     except Exception as error:
+        if heartbeat_stop:
+            heartbeat_stop.set()
+        if heartbeat_thread:
+            heartbeat_thread.join(timeout=1)
         client.post_job_event(
             claimed_job["id"],
             {
@@ -127,6 +168,7 @@ def run_transcription_worker_iteration(
                     "message": str(error),
                 },
             },
+            lease_token=claimed_job.get("leaseToken"),
         )
         return {"kind": "failed", "job_id": claimed_job["id"]}
 
@@ -154,67 +196,12 @@ def run_transcription_worker_iteration(
     client.post_job_event(
         claimed_job["id"],
         transcript_event,
+        lease_token=claimed_job.get("leaseToken"),
     )
 
-    summary_provider = claimed_job.get("summaryProvider")
-    selected_summarizer = (
-        summarizer_registry.get(summary_provider)
-        if summary_provider and summarizer_registry is not None
-        else summarizer
-    )
-
-    if selected_summarizer is not None:
-        try:
-            sleep_between_summary_slot_attempts = sleep_fn or time.sleep
-            while hasattr(client, "claim_summary_slot") and not client.claim_summary_slot(
-                claimed_job["id"], worker_id
-            ):
-                sleep_between_summary_slot_attempts(1)
-            summary_progress_message = _summary_progress_message(
-                summary_provider or "local-codex"
-            )
-            _post_progress(
-                client,
-                claimed_job["id"],
-                "generating-summary",
-                summary_progress_message,
-            )
-            summary_result = selected_summarizer.summarize(
-                transcript_result,
-                summary_profile=claimed_job.get("summaryProfile", "general"),
-                model_override=claimed_job.get("summaryModel")
-                if summary_provider == "azure-openai"
-                else None,
-            )
-            summary_event = {
-                "type": "summary-artifact-stored",
-                "summaryArtifact": {
-                    "model": summary_result["model"],
-                    "reasoningEffort": summary_result["reasoning_effort"],
-                    "text": summary_result["text"],
-                    "structured": {
-                        "summary": summary_result["structured"]["summary"],
-                        "keyPoints": summary_result["structured"]["key_points"],
-                        "actionItems": summary_result["structured"]["action_items"],
-                        "decisions": summary_result["structured"]["decisions"],
-                        "risks": summary_result["structured"]["risks"],
-                        "openQuestions": summary_result["structured"]["open_questions"],
-                    }
-                    if summary_result.get("structured")
-                    else None,
-                },
-            }
-            if summary_result.get("usage"):
-                summary_event["usage"] = {
-                    "promptTokens": summary_result["usage"]["prompt_tokens"],
-                    "completionTokens": summary_result["usage"]["completion_tokens"],
-                    "totalTokens": summary_result["usage"]["total_tokens"],
-                }
-            client.post_job_event(
-                claimed_job["id"],
-                summary_event,
-            )
-        except Exception as error:
-            print(f"summary generation failed for {claimed_job['id']}: {error}")
+    if heartbeat_stop:
+        heartbeat_stop.set()
+    if heartbeat_thread:
+        heartbeat_thread.join(timeout=1)
 
     return {"kind": "processed", "job_id": claimed_job["id"]}

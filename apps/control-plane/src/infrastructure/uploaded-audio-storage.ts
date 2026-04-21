@@ -1,4 +1,5 @@
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { createReadStream } from 'node:fs';
 
 import type { RecordingArtifact } from '../domain/recording-job.js';
 
@@ -7,7 +8,8 @@ export type UploadedAudioStorageInput = {
   submitterId: string;
   originalName: string;
   contentType: string;
-  bytes: Buffer;
+  bytes?: Buffer;
+  filePath?: string;
 };
 
 export interface UploadedAudioStorage {
@@ -36,12 +38,17 @@ export class S3UploadedAudioStorage implements UploadedAudioStorage {
   async storeUpload(input: UploadedAudioStorageInput): Promise<RecordingArtifact> {
     const safeName = sanitizeFileName(input.originalName);
     const storageKey = `uploads/${input.submitterId}/${input.jobId}/${safeName}`;
+    const body = input.filePath ? createReadStream(input.filePath) : input.bytes;
+
+    if (!body) {
+      throw new Error('uploaded media bytes or filePath is required');
+    }
 
     await this.client.send(
       new PutObjectCommand({
         Bucket: this.bucketName,
         Key: storageKey,
-        Body: input.bytes,
+        Body: body,
         ContentType: input.contentType
       })
     );

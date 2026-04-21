@@ -8,6 +8,7 @@ import {
   getAuditEntryViewModels,
   getUsageReportRowViewModels
 } from '/governance-panel.js';
+import { getRuntimeHealthViewModel } from '/runtime-health-panel.js';
 
 const elements = {
   adminAuditList: document.querySelector('#admin-audit-list'),
@@ -18,6 +19,10 @@ const elements = {
   adminProviderCopy: document.querySelector('#admin-provider-copy'),
   adminProviderCurrent: document.querySelector('#admin-provider-current'),
   adminProviderForm: document.querySelector('#admin-provider-form'),
+  adminRuntimeHealthCards: document.querySelector('#admin-runtime-health-cards'),
+  adminRuntimeHealthList: document.querySelector('#admin-runtime-health-list'),
+  adminRuntimeHealthPanel: document.querySelector('#admin-runtime-health-panel'),
+  adminRuntimeHealthSummary: document.querySelector('#admin-runtime-health-summary'),
   adminProviderPanel: document.querySelector('#admin-provider-panel'),
   adminProviderSelect: document.querySelector('#admin-provider-select'),
   adminTranscriptionModelInput: document.querySelector('#admin-transcription-model-input'),
@@ -94,6 +99,9 @@ const resetAdminView = () => {
   elements.adminProviderSelect.replaceChildren();
   elements.adminSummaryProviderSelect.replaceChildren();
   elements.adminAuditList.innerHTML = '<p class="admin-provider-status">尚無治理異動紀錄。</p>';
+  elements.adminRuntimeHealthSummary.textContent = '尚無 runtime health 資料。';
+  elements.adminRuntimeHealthCards.innerHTML = '';
+  elements.adminRuntimeHealthList.innerHTML = '<p class="admin-provider-status">尚無 runtime health 資料。</p>';
   elements.adminUsageReportSummary.textContent = '尚無 cloud usage 資料。';
   elements.adminUsageReportList.innerHTML = '<p class="admin-provider-status">尚無 cloud usage 資料。</p>';
   elements.adminContent.hidden = true;
@@ -141,6 +149,53 @@ const renderUsageReport = (payload) => {
   );
 };
 
+const renderRuntimeHealth = (payload) => {
+  if (!elements.adminRuntimeHealthPanel) {
+    return;
+  }
+
+  const viewModel = getRuntimeHealthViewModel(payload);
+  elements.adminRuntimeHealthSummary.textContent = viewModel.summaryText;
+  elements.adminRuntimeHealthCards.replaceChildren(
+    ...viewModel.queueCards.map((card) => {
+      const node = document.createElement('article');
+      node.className = `runtime-health-card runtime-health-card-${card.tone}`;
+      node.innerHTML = `
+        <span class="meta-label">${card.label}</span>
+        <strong>${card.valueText}</strong>
+        <small>${card.capacityText}</small>
+      `;
+      return node;
+    })
+  );
+
+  const entries = [
+    {
+      title: viewModel.leaseHeadline,
+      detail: viewModel.failureText,
+      meta: viewModel.cleanupText
+    },
+    ...viewModel.leaseRows.map((row) => ({
+      title: row.stageLabel,
+      detail: row.detailText,
+      meta: row.heartbeatText
+    }))
+  ];
+
+  elements.adminRuntimeHealthList.replaceChildren(
+    ...entries.map((entry) => {
+      const node = document.createElement('article');
+      node.className = 'admin-audit-entry';
+      node.innerHTML = `
+        <strong>${entry.title}</strong>
+        <span>${entry.detail}</span>
+        <small>${entry.meta}</small>
+      `;
+      return node;
+    })
+  );
+};
+
 const updateAdminProviderStatus = () => {
   const viewModel = getAdminGovernanceViewModel({
     state: adminProviderState,
@@ -167,12 +222,19 @@ const updateAdminProviderStatus = () => {
     : '例如 gpt-5.4-nano';
 };
 
-const renderAdminPanel = (payload, overrides = [], auditEntries = [], usageReport = null) => {
+const renderAdminPanel = (
+  payload,
+  overrides = [],
+  auditEntries = [],
+  usageReport = null,
+  runtimeHealth = null
+) => {
   adminProviderState = {
     ...payload,
     overrides,
     auditEntries,
-    usageReport
+    usageReport,
+    runtimeHealth
   };
   elements.sessionEmail.textContent = currentOperatorEmail || '-';
   elements.adminProviderSelect.replaceChildren(
@@ -210,17 +272,25 @@ const renderAdminPanel = (payload, overrides = [], auditEntries = [], usageRepor
   elements.adminCloudSummaryInput.value = payload.concurrencyPools?.cloudSummary ?? 1;
   renderAuditEntries(auditEntries);
   renderUsageReport(usageReport);
+  renderRuntimeHealth(runtimeHealth);
   elements.adminContent.hidden = false;
   elements.adminDeniedPanel.hidden = true;
   updateAdminProviderStatus();
 };
 
 const fetchAdminPanel = async () => {
-  const [policyResponse, overridesResponse, auditResponse, usageReportResponse] = await Promise.all([
+  const [
+    policyResponse,
+    overridesResponse,
+    auditResponse,
+    usageReportResponse,
+    runtimeHealthResponse
+  ] = await Promise.all([
     apiFetch('/api/admin/ai-policy'),
     apiFetch('/api/admin/cloud-quota/overrides'),
     apiFetch('/api/admin/audit-log'),
-    apiFetch('/api/admin/cloud-usage/report')
+    apiFetch('/api/admin/cloud-usage/report'),
+    apiFetch('/api/admin/runtime-health')
   ]);
 
   if (policyResponse.status === 401) {
@@ -236,7 +306,13 @@ const fetchAdminPanel = async () => {
     return;
   }
 
-  if (!policyResponse.ok || !overridesResponse.ok || !auditResponse.ok || !usageReportResponse.ok) {
+  if (
+    !policyResponse.ok ||
+    !overridesResponse.ok ||
+    !auditResponse.ok ||
+    !usageReportResponse.ok ||
+    !runtimeHealthResponse.ok
+  ) {
     throw new Error('Failed to fetch admin governance settings.');
   }
 
@@ -244,13 +320,15 @@ const fetchAdminPanel = async () => {
   const overridesPayload = await overridesResponse.json();
   const auditPayload = await auditResponse.json();
   const usageReportPayload = await usageReportResponse.json();
+  const runtimeHealthPayload = await runtimeHealthResponse.json();
 
   elements.authPanel.hidden = true;
   renderAdminPanel(
     policy,
     overridesPayload.overrides || [],
     auditPayload.entries || [],
-    usageReportPayload
+    usageReportPayload,
+    runtimeHealthPayload
   );
 };
 

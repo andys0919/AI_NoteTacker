@@ -46,7 +46,11 @@ export const getJobActionSet = (job, runtimeState) => {
     actions.push('delete-history');
   }
 
-  if (job.transcriptArtifact || job.summaryArtifact) {
+  if ((job.hasTranscript || job.hasSummary) && !job.transcriptArtifact && !job.summaryArtifact) {
+    actions.push('view-details');
+  }
+
+  if (job.transcriptArtifact || job.summaryArtifact || job.hasTranscript || job.hasSummary) {
     actions.push('export-markdown');
   }
 

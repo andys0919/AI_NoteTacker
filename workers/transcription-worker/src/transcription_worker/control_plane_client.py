@@ -3,8 +3,9 @@ from urllib import request
 
 
 class ControlPlaneClient:
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, internal_service_token: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
+        self.internal_service_token = internal_service_token
 
     def claim_next_job(self, worker_id: str) -> dict | None:
         response = self._post_json(
@@ -18,8 +19,28 @@ class ControlPlaneClient:
 
         return response
 
-    def post_job_event(self, job_id: str, payload: dict) -> None:
+    def claim_next_summary_job(self, worker_id: str) -> dict | None:
+        response = self._post_json(
+            f"{self.base_url}/summary-workers/claims",
+            {"workerId": worker_id},
+            allow_no_content=True,
+        )
+
+        if response is None:
+            return None
+
+        return response
+
+    def post_job_event(self, job_id: str, payload: dict, lease_token: str | None = None) -> None:
+        if lease_token:
+            payload = {**payload, "leaseToken": lease_token}
         self._post_json(f"{self.base_url}/recording-jobs/{job_id}/events", payload)
+
+    def post_lease_heartbeat(self, job_id: str, stage: str, lease_token: str | None = None) -> None:
+        payload = {"stage": stage}
+        if lease_token:
+            payload["leaseToken"] = lease_token
+        self._post_json(f"{self.base_url}/recording-jobs/{job_id}/leases/heartbeat", payload)
 
     def get_job(self, job_id: str) -> dict | None:
         http_request = request.Request(
@@ -45,7 +66,14 @@ class ControlPlaneClient:
         http_request = request.Request(
             url,
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                **(
+                    {"x-internal-service-token": self.internal_service_token}
+                    if self.internal_service_token
+                    else {}
+                ),
+            },
             data=encoded_payload,
         )
 

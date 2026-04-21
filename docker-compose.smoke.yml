@@ -1,0 +1,61 @@
+services:
+  control-plane:
+    environment:
+      DEPLOYMENT_MODE: local
+      DEFAULT_TRANSCRIPTION_PROVIDER: self-hosted-whisper
+      DEFAULT_SUMMARY_PROVIDER: local-codex
+      SUMMARY_ENABLED: "true"
+      SUPABASE_URL: ""
+      SUPABASE_PUBLISHABLE_KEY: ""
+    depends_on:
+      minio-bucket-init:
+        condition: service_completed_successfully
+
+  recording-worker:
+    environment:
+      RECORDING_EXECUTOR: stub
+      ARTIFACT_BASE_URL: http://stub-artifact-server:8080
+    depends_on:
+      stub-artifact-server:
+        condition: service_started
+
+  transcription-worker:
+    environment:
+      DEPLOYMENT_MODE: local
+      WHISPER_MODEL: tiny
+      WHISPER_DEVICE: cuda
+      WHISPER_COMPUTE_TYPE: float16
+      SUMMARY_ENABLED: "true"
+      SUMMARY_MODEL: gpt-5.4-mini
+      SUMMARY_REASONING_EFFORT: medium
+      CODEX_CLI_PATH: codex
+      CODEX_HOME: /codex-home
+
+  summary-worker:
+    environment:
+      DEPLOYMENT_MODE: local
+      SUMMARY_ENABLED: "true"
+      SUMMARY_MODEL: gpt-5.4-mini
+      SUMMARY_REASONING_EFFORT: medium
+      CODEX_CLI_PATH: codex
+      CODEX_HOME: /codex-home
+
+  stub-artifact-server:
+    image: python:3.12-slim
+    restart: unless-stopped
+    working_dir: /srv
+    command: ["python", "/srv/stub_artifact_server.py"]
+    volumes:
+      - ./ops/smoke/stub_artifact_server.py:/srv/stub_artifact_server.py:ro
+
+  minio-bucket-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until /usr/bin/mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 1; done
+        /usr/bin/mc mb --ignore-existing local/meeting-artifacts
