@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { getAuthEntryViewModel } from '../public/auth-entry.js';
 
 describe('auth entry helpers', () => {
-  it('shows a disabled setup hint when auth is not enabled', () => {
+  it('hides the sign-in entry entirely when auth is not enabled', () => {
     expect(
       getAuthEntryViewModel({
         authEnabled: false,
@@ -11,7 +11,7 @@ describe('auth entry helpers', () => {
         pendingAuthEmail: null
       })
     ).toEqual({
-      hidden: false,
+      hidden: true,
       disabled: true,
       buttonText: '登入未啟用',
       hintText: '這個環境尚未設定 Email 驗證登入。'

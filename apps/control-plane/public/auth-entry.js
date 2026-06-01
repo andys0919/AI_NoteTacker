@@ -5,7 +5,7 @@ export const getAuthEntryViewModel = ({
 }) => {
   if (!authEnabled) {
     return {
-      hidden: false,
+      hidden: true,
       disabled: true,
       buttonText: '登入未啟用',
       hintText: '這個環境尚未設定 Email 驗證登入。'

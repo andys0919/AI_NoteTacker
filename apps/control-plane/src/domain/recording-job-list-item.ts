@@ -1,9 +1,6 @@
 import type { RecordingJob, SummaryArtifact, TranscriptArtifact } from './recording-job.js';
 
-export type RecordingJobListItem = Omit<
-  RecordingJob,
-  'transcriptArtifact' | 'summaryArtifact' | 'jobHistory'
-> & {
+export type RecordingJobListItem = Omit<RecordingJob, 'jobHistory'> & {
   hasTranscript: boolean;
   hasSummary: boolean;
   transcriptPreview?: string;
@@ -35,13 +32,15 @@ export const buildSummaryPreview = (
 };
 
 export const toRecordingJobListItem = (job: RecordingJob): RecordingJobListItem => {
-  const { transcriptArtifact, summaryArtifact, jobHistory: _jobHistory, ...baseJob } = job;
+  // Keep the full transcript/summary artifacts inline so the dashboard can show
+  // the complete result once a job is done (no preview / no extra fetch step).
+  const { jobHistory: _jobHistory, ...baseJob } = job;
 
   return {
     ...baseJob,
-    hasTranscript: Boolean(transcriptArtifact),
-    hasSummary: Boolean(summaryArtifact),
-    transcriptPreview: buildTranscriptPreview(transcriptArtifact),
-    summaryPreview: buildSummaryPreview(summaryArtifact?.text)
+    hasTranscript: Boolean(job.transcriptArtifact),
+    hasSummary: Boolean(job.summaryArtifact),
+    transcriptPreview: buildTranscriptPreview(job.transcriptArtifact),
+    summaryPreview: buildSummaryPreview(job.summaryArtifact?.text)
   };
 };

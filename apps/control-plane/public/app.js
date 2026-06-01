@@ -1459,13 +1459,7 @@ elements.jobFilters?.addEventListener('click', (event) => {
   });
 });
 
+// 自動輪詢已移除：原本每 5 秒呼叫 fetchJobs() 會整個 replaceChildren 重畫卡片，
+// 導致「查看內容」展開的完整內容被收合、還原成預覽。工作進度改為在送出、上傳、
+// 刪除、搜尋、篩選等操作後主動刷新；要看最新進度時重新整理頁面即可。
 boot();
-window.setInterval(() => {
-  if (authEnabled && !currentOperatorEmail) {
-    return;
-  }
-
-  fetchJobs().catch((error) => {
-    setBanner(error instanceof Error ? error.message : String(error), 'error');
-  });
-}, 5000);

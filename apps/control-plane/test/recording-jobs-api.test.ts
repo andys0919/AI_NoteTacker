@@ -987,7 +987,7 @@ describe('recording jobs API', () => {
     expect(listed.body.jobs[0].requestedJoinName).toBe('Solomon - NoteTaker');
   });
 
-  it('returns lightweight operator job lists and full job details separately', async () => {
+  it('returns operator job lists with full transcript/summary content inline', async () => {
     const app = createApp();
 
     const created = await request(app)
@@ -1026,7 +1026,7 @@ describe('recording jobs API', () => {
       .query({ submitterId: 'operator-list' });
 
     expect(listed.status).toBe(200);
-    expect(listed.body.jobs[0].transcriptArtifact).toBeUndefined();
+    expect(listed.body.jobs[0].transcriptArtifact.segments).toHaveLength(1);
     expect(listed.body.jobs[0].summaryArtifact).toBeUndefined();
     expect(listed.body.jobs[0].hasTranscript).toBe(true);
 
@@ -2106,7 +2106,7 @@ describe('recording jobs API', () => {
       {
         model: 'gpt-5.3-codex-spark',
         reasoningEffort: 'medium',
-        text: 'Export summary'
+        text: '## Summary\n\nExport summary'
       }
     );
 
@@ -2130,6 +2130,9 @@ describe('recording jobs API', () => {
     expect(markdown.text).toContain('# AI NoteTacker Export');
     expect(markdown.text).toContain('Export summary');
     expect(markdown.text).toContain('hello export world');
+    // The generated summary already carries its own "## Summary" heading,
+    // so the export must not prepend a duplicate one.
+    expect(markdown.text.split('## Summary').length - 1).toBe(1);
 
     const txt = await request(app)
       .get(`/api/operator/jobs/${exportedJob.id}/export`)
@@ -2158,7 +2161,7 @@ describe('recording jobs API', () => {
     expect(json.status).toBe(200);
     expect(json.headers['content-type']).toContain('application/json');
     expect(json.body.job.id).toBe(exportedJob.id);
-    expect(json.body.summary.text).toBe('Export summary');
+    expect(json.body.summary.text).toBe('## Summary\n\nExport summary');
     expect(json.body.transcript.segments).toHaveLength(2);
   });
 

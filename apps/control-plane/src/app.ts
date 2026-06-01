@@ -457,8 +457,6 @@ const toOperatorJobListItem = (
 ) => ({
   ...toApiRecordingJob({
     ...job,
-    transcriptArtifact: undefined,
-    summaryArtifact: undefined,
     jobHistory: undefined
   }),
   hasTranscript: job.hasTranscript ?? Boolean(job.transcriptArtifact),
@@ -714,7 +712,16 @@ const renderMarkdownExport = (job: RecordingJob): string => {
   ];
 
   if (job.summaryArtifact?.text) {
-    parts.push('', '## Summary', '', job.summaryArtifact.text);
+    const summaryText = job.summaryArtifact.text.trim();
+    parts.push('');
+
+    // The generated summary already starts with its own "## Summary" heading,
+    // so only prepend one when the text isn't already a Markdown document.
+    if (!/^#{1,6}\s/.test(summaryText)) {
+      parts.push('## Summary', '');
+    }
+
+    parts.push(summaryText);
   }
 
   if (job.transcriptArtifact?.segments.length) {

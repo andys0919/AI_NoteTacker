@@ -451,6 +451,8 @@ const mapRowToRecordingJobListItem = (row: RecordingJobRow): RecordingJobListIte
   failureCode: row.failure_code ?? undefined,
   failureMessage: row.failure_message ?? undefined,
   recordingArtifact: row.recording_artifact ?? undefined,
+  transcriptArtifact: row.transcript_artifact ?? undefined,
+  summaryArtifact: row.summary_artifact ?? undefined,
   terminalNotificationSentAt: row.terminal_notification_sent_at
     ? toIsoString(row.terminal_notification_sent_at)
     : undefined,
@@ -803,6 +805,8 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           failure_code,
           failure_message,
           recording_artifact,
+          transcript_artifact,
+          summary_artifact,
           transcript_preview,
           summary_preview,
           has_transcript_artifact,

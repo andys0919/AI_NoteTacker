@@ -294,7 +294,7 @@ describe('PostgresRecordingJobRepository', () => {
     expect(reloaded?.jobHistory?.at(-1)?.stage).toBe('completed');
   });
 
-  it('returns lightweight archive rows for paginated operator history lookups', async () => {
+  it('returns paginated operator history rows with full artifacts inline (history stripped)', async () => {
     const created = createRecordingJob({
       meetingUrl: 'https://meet.google.com/postgres-lightweight',
       platform: 'google-meet',
@@ -350,8 +350,8 @@ describe('PostgresRecordingJobRepository', () => {
     expect(listItem.hasSummary).toBe(true);
     expect(listItem.transcriptPreview).toContain('hello lightweight archive');
     expect(listItem.summaryPreview).toBe('summary preview text for archive history');
-    expect(listItem.transcriptArtifact).toBeUndefined();
-    expect(listItem.summaryArtifact).toBeUndefined();
+    expect(listItem.transcriptArtifact?.segments).toHaveLength(2);
+    expect(listItem.summaryArtifact?.text).toBe('summary preview text for archive history');
     expect(listItem.jobHistory).toBeUndefined();
   });
 
