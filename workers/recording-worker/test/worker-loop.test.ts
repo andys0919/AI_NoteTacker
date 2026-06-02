@@ -30,6 +30,24 @@ class FakeWorkerClient implements RecordingWorkerControlPlaneClient {
   }
 }
 
+class FailingReportClient implements RecordingWorkerControlPlaneClient {
+  readonly heartbeats: Array<{ jobId: string; stage: string; leaseToken?: string }> = [];
+
+  constructor(private readonly claimedJob: WorkerClaimedJob | undefined) {}
+
+  async claimNextJob(_workerId: string): Promise<WorkerClaimedJob | undefined> {
+    return this.claimedJob;
+  }
+
+  async postJobEvent(): Promise<void> {
+    throw new Error('control plane unreachable');
+  }
+
+  async postLeaseHeartbeat(jobId: string, stage: 'recording', leaseToken?: string): Promise<void> {
+    this.heartbeats.push({ jobId, stage, leaseToken });
+  }
+}
+
 class FakeExecutor implements RecordingWorkerExecutor {
   async execute(job: WorkerClaimedJob, client: RecordingWorkerControlPlaneClient): Promise<void> {
     await client.postJobEvent(job.id, {
@@ -129,6 +147,27 @@ describe('runRecordingWorkerIteration', () => {
         message: 'meeting-bot dispatch failed'
       }
     });
+  });
+
+  it('still returns failed (and does not throw) when reporting the executor failure also fails', async () => {
+    const client = new FailingReportClient({
+      id: 'job_789',
+      leaseToken: 'lease_789',
+      platform: 'google-meet',
+      meetingUrl: 'https://meet.google.com/abc-defg-hij'
+    });
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const result = await runRecordingWorkerIteration({
+      workerId: 'worker-alpha',
+      client,
+      executor: new ThrowingExecutor()
+    });
+
+    expect(result).toEqual({ kind: 'failed', jobId: 'job_789' });
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
   });
 
   it('posts recording lease heartbeats while a claimed job is still running', async () => {

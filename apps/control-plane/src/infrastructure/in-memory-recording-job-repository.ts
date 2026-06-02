@@ -224,10 +224,19 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
       return undefined;
     }
 
+    // A queued job is never itself in processingStates, so "has another active job for
+    // this submitter" reduces to "this submitter has any active job". Pre-compute the set
+    // of such submitters once instead of re-scanning all jobs per queued candidate (O(n·m) → O(n)).
+    const submitterIdsWithActiveJob = new Set(
+      [...this.jobs.values()]
+        .filter((job) => processingStates.has(job.state))
+        .map((job) => job.submitterId)
+    );
+
     const queuedJob = [...this.jobs.values()]
       .filter((job) => job.state === 'queued' && job.inputSource === 'meeting-link')
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-      .find((job) => !this.hasOtherActiveJobForSubmitter(job.submitterId, job.id));
+      .find((job) => !submitterIdsWithActiveJob.has(job.submitterId));
 
     if (!queuedJob) {
       return undefined;

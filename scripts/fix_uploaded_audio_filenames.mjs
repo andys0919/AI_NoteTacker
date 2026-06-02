@@ -14,6 +14,13 @@ const normalizeUploadedFileName = (value) => {
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const decoded = Buffer.from(current, 'latin1').toString('utf8');
+
+    // Once decoding stops changing the value (a fixpoint), `current` was already scored
+    // in a previous iteration, so the remaining passes cannot improve the result.
+    if (decoded === current) {
+      break;
+    }
+
     const decodedScore = scorePotentialFileNameDecoding(decoded);
 
     if (decodedScore > bestScore) {

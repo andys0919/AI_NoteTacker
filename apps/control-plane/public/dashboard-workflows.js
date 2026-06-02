@@ -1,7 +1,7 @@
 const activeStates = new Set(['queued', 'joining', 'recording', 'transcribing']);
 
 export const filterJobsByQuickFilter = (jobs, filterId = 'all', nowValue = new Date().toISOString()) => {
-  if (filterId === 'all' || filterId === 'mine') {
+  if (filterId === 'all') {
     return jobs;
   }
 

@@ -1,5 +1,5 @@
 export const formatProviderLabel = (value) => {
-  if (value === 'azure-openai-gpt-4o-mini-transcribe' || value === 'azure-openai') {
+  if (value === 'azure-openai-gpt-4o-transcribe' || value === 'azure-openai') {
     return 'Azure OpenAI';
   }
 

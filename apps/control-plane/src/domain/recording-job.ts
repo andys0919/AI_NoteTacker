@@ -527,14 +527,14 @@ export const releaseTranscriptionJobForRetry = (
     ...clearTranscriptionLeaseState,
     transcriptionAttemptCount: nextAttemptCount,
     state: 'transcribing',
-    processingStage: 'transcribing-audio',
+    processingStage: job.inputSource === 'uploaded-audio' ? 'preparing-media' : 'transcribing-audio',
     processingMessage: failure.message,
-    progressPercent: 65,
+    progressPercent: job.inputSource === 'uploaded-audio' ? 25 : 65,
     failureCode: failure.code,
     failureMessage: failure.message,
     updatedAt: now(),
     jobHistory: appendJobHistoryEntry(job, {
-      stage: 'transcribing-audio',
+      stage: job.inputSource === 'uploaded-audio' ? 'preparing-media' : 'transcribing-audio',
       message: failure.message,
       state: 'transcribing',
       kind: 'failure'

@@ -124,7 +124,7 @@ export class PostgresTranscriptionProviderSettingsRepository
         transcriptionProvider: defaultsOrProvider,
         transcriptionModel: 'large-v3',
         localTranscriptionModel: 'large-v3',
-        cloudTranscriptionModel: 'gpt-4o-mini-transcribe',
+        cloudTranscriptionModel: 'gpt-4o-transcribe',
         summaryProvider: 'local-codex',
         summaryModel: legacyDefaultSummaryModel,
         pricingVersion: 'v1',
@@ -145,12 +145,12 @@ export class PostgresTranscriptionProviderSettingsRepository
       localTranscriptionModel:
         defaultsOrProvider.localTranscriptionModel ?? defaultsOrProvider.transcriptionModel,
       cloudTranscriptionModel:
-        defaultsOrProvider.cloudTranscriptionModel ?? 'gpt-4o-mini-transcribe'
+        defaultsOrProvider.cloudTranscriptionModel ?? 'gpt-4o-transcribe'
     };
   }
 
   private resolveDefaultTranscriptionModelForProvider(provider: TranscriptionProvider): string {
-    return provider === 'azure-openai-gpt-4o-mini-transcribe'
+    return provider === 'azure-openai-gpt-4o-transcribe'
       ? this.defaults.cloudTranscriptionModel
       : this.defaults.localTranscriptionModel;
   }
@@ -164,7 +164,7 @@ export class PostgresTranscriptionProviderSettingsRepository
     }
 
     if (
-      provider === 'azure-openai-gpt-4o-mini-transcribe' &&
+      provider === 'azure-openai-gpt-4o-transcribe' &&
       model === this.defaults.localTranscriptionModel &&
       this.defaults.cloudTranscriptionModel !== this.defaults.localTranscriptionModel
     ) {

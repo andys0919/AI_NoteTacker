@@ -37,12 +37,12 @@ export class InMemoryTranscriptionProviderSettingsRepository
     this.localTranscriptionModel =
       input.defaultLocalTranscriptionModel ?? input.defaultTranscriptionModel;
     this.cloudTranscriptionModel =
-      input.defaultCloudTranscriptionModel ?? 'gpt-4o-mini-transcribe';
+      input.defaultCloudTranscriptionModel ?? 'gpt-4o-transcribe';
     this.current = {
       provider: input.defaultTranscriptionProvider,
       transcriptionProvider: input.defaultTranscriptionProvider,
       transcriptionModel:
-        input.defaultTranscriptionProvider === 'azure-openai-gpt-4o-mini-transcribe'
+        input.defaultTranscriptionProvider === 'azure-openai-gpt-4o-transcribe'
           ? this.cloudTranscriptionModel
           : this.localTranscriptionModel,
       summaryProvider: input.defaultSummaryProvider,
@@ -97,7 +97,7 @@ export class InMemoryTranscriptionProviderSettingsRepository
     const nextTranscriptionModel =
       input.transcriptionModel ??
       (nextProvider !== this.current.transcriptionProvider
-        ? nextProvider === 'azure-openai-gpt-4o-mini-transcribe'
+        ? nextProvider === 'azure-openai-gpt-4o-transcribe'
           ? this.cloudTranscriptionModel
           : this.localTranscriptionModel
         : this.current.transcriptionModel);

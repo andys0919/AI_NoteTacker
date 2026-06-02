@@ -976,9 +976,9 @@ export const createApp = (
     options.summaryProviderCatalog ?? createSummaryProviderCatalogFromEnvironment();
   const defaultLocalTranscriptionModel = process.env.WHISPER_MODEL ?? 'large-v3';
   const defaultCloudTranscriptionModel =
-    process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-4o-mini-transcribe';
+    process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-4o-transcribe';
   const defaultTranscriptionModel =
-    transcriptionProviderCatalog.defaultProvider === 'azure-openai-gpt-4o-mini-transcribe'
+    transcriptionProviderCatalog.defaultProvider === 'azure-openai-gpt-4o-transcribe'
       ? defaultCloudTranscriptionModel
       : defaultLocalTranscriptionModel;
   const defaultSummaryModel = process.env.SUMMARY_MODEL ?? 'gpt-5.4-mini';
@@ -1036,6 +1036,13 @@ export const createApp = (
   const meetingBotRuntimeMonitor = options.meetingBotRuntimeMonitor;
   const jobNotificationSender = options.jobNotificationSender;
   const internalServiceToken = options.internalServiceToken ?? process.env.INTERNAL_SERVICE_TOKEN;
+  if (!internalServiceToken) {
+    console.warn(
+      '[control-plane] INTERNAL_SERVICE_TOKEN is not set — internal worker and integration ' +
+        'endpoints will accept UNAUTHENTICATED requests. Set INTERNAL_SERVICE_TOKEN before ' +
+        'exposing this service.'
+    );
+  }
   const staleMeetingJobAfterMs = options.staleMeetingJobAfterMs ?? 10 * 60 * 1000;
   const staleMeetingFinalizationAfterMs =
     options.staleMeetingFinalizationAfterMs ?? 2 * 60 * 1000;
@@ -2437,7 +2444,17 @@ export const createApp = (
   });
 
   app.post('/api/operator/jobs/uploads', upload.single('audio'), async (request, response) => {
+    // Multer has already written the upload to disk by the time this handler runs.
+    // Every early-exit path below must remove that temp file or it leaks in /tmp.
+    const uploadedTempPath = request.file?.path;
+    const cleanupUploadedTempFile = async () => {
+      if (uploadedTempPath) {
+        await rm(uploadedTempPath, { force: true });
+      }
+    };
+
     if (!uploadedAudioStorage) {
+      await cleanupUploadedTempFile();
       return response.status(503).json({
         error: {
           code: 'upload-storage-unavailable',
@@ -2453,6 +2470,7 @@ export const createApp = (
     );
 
     if (!submitterId) {
+      await cleanupUploadedTempFile();
       return;
     }
 
@@ -2468,6 +2486,7 @@ export const createApp = (
     }
 
     if (!file.mimetype.startsWith('audio/') && !file.mimetype.startsWith('video/')) {
+      await cleanupUploadedTempFile();
       return response.status(400).json({
         error: {
           code: 'unsupported-audio-upload',
@@ -2488,6 +2507,7 @@ export const createApp = (
     });
 
     if (!policySnapshot.accepted) {
+      await cleanupUploadedTempFile();
       return response
         .status(409)
         .json(
@@ -2857,7 +2877,14 @@ export const createApp = (
         return response.status(204).send();
       }
 
-      if (job.processingStage === 'generating-summary' && job.assignedSummaryWorkerId) {
+      if (
+        job.processingStage === 'generating-summary' &&
+        job.assignedSummaryWorkerId === parsedRequest.data.workerId
+      ) {
+        // Idempotent re-claim by the worker that already owns this summary. A different
+        // worker must NOT be handed an in-progress summary here; it falls through to the
+        // lease-aware claimNextSummaryReady below, which only reassigns when the existing
+        // lease has expired — preventing two workers from summarizing the same job.
         return response.status(200).json(toWorkerClaimResponse(job, 'summary'));
       }
 

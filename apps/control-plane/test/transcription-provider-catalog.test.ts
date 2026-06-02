@@ -17,10 +17,10 @@ describe('transcription provider catalog deployment defaults', () => {
       deploymentMode: 'cloud',
       whisperModel: 'large-v3',
       azureOpenAiEndpoint: 'https://azure.example.test',
-      azureOpenAiDeployment: 'gpt-4o-mini-transcribe',
+      azureOpenAiDeployment: 'gpt-4o-transcribe',
       azureOpenAiApiKey: 'secret'
     });
 
-    expect(catalog.defaultProvider).toBe('azure-openai-gpt-4o-mini-transcribe');
+    expect(catalog.defaultProvider).toBe('azure-openai-gpt-4o-transcribe');
   });
 });

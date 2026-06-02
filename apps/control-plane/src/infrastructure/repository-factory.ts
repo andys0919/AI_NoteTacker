@@ -85,9 +85,9 @@ export const createPersistenceContextFromEnvironment = async (): Promise<Persist
   const defaultProvider = transcriptionCatalog.defaultProvider;
   const defaultLocalTranscriptionModel = process.env.WHISPER_MODEL ?? 'large-v3';
   const defaultCloudTranscriptionModel =
-    process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-4o-mini-transcribe';
+    process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-4o-transcribe';
   const defaultTranscriptionModel =
-    defaultProvider === 'azure-openai-gpt-4o-mini-transcribe'
+    defaultProvider === 'azure-openai-gpt-4o-transcribe'
       ? defaultCloudTranscriptionModel
       : defaultLocalTranscriptionModel;
   const defaultSummaryModel = process.env.SUMMARY_MODEL ?? 'gpt-5.4-mini';
@@ -141,14 +141,26 @@ export const createPersistenceContextFromEnvironment = async (): Promise<Persist
     connectionString
   });
 
-  await withRetry(async () => {
-    await ensureRecordingJobSchema(pool);
-    await ensureAuthenticatedUserSchema(pool);
-    await ensureTranscriptionProviderSettingsSchema(pool);
-    await ensureOperatorCloudQuotaOverrideSchema(pool);
-    await ensureCloudUsageLedgerSchema(pool);
-    await ensureAdminAuditLogSchema(pool);
-  }, 10, 3000);
+  try {
+    await withRetry(async () => {
+      await ensureRecordingJobSchema(pool);
+      await ensureAuthenticatedUserSchema(pool);
+      await ensureTranscriptionProviderSettingsSchema(pool);
+      await ensureOperatorCloudQuotaOverrideSchema(pool);
+      await ensureCloudUsageLedgerSchema(pool);
+      await ensureAdminAuditLogSchema(pool);
+    }, 10, 3000);
+  } catch (error) {
+    // Release the pool's TCP connections before bubbling up; otherwise a restart loop
+    // (e.g. in Docker) leaks connections until the previous pool's FIN_WAIT expires.
+    // Swallow any drain error so the original schema-init failure is what propagates.
+    try {
+      await pool.end();
+    } catch {
+      // ignore pool drain error
+    }
+    throw error;
+  }
 
   return {
     recordingJobRepository: new PostgresRecordingJobRepository(pool),

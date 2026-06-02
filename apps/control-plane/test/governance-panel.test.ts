@@ -13,7 +13,7 @@ import {
 describe('governance panel helpers', () => {
   it('formats provider labels for transcription and summary routes', () => {
     expect(formatProviderLabel('self-hosted-whisper')).toBe('Whisper 自架');
-    expect(formatProviderLabel('azure-openai-gpt-4o-mini-transcribe')).toBe('Azure OpenAI');
+    expect(formatProviderLabel('azure-openai-gpt-4o-transcribe')).toBe('Azure OpenAI');
     expect(formatSummaryModeLabel('local-codex')).toBe('地端 Codex');
     expect(formatSummaryModeLabel('azure-openai')).toBe('雲端');
   });
@@ -31,7 +31,7 @@ describe('governance panel helpers', () => {
         summaryProvider: 'local-codex',
         transcriptionOptions: [
           { value: 'self-hosted-whisper', ready: true },
-          { value: 'azure-openai-gpt-4o-mini-transcribe', ready: true }
+          { value: 'azure-openai-gpt-4o-transcribe', ready: true }
         ],
         summaryOptions: [
           { value: 'local-codex', ready: true },
@@ -39,9 +39,9 @@ describe('governance panel helpers', () => {
         ],
         overrides: [{ submitterId: 'user-1', dailyQuotaUsd: 2 }]
       },
-      selectedTranscriptionProvider: 'azure-openai-gpt-4o-mini-transcribe',
+      selectedTranscriptionProvider: 'azure-openai-gpt-4o-transcribe',
       selectedSummaryProvider: 'azure-openai',
-      transcriptionModelInput: 'gpt-4o-mini-transcribe',
+      transcriptionModelInput: 'gpt-4o-transcribe',
       summaryModelInput: 'gpt-5.4-nano',
       pricingVersionInput: 'v1',
       overrideSubmitterId: 'user-1',
@@ -65,7 +65,7 @@ describe('governance panel helpers', () => {
         transcriptionOptions: [
           { value: 'self-hosted-whisper', ready: true },
           {
-            value: 'azure-openai-gpt-4o-mini-transcribe',
+            value: 'azure-openai-gpt-4o-transcribe',
             ready: false,
             reason: 'Azure transcription is not configured.'
           }
@@ -76,9 +76,9 @@ describe('governance panel helpers', () => {
         ],
         overrides: []
       },
-      selectedTranscriptionProvider: 'azure-openai-gpt-4o-mini-transcribe',
+      selectedTranscriptionProvider: 'azure-openai-gpt-4o-transcribe',
       selectedSummaryProvider: 'azure-openai',
-      transcriptionModelInput: 'gpt-4o-mini-transcribe',
+      transcriptionModelInput: 'gpt-4o-transcribe',
       summaryModelInput: 'gpt-5.4-nano',
       pricingVersionInput: 'v1',
       overrideSubmitterId: '',

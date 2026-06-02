@@ -122,7 +122,7 @@ export class PostgresCloudUsageLedgerRepository implements CloudUsageLedgerRepos
           created_at
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15::timestamptz)
-        ON CONFLICT (entry_key) DO UPDATE SET
+        ON CONFLICT (entry_key) WHERE entry_key IS NOT NULL DO UPDATE SET
           usage_quantity = EXCLUDED.usage_quantity,
           cost_usd = EXCLUDED.cost_usd,
           detail = EXCLUDED.detail

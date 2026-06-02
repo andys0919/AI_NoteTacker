@@ -39,7 +39,7 @@ export const evaluateMeetingLinkPolicy = (meetingUrl: string): MeetingLinkPolicy
     return unsupported('The meeting URL is not a valid absolute URL.');
   }
 
-  if (!['https:'].includes(url.protocol)) {
+  if (url.protocol !== 'https:') {
     return unsupported('Only HTTPS meeting URLs are supported.');
   }
 

@@ -44,14 +44,14 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
                 "WORKER_ID": "transcriber-alpha",
                 "WHISPER_MODEL": "large-v3",
                 "AZURE_OPENAI_ENDPOINT": "https://azure.example.test",
-                "AZURE_OPENAI_DEPLOYMENT": "gpt-4o-mini-transcribe",
+                "AZURE_OPENAI_DEPLOYMENT": "gpt-4o-transcribe",
                 "AZURE_OPENAI_API_KEY": "secret",
                 "AZURE_OPENAI_API_VERSION": "2025-04-01-preview",
             }
         )
 
         self.assertEqual(config["azure_openai_endpoint"], "https://azure.example.test")
-        self.assertEqual(config["azure_openai_deployment"], "gpt-4o-mini-transcribe")
+        self.assertEqual(config["azure_openai_deployment"], "gpt-4o-transcribe")
         self.assertEqual(config["azure_openai_api_key"], "secret")
         self.assertEqual(config["azure_openai_api_version"], "2025-04-01-preview")
 
@@ -79,7 +79,7 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
                 "WHISPER_MODEL": "large-v3",
                 "DEPLOYMENT_MODE": "cloud",
                 "AZURE_OPENAI_ENDPOINT": "https://azure.example.test",
-                "AZURE_OPENAI_DEPLOYMENT": "gpt-4o-mini-transcribe",
+                "AZURE_OPENAI_DEPLOYMENT": "gpt-4o-transcribe",
                 "AZURE_OPENAI_API_KEY": "secret",
             }
         )

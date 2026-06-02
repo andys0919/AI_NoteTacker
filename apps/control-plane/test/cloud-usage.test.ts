@@ -22,8 +22,8 @@ describe('cloud usage helpers', () => {
       estimateCloudReservationUsd(
         {
           inputSource: 'uploaded-audio',
-          transcriptionProvider: 'azure-openai-gpt-4o-mini-transcribe',
-          transcriptionModel: 'gpt-4o-mini-transcribe',
+          transcriptionProvider: 'azure-openai-gpt-4o-transcribe',
+          transcriptionModel: 'gpt-4o-transcribe',
           summaryProvider: 'azure-openai'
         },
         { liveMeetingReservationCapUsd: 1.5 }
@@ -34,7 +34,7 @@ describe('cloud usage helpers', () => {
       estimateCloudReservationUsd(
         {
           inputSource: 'meeting-link',
-          transcriptionProvider: 'azure-openai-gpt-4o-mini-transcribe',
+          transcriptionProvider: 'azure-openai-gpt-4o-transcribe',
           summaryProvider: 'local-codex'
         },
         { liveMeetingReservationCapUsd: 1.5 }
@@ -52,8 +52,8 @@ describe('cloud usage helpers', () => {
           quotaDayKey: '2026-04-09',
           entryType: 'actual',
           stage: 'transcription',
-          provider: 'azure-openai-gpt-4o-mini-transcribe',
-          model: 'gpt-4o-mini-transcribe',
+          provider: 'azure-openai-gpt-4o-transcribe',
+          model: 'gpt-4o-transcribe',
           pricingVersion: 'v1',
           usageQuantity: 1000,
           usageUnit: 'audio-ms',
@@ -122,8 +122,8 @@ describe('cloud usage helpers', () => {
 
     expect(
       calculateAzureTranscriptionCostUsd(600000, {
-        provider: 'azure-openai-gpt-4o-mini-transcribe',
-        model: 'gpt-4o-mini-transcribe'
+        provider: 'azure-openai-gpt-4o-transcribe',
+        model: 'gpt-4o-transcribe'
       })
     ).toBe(roundUsd(0.03));
   });

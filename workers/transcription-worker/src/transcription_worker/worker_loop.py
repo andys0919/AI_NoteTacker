@@ -1,8 +1,10 @@
-import threading
+import os
+
+from transcription_worker.heartbeat import start_lease_heartbeat
 
 
 def _transcription_progress_message(provider: str) -> str:
-    if provider == "azure-openai-gpt-4o-mini-transcribe":
+    if provider == "azure-openai-gpt-4o-transcribe":
         return "Running Azure OpenAI transcription."
 
     return "Running Whisper transcription."
@@ -30,26 +32,6 @@ class JobCancelledError(RuntimeError):
     pass
 
 
-def _start_lease_heartbeat(client, job_id: str, stage: str, lease_token: str | None, heartbeat_interval_ms: int):
-    if not lease_token or heartbeat_interval_ms <= 0:
-        return None, None
-
-    stop_event = threading.Event()
-
-    def heartbeat_loop() -> None:
-        interval_seconds = heartbeat_interval_ms / 1000
-
-        while not stop_event.wait(interval_seconds):
-            try:
-                client.post_lease_heartbeat(job_id, stage, lease_token)
-            except Exception:  # noqa: BLE001
-                return
-
-    thread = threading.Thread(target=heartbeat_loop, daemon=True)
-    thread.start()
-    return stop_event, thread
-
-
 def run_transcription_worker_iteration(
     worker_id,
     client,
@@ -67,13 +49,16 @@ def run_transcription_worker_iteration(
     if not claimed_job:
         return {"kind": "idle"}
 
-    heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(
+    heartbeat_stop, heartbeat_thread = start_lease_heartbeat(
         client,
         claimed_job["id"],
         "transcription",
         claimed_job.get("leaseToken"),
         heartbeat_interval_ms,
     )
+
+    prepared_audio = None
+    local_media_path = None
 
     try:
         transcription_provider = claimed_job.get("transcriptionProvider") or "self-hosted-whisper"
@@ -148,17 +133,38 @@ def run_transcription_worker_iteration(
             prepared_audio["local_audio_path"],
             on_progress=report_transcription_progress,
         )
+
+        transcript_event = {
+            "type": "transcript-artifact-stored",
+            "transcriptArtifact": {
+                "storageKey": f"transcripts/{claimed_job['id']}/transcript.json",
+                "downloadUrl": f"{claimed_job['recordingArtifact']['downloadUrl']}.transcript.json",
+                "contentType": "application/json",
+                "language": transcript_result["language"],
+                "segments": [
+                    {
+                        "startMs": segment["start_ms"],
+                        "endMs": segment["end_ms"],
+                        "text": segment["text"],
+                    }
+                    for segment in transcript_result["segments"]
+                ],
+            },
+        }
+        if transcript_result.get("usage", {}).get("audio_ms") is not None:
+            transcript_event["usage"] = {
+                "audioMs": transcript_result["usage"]["audio_ms"],
+            }
+        client.post_job_event(
+            claimed_job["id"],
+            transcript_event,
+            lease_token=claimed_job.get("leaseToken"),
+        )
+
+        return {"kind": "processed", "job_id": claimed_job["id"]}
     except JobCancelledError:
-        if heartbeat_stop:
-            heartbeat_stop.set()
-        if heartbeat_thread:
-            heartbeat_thread.join(timeout=1)
         return {"kind": "cancelled", "job_id": claimed_job["id"]}
     except Exception as error:
-        if heartbeat_stop:
-            heartbeat_stop.set()
-        if heartbeat_thread:
-            heartbeat_thread.join(timeout=1)
         client.post_job_event(
             claimed_job["id"],
             {
@@ -171,37 +177,34 @@ def run_transcription_worker_iteration(
             lease_token=claimed_job.get("leaseToken"),
         )
         return {"kind": "failed", "job_id": claimed_job["id"]}
-
-    transcript_event = {
-        "type": "transcript-artifact-stored",
-        "transcriptArtifact": {
-            "storageKey": f"transcripts/{claimed_job['id']}/transcript.json",
-            "downloadUrl": f"{claimed_job['recordingArtifact']['downloadUrl']}.transcript.json",
-            "contentType": "application/json",
-            "language": transcript_result["language"],
-            "segments": [
-                {
-                    "startMs": segment["start_ms"],
-                    "endMs": segment["end_ms"],
-                    "text": segment["text"],
-                }
-                for segment in transcript_result["segments"]
-            ],
-        },
-    }
-    if transcript_result.get("usage", {}).get("audio_ms") is not None:
-        transcript_event["usage"] = {
-            "audioMs": transcript_result["usage"]["audio_ms"],
-        }
-    client.post_job_event(
-        claimed_job["id"],
-        transcript_event,
-        lease_token=claimed_job.get("leaseToken"),
-    )
-
-    if heartbeat_stop:
-        heartbeat_stop.set()
-    if heartbeat_thread:
-        heartbeat_thread.join(timeout=1)
-
-    return {"kind": "processed", "job_id": claimed_job["id"]}
+    finally:
+        # Stop the lease heartbeat on EVERY exit path (success, cancellation, or
+        # failure) — including when the success-path event POST raises — so a
+        # daemon heartbeat can never keep renewing the lease for a job we have
+        # stopped processing. Keeping this in finally avoids the ghost-heartbeat
+        # that would otherwise leave the job stuck "transcribing" with a live lease.
+        if heartbeat_stop:
+            heartbeat_stop.set()
+        if heartbeat_thread:
+            heartbeat_thread.join(timeout=1)
+        # The FFmpeg-prepared WAV is a per-job temp file; remove it on every exit
+        # so meeting recordings don't pile up in /tmp.
+        if prepared_audio and prepared_audio.get("prepared"):
+            try:
+                os.remove(prepared_audio["local_audio_path"])
+            except OSError:
+                pass
+        # The originally downloaded media is also a per-job temp file. When the audio
+        # was transcoded this is a different file from the prepared WAV; when it was a
+        # WAV passthrough it is the same content reused directly. Either way it must be
+        # removed on every exit so source downloads don't accumulate in /tmp. (Block
+        # above only removes the transcoded WAV, so there is no double-delete here.)
+        if local_media_path and not (
+            prepared_audio
+            and prepared_audio.get("prepared")
+            and prepared_audio.get("local_audio_path") == local_media_path
+        ):
+            try:
+                os.remove(local_media_path)
+            except OSError:
+                pass

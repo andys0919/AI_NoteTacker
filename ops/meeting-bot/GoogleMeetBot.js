@@ -36,15 +36,35 @@ class GoogleMeetBot extends MeetBotBase_1.MeetBotBase {
             const pushState = (st) => _state.push(st);
             await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader, pushState });
             // Finish the upload from the temp video
-            const uploadResult = await handleUpload();
+            let uploadResult;
+            try {
+                uploadResult = await handleUpload();
+            }
+            catch (uploadError) {
+                // An upload that throws must not be reported as a finished/successful recording.
+                if (_state.includes('finished')) {
+                    _state.splice(_state.indexOf('finished'), 1, 'failed');
+                }
+                throw uploadError;
+            }
             if (_state.includes('finished') && !uploadResult) {
                 _state.splice(_state.indexOf('finished'), 1, 'failed');
             }
             await (0, botService_1.patchBotStatus)({ botId, eventId, provider: 'google', status: _state, token: bearerToken }, this._logger);
         }
         catch (error) {
-            if (!_state.includes('finished'))
+            if (!_state.includes('finished') && !_state.includes('failed'))
                 _state.push('failed');
+            // Ensure the Chromium instance is always torn down on failure. recordMeetingPage()
+            // and other post-lobby steps can throw without closing the browser, leaving a zombie
+            // process. The lobby-error path inside joinMeeting() may have already closed it, so we
+            // swallow errors from closing an already-closed (or never-launched) browser.
+            try {
+                await this.page?.context()?.browser()?.close();
+            }
+            catch (_closeError) {
+                // browser already closed or never launched
+            }
             await (0, botService_1.patchBotStatus)({ botId, eventId, provider: 'google', status: _state, token: bearerToken }, this._logger);
             if (error instanceof error_1.WaitingAtLobbyRetryError) {
                 await (0, MeetBotBase_1.handleWaitingAtLobbyError)({ token: bearerToken, botId, eventId, provider: 'google', error }, this._logger);
@@ -66,8 +86,9 @@ class GoogleMeetBot extends MeetBotBase_1.MeetBotBase {
             try {
                 this._logger.info('Clicking Continue without microphone and camera button...');
                 await (0, resilience_1.retryActionWithWait)('Clicking the "Continue without microphone and camera" button', async () => {
-                    await this.page.getByRole('button', { name: 'Continue without microphone and camera' }).waitFor({ timeout: 30000 });
-                    await this.page.getByRole('button', { name: 'Continue without microphone and camera' }).click();
+                    const continueButton = this.page.getByRole('button', { name: 'Continue without microphone and camera' });
+                    await continueButton.waitFor({ timeout: 30000 });
+                    await continueButton.click();
                 }, this._logger, 1, 15000);
             }
             catch (dismissError) {
@@ -87,7 +108,7 @@ class GoogleMeetBot extends MeetBotBase_1.MeetBotBase {
                     const signInPage = await this.page.locator('h1', { hasText: 'Sign in' });
                     if (await signInPage.count() > 0 && await signInPage.isVisible()) {
                         this._logger.info('Google Meet bot is on the page with "Sign in" heading...', { userId, teamId });
-                        result = result && true;
+                        result = true;
                     }
                     return result;
                 };
@@ -340,7 +361,7 @@ class GoogleMeetBot extends MeetBotBase_1.MeetBotBase {
             });
             const waitingAtLobbySuccess = await waitAtLobbyPromise;
             if (!waitingAtLobbySuccess) {
-                const bodyText = await this.page.evaluate(() => document.body.innerText);
+                const bodyText = await this.page.evaluate(() => document.body.innerText).catch(() => '');
                 const userDenied = (bodyText || '')?.includes(constants_1.GOOGLE_REQUEST_DENIED);
                 this._logger.error('Cant finish wait at the lobby check', { userDenied, waitingAtLobbySuccess, bodyText });
                 // Don't retry lobby errors - if user doesn't admit bot, retrying won't help
@@ -544,7 +565,7 @@ class GoogleMeetBot extends MeetBotBase_1.MeetBotBase {
                     }
                     try {
                         const arrayBuffer = await event.data.arrayBuffer();
-                        sendChunkToServer(arrayBuffer);
+                        await sendChunkToServer(arrayBuffer);
                     }
                     catch (error) {
                         console.error('Error uploading chunk:', error);
@@ -957,15 +978,25 @@ class GoogleMeetBot extends MeetBotBase_1.MeetBotBase {
         process.once('SIGTERM', handleStopSignal);
         process.once('SIGINT', handleStopSignal);
         process.once('SIGABRT', handleStopSignal);
-        waitingPromise.promise.then(async () => {
+        try {
+            await waitingPromise.promise;
+        }
+        finally {
             process.removeListener('SIGTERM', handleStopSignal);
             process.removeListener('SIGINT', handleStopSignal);
             process.removeListener('SIGABRT', handleStopSignal);
             this._logger.info('Closing the browser...');
-            await this.page.context().browser()?.close();
+            // Await the close (instead of a floating .then) so a throw here can't surface as
+            // an unhandled rejection, and the browser is fully torn down before we return to
+            // the caller's upload step.
+            try {
+                await this.page.context().browser()?.close();
+            }
+            catch (closeError) {
+                this._logger.warn('Error closing browser (already closed?)', { error: closeError?.message ?? String(closeError) });
+            }
             this._logger.info('All done ✨', { eventId, botId, userId, teamId });
-        });
-        await waitingPromise.promise;
+        }
     }
 }
 exports.GoogleMeetBot = GoogleMeetBot;

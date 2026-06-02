@@ -1,6 +1,6 @@
 export const transcriptionProviders = [
   'self-hosted-whisper',
-  'azure-openai-gpt-4o-mini-transcribe'
+  'azure-openai-gpt-4o-transcribe'
 ] as const;
 
 export type TranscriptionProvider = (typeof transcriptionProviders)[number];
@@ -11,9 +11,9 @@ export const isTranscriptionProvider = (value: string): value is TranscriptionPr
   transcriptionProviders.includes(value as TranscriptionProvider);
 
 export const isCloudTranscriptionProvider = (provider: TranscriptionProvider): boolean =>
-  provider === 'azure-openai-gpt-4o-mini-transcribe';
+  provider === 'azure-openai-gpt-4o-transcribe';
 
 export const getTranscriptionProviderLabel = (provider: TranscriptionProvider): string =>
   provider === 'self-hosted-whisper'
     ? 'Self-hosted Whisper'
-    : 'Azure OpenAI gpt-4o-mini-transcribe';
+    : 'Azure OpenAI gpt-4o-transcribe';

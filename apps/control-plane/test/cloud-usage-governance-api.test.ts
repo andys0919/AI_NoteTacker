@@ -76,7 +76,7 @@ describe('cloud usage governance API', () => {
       transcriptionProviderCatalog: createTranscriptionProviderCatalog({
         whisperModel: 'large-v3',
         azureOpenAiEndpoint: 'https://azure.example.test',
-        azureOpenAiDeployment: 'gpt-4o-mini-transcribe',
+        azureOpenAiDeployment: 'gpt-4o-transcribe',
         azureOpenAiApiKey: 'secret'
       }),
       summaryProviderCatalog: createSummaryProviderCatalog({
@@ -113,8 +113,8 @@ describe('cloud usage governance API', () => {
   });
 
   it('uses the azure deployment as the default transcription model when azure is the default provider', async () => {
-    vi.stubEnv('DEFAULT_TRANSCRIPTION_PROVIDER', 'azure-openai-gpt-4o-mini-transcribe');
-    vi.stubEnv('AZURE_OPENAI_DEPLOYMENT', 'gpt-4o-mini-transcribe');
+    vi.stubEnv('DEFAULT_TRANSCRIPTION_PROVIDER', 'azure-openai-gpt-4o-transcribe');
+    vi.stubEnv('AZURE_OPENAI_DEPLOYMENT', 'gpt-4o-transcribe');
     vi.stubEnv('WHISPER_MODEL', 'large-v3');
 
     const app = createApp(undefined, {
@@ -124,9 +124,9 @@ describe('cloud usage governance API', () => {
       adminEmails: ['admin@example.com'],
       transcriptionProviderCatalog: createTranscriptionProviderCatalog({
         whisperModel: 'large-v3',
-        defaultProvider: 'azure-openai-gpt-4o-mini-transcribe',
+        defaultProvider: 'azure-openai-gpt-4o-transcribe',
         azureOpenAiEndpoint: 'https://azure.example.test',
-        azureOpenAiDeployment: 'gpt-4o-mini-transcribe',
+        azureOpenAiDeployment: 'gpt-4o-transcribe',
         azureOpenAiApiKey: 'secret'
       })
     });
@@ -136,8 +136,8 @@ describe('cloud usage governance API', () => {
       .set('authorization', 'Bearer admin-token');
 
     expect(response.status).toBe(200);
-    expect(response.body.transcriptionProvider).toBe('azure-openai-gpt-4o-mini-transcribe');
-    expect(response.body.transcriptionModel).toBe('gpt-4o-mini-transcribe');
+    expect(response.body.transcriptionProvider).toBe('azure-openai-gpt-4o-transcribe');
+    expect(response.body.transcriptionModel).toBe('gpt-4o-transcribe');
   });
 
   it('snapshots AI routing policy onto jobs at submission time', async () => {
@@ -147,8 +147,8 @@ describe('cloud usage governance API', () => {
       .put('/api/admin/ai-policy')
       .set('authorization', 'Bearer admin-token')
       .send({
-        transcriptionProvider: 'azure-openai-gpt-4o-mini-transcribe',
-        transcriptionModel: 'gpt-4o-mini-transcribe',
+        transcriptionProvider: 'azure-openai-gpt-4o-transcribe',
+        transcriptionModel: 'gpt-4o-transcribe',
         summaryProvider: 'azure-openai',
         summaryModel: 'gpt-5.4-nano',
         pricingVersion: 'v1',
@@ -173,8 +173,8 @@ describe('cloud usage governance API', () => {
       });
 
     expect(created.status).toBe(201);
-    expect(created.body.transcriptionProvider).toBe('azure-openai-gpt-4o-mini-transcribe');
-    expect(created.body.transcriptionModel).toBe('gpt-4o-mini-transcribe');
+    expect(created.body.transcriptionProvider).toBe('azure-openai-gpt-4o-transcribe');
+    expect(created.body.transcriptionModel).toBe('gpt-4o-transcribe');
     expect(created.body.summaryProvider).toBe('azure-openai');
     expect(created.body.summaryModel).toBe('gpt-5.4-nano');
     expect(created.body.pricingVersion).toBe('v1');
@@ -206,8 +206,8 @@ describe('cloud usage governance API', () => {
       .send({ workerId: 'transcriber-alpha' });
 
     expect(claim.status).toBe(200);
-    expect(claim.body.transcriptionProvider).toBe('azure-openai-gpt-4o-mini-transcribe');
-    expect(claim.body.transcriptionModel).toBe('gpt-4o-mini-transcribe');
+    expect(claim.body.transcriptionProvider).toBe('azure-openai-gpt-4o-transcribe');
+    expect(claim.body.transcriptionModel).toBe('gpt-4o-transcribe');
     expect(claim.body.summaryProvider).toBe('azure-openai');
     expect(claim.body.summaryModel).toBe('gpt-5.4-nano');
   });
@@ -219,8 +219,8 @@ describe('cloud usage governance API', () => {
       .put('/api/admin/ai-policy')
       .set('authorization', 'Bearer admin-token')
       .send({
-        transcriptionProvider: 'azure-openai-gpt-4o-mini-transcribe',
-        transcriptionModel: 'gpt-4o-mini-transcribe',
+        transcriptionProvider: 'azure-openai-gpt-4o-transcribe',
+        transcriptionModel: 'gpt-4o-transcribe',
         summaryProvider: 'azure-openai',
         summaryModel: 'gpt-5.4-nano',
         pricingVersion: 'v1',
@@ -262,8 +262,8 @@ describe('cloud usage governance API', () => {
       .put('/api/admin/ai-policy')
       .set('authorization', 'Bearer admin-token')
       .send({
-        transcriptionProvider: 'azure-openai-gpt-4o-mini-transcribe',
-        transcriptionModel: 'gpt-4o-mini-transcribe',
+        transcriptionProvider: 'azure-openai-gpt-4o-transcribe',
+        transcriptionModel: 'gpt-4o-transcribe',
         summaryProvider: 'azure-openai',
         summaryModel: 'gpt-5.4-nano',
         pricingVersion: 'v1',
@@ -296,8 +296,8 @@ describe('cloud usage governance API', () => {
       .put('/api/admin/ai-policy')
       .set('authorization', 'Bearer admin-token')
       .send({
-        transcriptionProvider: 'azure-openai-gpt-4o-mini-transcribe',
-        transcriptionModel: 'gpt-4o-mini-transcribe',
+        transcriptionProvider: 'azure-openai-gpt-4o-transcribe',
+        transcriptionModel: 'gpt-4o-transcribe',
         summaryProvider: 'azure-openai',
         summaryModel: 'gpt-5.4-nano',
         pricingVersion: 'v1',
@@ -394,8 +394,8 @@ describe('cloud usage governance API', () => {
       .put('/api/admin/ai-policy')
       .set('authorization', 'Bearer admin-token')
       .send({
-        transcriptionProvider: 'azure-openai-gpt-4o-mini-transcribe',
-        transcriptionModel: 'gpt-4o-mini-transcribe',
+        transcriptionProvider: 'azure-openai-gpt-4o-transcribe',
+        transcriptionModel: 'gpt-4o-transcribe',
         summaryProvider: 'azure-openai',
         summaryModel: 'gpt-5.4-nano',
         pricingVersion: 'v1',
@@ -455,8 +455,8 @@ describe('cloud usage governance API', () => {
       .put('/api/admin/ai-policy')
       .set('authorization', 'Bearer admin-token')
       .send({
-        transcriptionProvider: 'azure-openai-gpt-4o-mini-transcribe',
-        transcriptionModel: 'gpt-4o-mini-transcribe',
+        transcriptionProvider: 'azure-openai-gpt-4o-transcribe',
+        transcriptionModel: 'gpt-4o-transcribe',
         summaryProvider: 'azure-openai',
         summaryModel: 'gpt-5.4-nano',
         pricingVersion: 'v1',
@@ -753,8 +753,8 @@ describe('cloud usage governance API', () => {
       .put('/api/admin/ai-policy')
       .set('authorization', 'Bearer admin-token')
       .send({
-        transcriptionProvider: 'azure-openai-gpt-4o-mini-transcribe',
-        transcriptionModel: 'gpt-4o-mini-transcribe',
+        transcriptionProvider: 'azure-openai-gpt-4o-transcribe',
+        transcriptionModel: 'gpt-4o-transcribe',
         summaryProvider: 'azure-openai',
         summaryModel: 'gpt-5.4-nano',
         pricingVersion: 'v1',

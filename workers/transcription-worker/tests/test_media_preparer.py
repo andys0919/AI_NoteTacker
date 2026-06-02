@@ -7,7 +7,7 @@ class _FakeRunner:
     def __init__(self):
         self.commands = []
 
-    def __call__(self, command, check):
+    def __call__(self, command, check, timeout=None):
         self.commands.append((command, check))
 
 

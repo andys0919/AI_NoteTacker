@@ -56,15 +56,19 @@ type ControlPlaneHttpClientOptions = {
 export class ControlPlaneHttpClient {
   constructor(private readonly options: ControlPlaneHttpClientOptions) {}
 
+  private get defaultHeaders(): Record<string, string> {
+    return {
+      'content-type': 'application/json',
+      ...(this.options.internalServiceToken
+        ? { 'x-internal-service-token': this.options.internalServiceToken }
+        : {})
+    };
+  }
+
   async claimNextJob(workerId: string): Promise<WorkerClaimedJob | undefined> {
     const response = await fetch(`${this.options.baseUrl}/recording-workers/claims`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(this.options.internalServiceToken
-          ? { 'x-internal-service-token': this.options.internalServiceToken }
-          : {})
-      },
+      headers: this.defaultHeaders,
       body: JSON.stringify({ workerId })
     });
 
@@ -86,12 +90,7 @@ export class ControlPlaneHttpClient {
   ): Promise<void> {
     const response = await fetch(`${this.options.baseUrl}/recording-jobs/${jobId}/events`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(this.options.internalServiceToken
-          ? { 'x-internal-service-token': this.options.internalServiceToken }
-          : {})
-      },
+      headers: this.defaultHeaders,
       body: JSON.stringify(leaseToken ? { ...payload, leaseToken } : payload)
     });
 
@@ -107,12 +106,7 @@ export class ControlPlaneHttpClient {
   ): Promise<void> {
     const response = await fetch(`${this.options.baseUrl}/recording-jobs/${jobId}/leases/heartbeat`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(this.options.internalServiceToken
-          ? { 'x-internal-service-token': this.options.internalServiceToken }
-          : {})
-      },
+      headers: this.defaultHeaders,
       body: JSON.stringify({
         stage,
         ...(leaseToken ? { leaseToken } : {})

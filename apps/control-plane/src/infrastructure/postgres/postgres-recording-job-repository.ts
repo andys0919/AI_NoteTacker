@@ -466,18 +466,21 @@ const mapRowToRecordingJobListItem = (row: RecordingJobRow): RecordingJobListIte
 
 export const ensureRecordingJobSchema = async (database: Queryable): Promise<void> => {
   await database.query(recordingJobSchemaSql);
+  // Backfill the denormalized presence flags. The `AND ... = FALSE` guards keep this
+  // idempotent so a restart only touches rows that still need it, instead of locking and
+  // rewriting every already-backfilled row on every boot.
   await database.query(
     `
       UPDATE recording_jobs
       SET has_transcript_artifact = TRUE
-      WHERE transcript_artifact IS NOT NULL
+      WHERE transcript_artifact IS NOT NULL AND has_transcript_artifact = FALSE
     `
   );
   await database.query(
     `
       UPDATE recording_jobs
       SET has_summary_artifact = TRUE
-      WHERE summary_artifact IS NOT NULL
+      WHERE summary_artifact IS NOT NULL AND has_summary_artifact = FALSE
     `
   );
 };
@@ -948,29 +951,17 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
   }
 
   async clearTerminalHistoryForSubmitter(submitterId: string): Promise<number> {
-    const matching = await this.database.query<{ id: string }>(
-      `
-        SELECT id
-        FROM recording_jobs
-        WHERE submitter_id = $1
-          AND state IN ('failed', 'completed')
-      `,
-      [submitterId]
-    );
-
-    if (matching.rows.length === 0) {
-      return 0;
-    }
-
-    const ids = matching.rows.map((row) => row.id);
-    const placeholders = ids.map((_, index) => `$${index + 1}`).join(', ');
+    // Single atomic statement: deleting by predicate and returning the affected ids yields
+    // the same count as the prior SELECT-then-DELETE-by-id, without the extra round-trip or
+    // the TOCTOU window between the two queries.
     const result = await this.database.query<{ id: string }>(
       `
         DELETE FROM recording_jobs
-        WHERE id IN (${placeholders})
+        WHERE submitter_id = $1
+          AND state IN ('failed', 'completed')
         RETURNING id
       `,
-      ids
+      [submitterId]
     );
 
     return result.rows.length;

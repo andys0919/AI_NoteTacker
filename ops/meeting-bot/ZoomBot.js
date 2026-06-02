@@ -38,16 +38,40 @@ class ZoomBot extends BotBase {
             this._logger.info('Begin recording upload to server', { userId, teamId });
             const uploadResult = await uploader.uploadRecordingToRemoteStorage();
             this._logger.info('Recording upload result', { uploadResult, userId, teamId });
+            return uploadResult;
         };
         try {
             const pushState = (st) => _state.push(st);
             await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, pushState, uploader });
+            // Finish the upload before patching status so an upload failure is reflected as 'failed'
+            let uploadResult;
+            try {
+                uploadResult = await handleUpload();
+            }
+            catch (uploadError) {
+                // An upload that throws must not be reported as a finished/successful recording.
+                if (_state.includes('finished')) {
+                    _state.splice(_state.indexOf('finished'), 1, 'failed');
+                }
+                throw uploadError;
+            }
+            if (_state.includes('finished') && !uploadResult) {
+                _state.splice(_state.indexOf('finished'), 1, 'failed');
+            }
             await (0, botService_1.patchBotStatus)({ botId, eventId, provider: 'zoom', status: _state, token: bearerToken }, this._logger);
-            await handleUpload();
         }
         catch (error) {
-            if (!_state.includes('finished'))
+            if (!_state.includes('finished') && !_state.includes('failed'))
                 _state.push('failed');
+            // Ensure Chromium is torn down on failure. joinMeeting()/recordMeetingPage() can
+            // throw before the post-recording close runs, leaving a zombie browser. Swallow
+            // errors from closing an already-closed (or never-launched) browser. Mirrors Google.
+            try {
+                await this.page?.context()?.browser()?.close();
+            }
+            catch (_closeError) {
+                // browser already closed or never launched
+            }
             await (0, botService_1.patchBotStatus)({ botId, eventId, provider: 'zoom', status: _state, token: bearerToken }, this._logger);
             if (error instanceof error_1.WaitingAtLobbyRetryError) {
                 await (0, MeetBotBase_1.handleWaitingAtLobbyError)({ token: bearerToken, botId, eventId, provider: 'zoom', error }, this._logger);
@@ -449,12 +473,21 @@ class ZoomBot extends BotBase {
         const recordingTask = new RecordingTask_1.RecordingTask(userId, teamId, this.page, duration, this.slightlySecretId.toString(), this._logger);
         await recordingTask.runAsync(null);
         this._logger.info('Waiting for recording duration:', config_1.default.maxRecordingDuration, 'minutes...');
-        waitingPromise.promise.then(async () => {
+        try {
+            await waitingPromise.promise;
+        }
+        finally {
             this._logger.info('Closing the browser...');
-            await this.page.context().browser()?.close();
+            // Await the close (instead of a floating .then) so a throw here can't surface as
+            // an unhandled rejection and the browser is fully torn down before returning.
+            try {
+                await this.page.context().browser()?.close();
+            }
+            catch (closeError) {
+                this._logger.warn('Error closing browser (already closed?)', { error: closeError?.message ?? String(closeError) });
+            }
             this._logger.info('All done ✨', { botId, eventId, userId, teamId });
-        });
-        await waitingPromise.promise;
+        }
     }
 }
 exports.ZoomBot = ZoomBot;

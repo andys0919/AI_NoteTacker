@@ -111,8 +111,8 @@ const resolveAzureTranscriptionUsdPerMinute = (input: {
   model?: string;
 }): number => {
   if (
-    input.provider === 'azure-openai-gpt-4o-mini-transcribe' ||
-    input.model === 'gpt-4o-mini-transcribe'
+    input.provider === 'azure-openai-gpt-4o-transcribe' ||
+    input.model === 'gpt-4o-transcribe'
   ) {
     return AZURE_GPT_4O_MINI_TRANSCRIBE_USD_PER_MINUTE;
   }

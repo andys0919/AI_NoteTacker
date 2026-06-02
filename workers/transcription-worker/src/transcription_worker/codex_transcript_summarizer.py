@@ -69,7 +69,12 @@ def _extract_summary_text(stdout_text: str) -> str:
         if not line.startswith("{"):
             continue
 
-        event = json.loads(line)
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            # Codex may emit non-JSON lines that happen to start with '{'; skip them
+            # instead of crashing the whole summarization job.
+            continue
         if event.get("type") != "item.completed":
             continue
 

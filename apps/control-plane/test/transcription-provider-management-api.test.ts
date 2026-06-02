@@ -76,7 +76,7 @@ describe('transcription provider management API', () => {
       createTranscriptionProviderCatalog({
         whisperModel: 'large-v3',
         azureOpenAiEndpoint: 'https://azure.example.test',
-        azureOpenAiDeployment: 'gpt-4o-mini-transcribe',
+        azureOpenAiDeployment: 'gpt-4o-transcribe',
         azureOpenAiApiKey: 'secret'
       })
     );
@@ -94,8 +94,8 @@ describe('transcription provider management API', () => {
         ready: true
       },
       {
-        value: 'azure-openai-gpt-4o-mini-transcribe',
-        label: 'Azure OpenAI gpt-4o-mini-transcribe',
+        value: 'azure-openai-gpt-4o-transcribe',
+        label: 'Azure OpenAI gpt-4o-transcribe',
         ready: true
       }
     ]);
@@ -119,7 +119,7 @@ describe('transcription provider management API', () => {
       .put('/api/admin/transcription-provider')
       .set('authorization', 'Bearer admin-token')
       .send({
-        provider: 'azure-openai-gpt-4o-mini-transcribe'
+        provider: 'azure-openai-gpt-4o-transcribe'
       });
 
     expect(response.status).toBe(409);
@@ -131,7 +131,7 @@ describe('transcription provider management API', () => {
       createTranscriptionProviderCatalog({
         whisperModel: 'large-v3',
         azureOpenAiEndpoint: 'https://azure.example.test',
-        azureOpenAiDeployment: 'gpt-4o-mini-transcribe',
+        azureOpenAiDeployment: 'gpt-4o-transcribe',
         azureOpenAiApiKey: 'secret'
       })
     );
@@ -155,11 +155,11 @@ describe('transcription provider management API', () => {
       .put('/api/admin/transcription-provider')
       .set('authorization', 'Bearer admin-token')
       .send({
-        provider: 'azure-openai-gpt-4o-mini-transcribe'
+        provider: 'azure-openai-gpt-4o-transcribe'
       });
 
     expect(switched.status).toBe(200);
-    expect(switched.body.currentProvider).toBe('azure-openai-gpt-4o-mini-transcribe');
+    expect(switched.body.currentProvider).toBe('azure-openai-gpt-4o-transcribe');
 
     const secondJob = await request(app)
       .post('/api/operator/jobs/uploads')
@@ -177,6 +177,6 @@ describe('transcription provider management API', () => {
     expect(secondJob.status).toBe(201);
     expect(secondClaim.status).toBe(200);
     expect(secondClaim.body.id).not.toBe(firstClaim.body.id);
-    expect(secondClaim.body.transcriptionProvider).toBe('azure-openai-gpt-4o-mini-transcribe');
+    expect(secondClaim.body.transcriptionProvider).toBe('azure-openai-gpt-4o-transcribe');
   });
 });

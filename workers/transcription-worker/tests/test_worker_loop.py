@@ -333,13 +333,13 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         registry = FakeTranscriberRegistry(
             {
                 "self-hosted-whisper": whisper_transcriber,
-                "azure-openai-gpt-4o-mini-transcribe": azure_transcriber,
+                "azure-openai-gpt-4o-transcribe": azure_transcriber,
             }
         )
         client = FakeClient(
             {
                 "id": "job_azure",
-                "transcriptionProvider": "azure-openai-gpt-4o-mini-transcribe",
+                "transcriptionProvider": "azure-openai-gpt-4o-transcribe",
                 "recordingArtifact": {
                     "storageKey": "recordings/job_azure/meeting.webm",
                     "downloadUrl": "https://storage.example.test/recordings/job_azure/meeting.webm",
@@ -359,7 +359,7 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"kind": "processed", "job_id": "job_azure"})
-        self.assertEqual(registry.selected, ["azure-openai-gpt-4o-mini-transcribe"])
+        self.assertEqual(registry.selected, ["azure-openai-gpt-4o-transcribe"])
         self.assertEqual(azure_transcriber.inputs, ["/tmp/job_azure.wav"])
         self.assertEqual(whisper_transcriber.inputs, [])
         self.assertEqual(client.events[2][1]["processingMessage"], "Running Azure OpenAI transcription.")
@@ -547,7 +547,7 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         client = FakeClient(
             {
                 "id": "job_summary_provider",
-                "transcriptionProvider": "azure-openai-gpt-4o-mini-transcribe",
+                "transcriptionProvider": "azure-openai-gpt-4o-transcribe",
                 "summaryProvider": "azure-openai",
                 "summaryModel": "gpt-5.4-nano",
                 "recordingArtifact": {

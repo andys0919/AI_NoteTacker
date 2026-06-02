@@ -1,5 +1,6 @@
 import { createOperatorAuthClient } from '/auth-client.js';
 import { formatJobTimestamp } from '/dashboard-copy.js';
+import { escapeHtml } from '/escape-html.js';
 import {
   formatProviderLabel,
   formatSummaryModeLabel,
@@ -74,11 +75,12 @@ let adminProviderState = null;
 const apiFetch = async (input, init) => authClient.authorizedFetch(input, init);
 
 const setBanner = (message) => {
-  if (!message) {
+  if (!elements.adminProviderStatus) {
     return;
   }
-
-  elements.adminProviderStatus.textContent = message;
+  // Always write (empty string clears) so a stale error message can be dismissed
+  // programmatically; the previous early-return left old text on screen forever.
+  elements.adminProviderStatus.textContent = message ?? '';
 };
 
 const syncOtpUi = () => {
@@ -118,9 +120,9 @@ const renderAuditEntries = (entries = []) => {
       const node = document.createElement('article');
       node.className = 'admin-audit-entry';
       node.innerHTML = `
-        <strong>${entry.action}</strong>
-        <span>${entry.target}</span>
-        <small>${entry.timestampText}</small>
+        <strong>${escapeHtml(entry.action)}</strong>
+        <span>${escapeHtml(entry.target)}</span>
+        <small>${escapeHtml(entry.timestampText)}</small>
       `;
       return node;
     })
@@ -140,8 +142,8 @@ const renderUsageReport = (payload) => {
       const node = document.createElement('article');
       node.className = 'admin-audit-entry';
       node.innerHTML = `
-        <strong>${row.identityLabel}</strong>
-        <span>${row.submitterId}</span>
+        <strong>${escapeHtml(row.identityLabel)}</strong>
+        <span>${escapeHtml(row.submitterId)}</span>
         <small>已用 ${row.consumedLabel} / 保留 ${row.reservedLabel} / 剩餘 ${row.remainingLabel} / 總額 ${row.dailyQuotaLabel} / ${row.entryCountLabel}</small>
       `;
       return node;
@@ -161,9 +163,9 @@ const renderRuntimeHealth = (payload) => {
       const node = document.createElement('article');
       node.className = `runtime-health-card runtime-health-card-${card.tone}`;
       node.innerHTML = `
-        <span class="meta-label">${card.label}</span>
-        <strong>${card.valueText}</strong>
-        <small>${card.capacityText}</small>
+        <span class="meta-label">${escapeHtml(card.label)}</span>
+        <strong>${escapeHtml(card.valueText)}</strong>
+        <small>${escapeHtml(card.capacityText)}</small>
       `;
       return node;
     })
@@ -187,9 +189,9 @@ const renderRuntimeHealth = (payload) => {
       const node = document.createElement('article');
       node.className = 'admin-audit-entry';
       node.innerHTML = `
-        <strong>${entry.title}</strong>
-        <span>${entry.detail}</span>
-        <small>${entry.meta}</small>
+        <strong>${escapeHtml(entry.title)}</strong>
+        <span>${escapeHtml(entry.detail)}</span>
+        <small>${escapeHtml(entry.meta)}</small>
       `;
       return node;
     })
@@ -373,6 +375,8 @@ elements.authForm.addEventListener('submit', async (event) => {
     pendingAuthEmail = email;
     syncOtpUi();
     setBanner(`驗證碼已寄到 ${email}。`);
+  } catch (error) {
+    setBanner(error instanceof Error ? error.message : String(error));
   } finally {
     elements.authSubmitButton.disabled = false;
   }
@@ -385,6 +389,8 @@ elements.otpVerifyButton.addEventListener('click', async () => {
     setAuthenticatedView(user);
     elements.authOtp.value = '';
     await fetchAdminPanel();
+  } catch (error) {
+    setBanner(error instanceof Error ? error.message : String(error));
   } finally {
     elements.otpVerifyButton.disabled = false;
   }
@@ -416,37 +422,41 @@ elements.adminProviderForm.addEventListener('submit', async (event) => {
     return;
   }
 
-  const response = await apiFetch('/api/admin/ai-policy', {
-    method: 'PUT',
-    headers: {
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify({
-      transcriptionProvider: elements.adminProviderSelect.value,
-      transcriptionModel: elements.adminTranscriptionModelInput.value.trim(),
-      summaryProvider: elements.adminSummaryProviderSelect.value,
-      summaryModel:
-        elements.adminSummaryProviderSelect.value === 'local-codex'
-          ? adminProviderState.summaryModel || 'gpt-5-mini'
-          : elements.adminSummaryModelInput.value.trim(),
-      pricingVersion: elements.adminPricingVersionInput.value.trim(),
-      defaultDailyCloudQuotaUsd: Number(elements.adminDefaultQuotaInput.value),
-      liveMeetingReservationCapUsd: Number(elements.adminLiveMeetingCapInput.value),
-      concurrencyPools: {
-        localTranscription: Number(elements.adminLocalTranscriptionInput.value),
-        cloudTranscription: Number(elements.adminCloudTranscriptionInput.value),
-        localSummary: Number(elements.adminLocalSummaryInput.value),
-        cloudSummary: Number(elements.adminCloudSummaryInput.value)
-      }
-    })
-  });
-  const payload = await response.json().catch(() => ({}));
+  try {
+    const response = await apiFetch('/api/admin/ai-policy', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        transcriptionProvider: elements.adminProviderSelect.value,
+        transcriptionModel: elements.adminTranscriptionModelInput.value.trim(),
+        summaryProvider: elements.adminSummaryProviderSelect.value,
+        summaryModel:
+          elements.adminSummaryProviderSelect.value === 'local-codex'
+            ? adminProviderState.summaryModel || 'gpt-5-mini'
+            : elements.adminSummaryModelInput.value.trim(),
+        pricingVersion: elements.adminPricingVersionInput.value.trim(),
+        defaultDailyCloudQuotaUsd: Number(elements.adminDefaultQuotaInput.value),
+        liveMeetingReservationCapUsd: Number(elements.adminLiveMeetingCapInput.value),
+        concurrencyPools: {
+          localTranscription: Number(elements.adminLocalTranscriptionInput.value),
+          cloudTranscription: Number(elements.adminCloudTranscriptionInput.value),
+          localSummary: Number(elements.adminLocalSummaryInput.value),
+          cloudSummary: Number(elements.adminCloudSummaryInput.value)
+        }
+      })
+    });
+    const payload = await response.json().catch(() => ({}));
 
-  if (!response.ok) {
-    throw new Error(payload?.error?.message ?? `AI policy update failed: ${response.status}`);
+    if (!response.ok) {
+      throw new Error(payload?.error?.message ?? `AI policy update failed: ${response.status}`);
+    }
+
+    await fetchAdminPanel();
+  } catch (error) {
+    setBanner(error instanceof Error ? error.message : String(error));
   }
-
-  await fetchAdminPanel();
 });
 
 elements.adminOverrideForm.addEventListener('submit', async (event) => {
@@ -456,27 +466,35 @@ elements.adminOverrideForm.addEventListener('submit', async (event) => {
     return;
   }
 
-  const response = await apiFetch('/api/admin/cloud-quota/overrides', {
-    method: 'PUT',
-    headers: {
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify({
-      submitterId: elements.adminOverrideSubmitterId.value.trim(),
-      dailyQuotaUsd: Number(elements.adminOverrideQuotaInput.value)
-    })
-  });
-  const payload = await response.json().catch(() => ({}));
+  try {
+    const response = await apiFetch('/api/admin/cloud-quota/overrides', {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        submitterId: elements.adminOverrideSubmitterId.value.trim(),
+        dailyQuotaUsd: Number(elements.adminOverrideQuotaInput.value)
+      })
+    });
+    const payload = await response.json().catch(() => ({}));
 
-  if (!response.ok) {
-    throw new Error(payload?.error?.message ?? `Quota override update failed: ${response.status}`);
+    if (!response.ok) {
+      throw new Error(payload?.error?.message ?? `Quota override update failed: ${response.status}`);
+    }
+
+    await fetchAdminPanel();
+  } catch (error) {
+    setBanner(error instanceof Error ? error.message : String(error));
   }
-
-  await fetchAdminPanel();
 });
 
 elements.signOutButton.addEventListener('click', async () => {
-  await authClient.signOut();
+  try {
+    await authClient.signOut();
+  } catch (error) {
+    setBanner(error instanceof Error ? error.message : String(error));
+  }
 });
 
 const boot = async () => {

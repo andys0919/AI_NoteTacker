@@ -63,7 +63,19 @@ class MicrosoftTeamsBot extends MeetBotBase_1.MeetBotBase {
             const pushState = (st) => _state.push(st);
             await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, pushState, uploader });
             // Finish the upload from the temp video
-            const uploadResult = await handleUpload();
+            let uploadResult;
+            try {
+                uploadResult = await handleUpload();
+            }
+            catch (uploadError) {
+                // An upload that throws must flip 'finished' to 'failed' so the control
+                // plane never records the job as successful when storage actually failed.
+                // Mirrors the Google/Zoom upload-failure handling.
+                if (_state.includes('finished')) {
+                    _state.splice(_state.indexOf('finished'), 1, 'failed');
+                }
+                throw uploadError;
+            }
             if (_state.includes('finished') && !uploadResult) {
                 _state.splice(_state.indexOf('finished'), 1, 'failed');
                 this._logger.error('Recording completed but upload failed', { botId, userId, teamId });
@@ -350,7 +362,14 @@ class MicrosoftTeamsBot extends MeetBotBase_1.MeetBotBase {
             this._logger.info('Bot is entering the meeting...');
         }
         catch (error) {
-            const bodyText = await this.page.evaluate(() => document.body.innerText);
+            // The lobby-timeout path above already closed the browser and threw a
+            // WaitingAtLobbyRetryError. Re-throw it as-is so its context is preserved and
+            // we don't call page.evaluate() on an already-closed page (which would replace
+            // it with a "Target closed" error the caller cannot recognise).
+            if (error instanceof error_1.WaitingAtLobbyRetryError) {
+                throw error;
+            }
+            const bodyText = await this.page.evaluate(() => document.body.innerText).catch(() => '');
             const userDenied = (bodyText || '')?.includes(constants_1.MICROSOFT_REQUEST_DENIED);
             this._logger.error('Cant finish wait at the lobby check', { userDenied, waitingAtLobbySuccess: false, bodyText });
             this._logger.error('Closing the browser on error...', error);
@@ -452,7 +471,6 @@ class MicrosoftTeamsBot extends MeetBotBase_1.MeetBotBase {
         // Verify PulseAudio is ready before starting FFmpeg
         this._logger.info('Verifying PulseAudio status before starting FFmpeg...');
         try {
-            const execAsync = (0, util_1.promisify)(child_process_1.exec);
             // Check if PulseAudio process is running
             try {
                 const { stdout: psOutput } = await execAsync('ps aux | grep pulseaudio | grep -v grep');
@@ -556,6 +574,13 @@ class MicrosoftTeamsBot extends MeetBotBase_1.MeetBotBase {
                     const checkIntervalSeconds = 5;
                     const checksNeeded = Math.ceil(inactivityLimitMs / 1000 / checkIntervalSeconds); // e.g., 120000ms / 1000 / 5 = 24 checks
                     const checkInterval = setInterval(async () => {
+                        // Stop sampling once the meeting has ended (SIGTERM, participant
+                        // detection, or the silence threshold) so we never keep spawning
+                        // parec child processes after teardown has begun.
+                        if (meetingEnded) {
+                            clearInterval(checkInterval);
+                            return;
+                        }
                         try {
                             // Sample audio from virtual_output.monitor and check if it's silent
                             // Use parec to capture 1 second of audio and check the peak level

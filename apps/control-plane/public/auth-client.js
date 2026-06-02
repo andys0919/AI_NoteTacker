@@ -3,7 +3,9 @@ import { createOperatorAuthSession } from '/operator-auth-session.js';
 
 export const createOperatorAuthClient = async () => {
   const response = await fetch('/api/auth/config');
-  const payload = await response.json();
+  // If the config endpoint is briefly unavailable (5xx / non-JSON), degrade gracefully to
+  // guest mode instead of throwing and breaking the whole dashboard boot.
+  const payload = response.ok ? await response.json().catch(() => ({})) : {};
 
   const enabled = Boolean(payload.enabled && payload.supabaseUrl && payload.supabasePublishableKey);
 

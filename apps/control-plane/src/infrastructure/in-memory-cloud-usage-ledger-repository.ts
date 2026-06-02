@@ -58,9 +58,10 @@ export class InMemoryCloudUsageLedgerRepository implements CloudUsageLedgerRepos
     jobIds: string[]
   ): Promise<Record<string, CloudUsageCostSummary>> {
     const summaries: Record<string, CloudUsageCostSummary> = {};
+    const jobIdSet = new Set(jobIds);
 
     for (const entry of this.entries) {
-      if (entry.entryType !== 'actual' || !jobIds.includes(entry.jobId)) {
+      if (entry.entryType !== 'actual' || !jobIdSet.has(entry.jobId)) {
         continue;
       }
 

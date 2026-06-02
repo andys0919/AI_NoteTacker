@@ -78,9 +78,6 @@ class ControlPlaneClient:
         )
 
         with request.urlopen(http_request) as response:  # noqa: S310
-            if allow_no_content and response.status == 204:
-                return None
-
             if response.status == 204:
                 return None
 

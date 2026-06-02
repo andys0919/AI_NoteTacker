@@ -43,13 +43,21 @@ export const runRecordingWorkerIteration = async ({
   try {
     await executor.execute(claimedJob, client);
   } catch (error: unknown) {
-    await client.postJobEvent(claimedJob.id, {
-      type: 'failed',
-      failure: {
-        code: 'recording-executor-failed',
-        message: error instanceof Error ? error.message : String(error)
-      }
-    }, claimedJob.leaseToken);
+    try {
+      await client.postJobEvent(claimedJob.id, {
+        type: 'failed',
+        failure: {
+          code: 'recording-executor-failed',
+          message: error instanceof Error ? error.message : String(error)
+        }
+      }, claimedJob.leaseToken);
+    } catch (reportingError) {
+      // Reporting the failure is best-effort: if the control plane is briefly
+      // unreachable we must still return a 'failed' result rather than throw, so the
+      // job does not get stuck in a non-terminal ('joining'/'recording') state forever.
+      // Surface it so the double-failure (executor + reporting) is still observable.
+      console.error('Failed to report recording job failure to control plane', reportingError);
+    }
 
     return {
       kind: 'failed',

@@ -7,7 +7,7 @@ The transcription worker handles uploaded-media and completed recording artifact
 - downloads the source artifact
 - prepares canonical audio with FFmpeg when needed
 - runs Whisper transcription
-- can alternatively run Azure OpenAI `gpt-4o-mini-transcribe` when the claimed job is latched to that provider
+- can alternatively run Azure OpenAI `gpt-4o-transcribe` when the claimed job is latched to that provider
 - can run summary generation through local Codex or Azure OpenAI based on the claimed job snapshot
 - waits for a control-plane summary slot before beginning summary generation so local/cloud summary pools stay separate
 - posts transcript and summary artifacts back to the control plane

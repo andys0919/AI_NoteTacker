@@ -32,7 +32,7 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
 
         transcriber = AzureOpenAiTranscriber(
             endpoint="https://azure.example.test",
-            deployment="gpt-4o-mini-transcribe",
+            deployment="gpt-4o-transcribe",
             api_key="secret",
             api_version="2025-03-01-preview",
             urlopen=fake_urlopen,
@@ -46,11 +46,11 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
 
         self.assertEqual(
             captured["url"],
-            "https://azure.example.test/openai/deployments/gpt-4o-mini-transcribe/audio/transcriptions?api-version=2025-03-01-preview",
+            "https://azure.example.test/openai/deployments/gpt-4o-transcribe/audio/transcriptions?api-version=2025-03-01-preview",
         )
         self.assertEqual(captured["headers"]["Api-key"], "secret")
         self.assertIn(b'name="model"', captured["body"])
-        self.assertIn(b"gpt-4o-mini-transcribe", captured["body"])
+        self.assertIn(b"gpt-4o-transcribe", captured["body"])
         self.assertIn(b'name="response_format"', captured["body"])
         self.assertIn(b"json", captured["body"])
         self.assertEqual(result["language"], "zh")
@@ -83,7 +83,7 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
 
         transcriber = AzureOpenAiTranscriber(
             endpoint="https://azure.example.test",
-            deployment="gpt-4o-mini-transcribe",
+            deployment="gpt-4o-transcribe",
             api_key="secret",
             api_version="2025-03-01-preview",
             urlopen=fake_urlopen,
@@ -139,7 +139,7 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
 
         transcriber = AzureOpenAiTranscriber(
             endpoint="https://azure.example.test",
-            deployment="gpt-4o-mini-transcribe",
+            deployment="gpt-4o-transcribe",
             api_key="secret",
             api_version="2025-03-01-preview",
             urlopen=fake_urlopen,
@@ -171,7 +171,7 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
 
         transcriber = AzureOpenAiTranscriber(
             endpoint="https://azure.example.test",
-            deployment="gpt-4o-mini-transcribe",
+            deployment="gpt-4o-transcribe",
             api_key="secret",
             api_version="2025-03-01-preview",
             duration_resolver=lambda _path: 2_304_756,

@@ -56,7 +56,7 @@ def main() -> None:
         and config.get("azure_openai_deployment")
         and config.get("azure_openai_api_key")
     ):
-        transcriber_registry["azure-openai-gpt-4o-mini-transcribe"] = AzureOpenAiTranscriber(
+        transcriber_registry["azure-openai-gpt-4o-transcribe"] = AzureOpenAiTranscriber(
             endpoint=str(config["azure_openai_endpoint"]),
             deployment=str(config["azure_openai_deployment"]),
             api_key=str(config["azure_openai_api_key"]),

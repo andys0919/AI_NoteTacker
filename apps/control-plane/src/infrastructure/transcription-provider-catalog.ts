@@ -47,8 +47,8 @@ export const createTranscriptionProviderCatalog = (
       reason: localReady ? undefined : 'WHISPER_MODEL is not configured.'
     },
     {
-      value: 'azure-openai-gpt-4o-mini-transcribe',
-      label: getTranscriptionProviderLabel('azure-openai-gpt-4o-mini-transcribe'),
+      value: 'azure-openai-gpt-4o-transcribe',
+      label: getTranscriptionProviderLabel('azure-openai-gpt-4o-transcribe'),
       ready: azureReady,
       reason: azureReady
         ? undefined
@@ -58,9 +58,9 @@ export const createTranscriptionProviderCatalog = (
 
   return {
     defaultProvider:
-      input.defaultProvider === 'azure-openai-gpt-4o-mini-transcribe' ||
+      input.defaultProvider === 'azure-openai-gpt-4o-transcribe' ||
       (deploymentMode === 'cloud' && azureReady)
-        ? 'azure-openai-gpt-4o-mini-transcribe'
+        ? 'azure-openai-gpt-4o-transcribe'
         : defaultTranscriptionProvider,
     options,
     isReady(provider: TranscriptionProvider): boolean {

@@ -1,5 +1,6 @@
 import { createOperatorAuthClient } from '/auth-client.js';
 import { getAuthEntryViewModel } from '/auth-entry.js';
+import { escapeHtml } from '/escape-html.js';
 import {
   formatJobTimestamp,
   getEmptyStateMessage,
@@ -321,9 +322,9 @@ const renderAuditEntries = (entries = []) => {
       const node = document.createElement('article');
       node.className = 'admin-audit-entry';
       node.innerHTML = `
-        <strong>${entry.action}</strong>
-        <span>${entry.target}</span>
-        <small>${entry.timestampText}</small>
+        <strong>${escapeHtml(entry.action)}</strong>
+        <span>${escapeHtml(entry.target)}</span>
+        <small>${escapeHtml(entry.timestampText)}</small>
       `;
       return node;
     })
@@ -347,8 +348,8 @@ const renderUsageReport = (payload) => {
       const node = document.createElement('article');
       node.className = 'admin-audit-entry';
       node.innerHTML = `
-        <strong>${row.identityLabel}</strong>
-        <span>${row.submitterId}</span>
+        <strong>${escapeHtml(row.identityLabel)}</strong>
+        <span>${escapeHtml(row.submitterId)}</span>
         <small>已用 ${row.consumedLabel} / 保留 ${row.reservedLabel} / 剩餘 ${row.remainingLabel} / 總額 ${row.dailyQuotaLabel} / ${row.entryCountLabel}</small>
       `;
       return node;
@@ -610,7 +611,7 @@ const createJobCard = (job) => {
     ? `
       <details open>
         <summary>AI 摘要${job.summaryArtifact ? '' : '（預覽）'}</summary>
-        <pre class="summary-text">${job.summaryArtifact?.text ?? job.summaryPreview}</pre>
+        <pre class="summary-text">${escapeHtml(job.summaryArtifact?.text ?? job.summaryPreview)}</pre>
         ${
           job.summaryArtifact?.structured
             ? `
@@ -627,7 +628,7 @@ const createJobCard = (job) => {
                         <h4>${title}</h4>
                         ${
                           items.length
-                            ? `<ul>${items.map((item) => `<li>${item}</li>`).join('')}</ul>`
+                            ? `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`
                             : '<p>目前沒有。</p>'
                         }
                       </div>
@@ -646,9 +647,9 @@ const createJobCard = (job) => {
     ? `
       <details>
         <summary>逐字稿${job.transcriptArtifact ? '' : '（預覽）'}</summary>
-        <pre class="transcript-preview">${job.transcriptArtifact
+        <pre class="transcript-preview">${escapeHtml(job.transcriptArtifact
           ? job.transcriptArtifact.segments.map((segment) => segment.text).join('\n')
-          : job.transcriptPreview}</pre>
+          : job.transcriptPreview)}</pre>
       </details>
     `
     : '';
@@ -659,11 +660,11 @@ const createJobCard = (job) => {
       <div class="artifact-block progress-block">
         <div class="artifact-heading">
           <h3>目前進度</h3>
-          <p>${viewModel.statusSummary}</p>
+          <p>${escapeHtml(viewModel.statusSummary)}</p>
         </div>
         <div class="progress-shell">
           <div class="progress-meta">
-            <span>${viewModel.progressLabel}</span>
+            <span>${escapeHtml(viewModel.progressLabel)}</span>
             <strong>${viewModel.progressPercent}%</strong>
           </div>
           ${progressDuration ? `<p class="progress-duration">${progressDuration}</p>` : ''}
@@ -680,9 +681,9 @@ const createJobCard = (job) => {
       <div class="artifact-block failure-block">
         <div class="artifact-heading">
           <h3>需要處理</h3>
-          <p>${viewModel.statusSummary}</p>
+          <p>${escapeHtml(viewModel.statusSummary)}</p>
         </div>
-        ${job.failureCode ? `<p class="artifact-note">錯誤代碼：${job.failureCode}</p>` : ''}
+        ${job.failureCode ? `<p class="artifact-note">錯誤代碼：${escapeHtml(job.failureCode)}</p>` : ''}
       </div>
     `;
 
@@ -693,21 +694,21 @@ const createJobCard = (job) => {
       <div>
         <p class="job-kicker">${viewModel.sourceLabel}</p>
         <h3 class="job-title">${viewModel.title}</h3>
-        <p class="job-status-summary">${viewModel.statusSummary}</p>
+        <p class="job-status-summary">${escapeHtml(viewModel.statusSummary)}</p>
       </div>
-      <span class="badge ${activeBadge}">${viewModel.badgeLabel}</span>
+      <span class="badge ${escapeHtml(activeBadge)}">${escapeHtml(viewModel.badgeLabel)}</span>
     </div>
     <div class="job-meta-grid">
       <div class="job-meta-item">
         <span>${viewModel.sourceLabel}</span>
-        <strong>${viewModel.sourceValue}</strong>
+        <strong>${escapeHtml(viewModel.sourceValue)}</strong>
       </div>
       ${
         viewModel.joinNameLabel
           ? `
             <div class="job-meta-item">
               <span>${viewModel.joinNameLabel}</span>
-              <strong>${viewModel.joinNameValue}</strong>
+              <strong>${escapeHtml(viewModel.joinNameValue)}</strong>
             </div>
           `
           : ''
@@ -897,11 +898,11 @@ const renderJobs = (jobs) => {
   if (visibleJobs.length === 0) {
     elements.jobList.innerHTML = `
       <div class="empty-state">
-        <p>${
+        <p>${escapeHtml(
           activeSearch || currentQuickFilter === 'all'
             ? getEmptyStateMessage(activeSearch)
             : '目前沒有符合這個篩選條件的工作。'
-        }</p>
+        )}</p>
       </div>
     `;
     return;
@@ -937,6 +938,9 @@ const renderJobs = (jobs) => {
 
 const fetchConfig = async () => {
   const response = await apiFetch('/api/operator/config');
+  if (!response.ok) {
+    throw new Error(`無法載入操作設定 (HTTP ${response.status})`);
+  }
   const payload = await response.json();
   operatorConfig = payload;
   applyDefaultJoinNameToForm();
@@ -1437,10 +1441,16 @@ elements.clearHistoryButton.addEventListener('click', async () => {
   }
 });
 
+let archiveSearchDebounceTimer;
 elements.archiveSearch?.addEventListener('input', () => {
-  fetchJobs().catch((error) => {
-    setBanner(error instanceof Error ? error.message : String(error), 'error');
-  });
+  // Debounce keystrokes so a fast typist doesn't fire one /api/operator/jobs request
+  // per character (which also race: the last response to arrive wins regardless of order).
+  clearTimeout(archiveSearchDebounceTimer);
+  archiveSearchDebounceTimer = setTimeout(() => {
+    fetchJobs().catch((error) => {
+      setBanner(error instanceof Error ? error.message : String(error), 'error');
+    });
+  }, 300);
 });
 
 elements.jobFilters?.addEventListener('click', (event) => {

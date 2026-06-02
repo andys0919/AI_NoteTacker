@@ -5,7 +5,7 @@ Self-hosted meeting recorder and transcription console.
 This project lets an operator:
 - submit a direct meeting link so an AI bot joins and records inside a container
 - upload audio or video files for Whisper transcription
-- let an admin switch future transcription jobs between local Whisper and Azure OpenAI `gpt-4o-mini-transcribe`
+- let an admin switch future transcription jobs between local Whisper and Azure OpenAI `gpt-4o-transcribe`
 - let an admin manage cloud quota, AI routing defaults, and per-user cloud quota overrides
 - read full transcripts and Codex summaries in the dashboard
 - export completed jobs as Markdown, TXT, SRT, or JSON
@@ -19,7 +19,7 @@ This project lets an operator:
 - GPU Whisper transcription with `large-v3` by default
 - Admin-only global transcription provider switch:
   - `self-hosted-whisper`
-  - `azure-openai-gpt-4o-mini-transcribe`
+  - `azure-openai-gpt-4o-transcribe`
 - Independent summary routing defaults:
   - `local-codex`
   - `azure-openai`
@@ -148,7 +148,7 @@ If your signed-in email is listed in `ADMIN_EMAILS`, the dashboard shows an extr
 
 Use it to switch future transcription claims between:
 - local GPU/CPU Whisper
-- Azure OpenAI `gpt-4o-mini-transcribe`
+- Azure OpenAI `gpt-4o-transcribe`
 
 Important:
 - this is a global switch for future jobs, not a per-job override
