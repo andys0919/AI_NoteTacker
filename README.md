@@ -44,6 +44,18 @@ This project lets an operator:
   - SMTP provider for notification emails
   - Azure OpenAI deployment if you want hosted transcription
 
+## Configure
+
+Create your live config from the template, then fill in any secrets (Azure
+OpenAI keys, admin emails, etc.):
+
+```bash
+cp .env.example .env
+```
+
+`docker-compose.yml` loads `.env` (gitignored) for every service. `.env.example`
+is the committed template with safe defaults — never put real secrets there.
+
 ## Start
 
 For upload-only workflows:

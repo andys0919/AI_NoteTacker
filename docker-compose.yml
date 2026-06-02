@@ -5,7 +5,7 @@ services:
       dockerfile: apps/control-plane/Dockerfile
     restart: unless-stopped
     env_file:
-      - .env.example
+      - .env
     environment:
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
@@ -42,7 +42,7 @@ services:
       dockerfile: workers/recording-worker/Dockerfile
     restart: unless-stopped
     env_file:
-      - .env.example
+      - .env
     environment:
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-internal-token}
       WORKER_ID: worker-alpha
@@ -56,7 +56,7 @@ services:
       dockerfile: workers/transcription-worker/Dockerfile
     restart: unless-stopped
     env_file:
-      - .env.example
+      - .env
     environment:
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2025-03-01-preview}
@@ -75,6 +75,7 @@ services:
     gpus: all
     volumes:
       - ${CODEX_HOME}:/codex-home
+      - whisper_model_cache:/root/.cache/huggingface
     depends_on:
       control-plane:
         condition: service_healthy
@@ -85,7 +86,7 @@ services:
       dockerfile: workers/transcription-worker/Dockerfile
     restart: unless-stopped
     env_file:
-      - .env.example
+      - .env
     command: ["python", "-m", "transcription_worker.summary_main"]
     environment:
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
@@ -148,3 +149,4 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  whisper_model_cache:
