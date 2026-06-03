@@ -28,6 +28,26 @@ const createRecordingExecutor = (config: ReturnType<typeof readRecordingWorkerCo
 
 const main = async (): Promise<void> => {
   const config = readRecordingWorkerConfig(process.env);
+
+  // Make the recording mode unmistakable in the logs. The single most common
+  // production misconfiguration is bringing the stack up without the screenapp
+  // override, which silently reverts to the stub executor and stops driving the
+  // meeting bot — so real Zoom/Google/Teams meetings are never recorded.
+  console.log(
+    `[recording-worker] executor=${config.executorKind} ` +
+      `meetingBotBaseUrl=${config.meetingBotBaseUrl ?? '(none)'} ` +
+      `controlPlane=${config.controlPlaneBaseUrl}`
+  );
+  if (config.executorKind === 'stub') {
+    console.warn(
+      '[recording-worker] WARNING: RECORDING_EXECUTOR is "stub" — real meeting ' +
+        'recording is DISABLED. Meeting-link jobs will only produce a placeholder ' +
+        'artifact (no real audio). For real Zoom/Google/Teams recording, deploy with ' +
+        'RECORDING_EXECUTOR=screenapp, e.g.\n' +
+        '  docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up -d'
+    );
+  }
+
   const client = new ControlPlaneHttpClient({
     baseUrl: config.controlPlaneBaseUrl,
     internalServiceToken: config.internalServiceToken

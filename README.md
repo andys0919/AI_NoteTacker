@@ -58,16 +58,32 @@ is the committed template with safe defaults — never put real secrets there.
 
 ## Start
 
-For upload-only workflows:
+Use the deploy helper — it always brings up the correct file set:
 
 ```bash
-docker compose up -d --build
+make deploy           # or: ./scripts/deploy.sh up
 ```
 
-For full meeting-bot workflows:
+This is equivalent to:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up -d --build
+```
+
+> [!IMPORTANT]
+> **Do not bring the meeting-bot stack up with a bare `docker compose up -d`.**
+> The real meeting recorder lives in `docker-compose.screenapp.yml`. If you omit
+> that override, the `recording-worker` falls back to the `stub` executor and
+> **never records real Zoom/Google/Teams meetings** (it only emits a placeholder
+> artifact), and the control-plane loses its meeting-bot monitoring. `make deploy`
+> / `scripts/deploy.sh` exist specifically to prevent this. The recording-worker
+> also logs its mode on startup — `executor=screenapp` is correct for production;
+> `executor=stub` prints a loud warning.
+
+Upload-only (no live meeting bot) workflows can still use the base file alone:
+
+```bash
+docker compose up -d --build   # recording-worker runs in stub mode by design
 ```
 
 After the first successful `up -d`, the long-running services use Docker's
@@ -97,24 +113,18 @@ If that returns anything other than `enabled`, run:
 sudo systemctl enable --now docker
 ```
 
-Then start the stack once:
-
-Upload-only workflow:
+Then start the stack once (full meeting-bot workflow):
 
 ```bash
-docker compose up -d --build
-```
-
-Full meeting-bot workflow:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up -d --build
+make deploy
 ```
 
 Notes:
 - A later reboot should bring the same containers back automatically.
-- If you run `docker compose down`, Docker removes the containers, so you must
-  run `docker compose up -d` again afterward.
+- If you run `make down` (or `docker compose ... down`), Docker removes the
+  containers, so you must run `make deploy` again afterward.
+- Always re-deploy with `make deploy` / `scripts/deploy.sh`, never a bare
+  `docker compose up`, so the recording-worker keeps `RECORDING_EXECUTOR=screenapp`.
 
 ## Use The Dashboard
 

@@ -193,3 +193,24 @@ run is not a successful recording verification.
 - Zoom browser-join support depends on host-side settings outside this repo.
 - The runtime is single-slot for live meeting capture, so run only one real
   live acceptance test at a time.
+
+## Deployment Footgun: stub vs screenapp recorder
+
+Real meeting recording only happens when the `recording-worker` runs with
+`RECORDING_EXECUTOR=screenapp`, which is supplied by `docker-compose.screenapp.yml`.
+
+- Always deploy with `make deploy` (or `./scripts/deploy.sh up`). It pins the
+  correct file set: `-f docker-compose.yml -f docker-compose.screenapp.yml`.
+- A bare `docker compose up -d` (base file only), or any deploy that includes
+  `docker-compose.smoke.yml`, sets `RECORDING_EXECUTOR=stub`. In stub mode the
+  recording-worker never contacts the meeting bot — meeting-link jobs only get a
+  placeholder artifact, so no real Zoom/Google/Teams audio is captured.
+- Confirm the live mode after any deploy:
+
+  ```bash
+  docker inspect ai_notetacker-recording-worker-1 \
+    --format '{{range .Config.Env}}{{println .}}{{end}}' | grep RECORDING_EXECUTOR
+  ```
+
+  It must print `RECORDING_EXECUTOR=screenapp`. The recording-worker also logs
+  its mode on startup (`executor=screenapp` vs a `stub` warning).
