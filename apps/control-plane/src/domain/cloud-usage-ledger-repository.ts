@@ -35,6 +35,11 @@ export interface CloudUsageLedgerRepository {
     input: Omit<CloudUsageLedgerEntry, 'id' | 'createdAt'>
   ): Promise<CloudUsageLedgerEntry>;
   listByQuotaDayKey(quotaDayKey: string): Promise<CloudUsageLedgerEntry[]>;
+  /**
+   * Returns the most recent ledger entries across all days, newest first. Used
+   * by the admin console to show the full historical usage / token report.
+   */
+  listRecentEntries(limit: number): Promise<CloudUsageLedgerEntry[]>;
   listBySubmitterAndDay(
     submitterId: string,
     quotaDayKey: string

@@ -1,10 +1,6 @@
-import { createOperatorAuthClient } from '/auth-client.js';
-import { getAuthEntryViewModel } from '/auth-entry.js';
 import { escapeHtml } from '/escape-html.js';
 import {
-  formatJobTimestamp,
   getEmptyStateMessage,
-  getHistoryStageLabel,
   getJobCardViewModel,
   renderOptionalMarkup
 } from '/dashboard-copy.js';
@@ -13,62 +9,10 @@ import {
   filterJobsByQuickFilter,
   getJobActionSet
 } from '/dashboard-workflows.js';
-import {
-  formatProviderLabel,
-  formatSummaryModeLabel,
-  formatUsd,
-  getAdminGovernanceViewModel,
-  getAuditEntryViewModels,
-  getQuotaDisplayModel,
-  getUsageReportRowViewModels
-} from '/governance-panel.js';
 
 const DEFAULT_OPERATOR_ID_KEY = 'solomon-notetaker-operator-id';
 const elements = {
-  adminAuditList: document.querySelector('#admin-audit-list'),
-  adminUsageReportList: document.querySelector('#admin-usage-report-list'),
-  adminUsageReportSummary: document.querySelector('#admin-usage-report-summary'),
-  adminProviderCopy: document.querySelector('#admin-provider-copy'),
-  adminProviderCurrent: document.querySelector('#admin-provider-current'),
-  adminProviderForm: document.querySelector('#admin-provider-form'),
-  adminProviderPanel: document.querySelector('#admin-provider-panel'),
-  adminProviderSelect: document.querySelector('#admin-provider-select'),
-  adminTranscriptionModelInput: document.querySelector('#admin-transcription-model-input'),
-  adminSummaryProviderSelect: document.querySelector('#admin-summary-provider-select'),
-  adminSummaryModelInput: document.querySelector('#admin-summary-model-input'),
-  adminPricingVersionInput: document.querySelector('#admin-pricing-version-input'),
-  adminDefaultQuotaInput: document.querySelector('#admin-default-quota-input'),
-  adminLiveMeetingCapInput: document.querySelector('#admin-live-meeting-cap-input'),
-  adminLocalTranscriptionInput: document.querySelector('#admin-local-transcription-input'),
-  adminCloudTranscriptionInput: document.querySelector('#admin-cloud-transcription-input'),
-  adminLocalSummaryInput: document.querySelector('#admin-local-summary-input'),
-  adminCloudSummaryInput: document.querySelector('#admin-cloud-summary-input'),
-  adminOverrideForm: document.querySelector('#admin-override-form'),
-  adminOverrideSubmitterId: document.querySelector('#admin-override-submitter-id'),
-  adminOverrideQuotaInput: document.querySelector('#admin-override-quota-input'),
-  adminOverrideSubmit: document.querySelector('#admin-override-submit'),
-  adminSummaryModelStatus: document.querySelector('#admin-summary-model-status'),
-  adminProviderStatus: document.querySelector('#admin-provider-status'),
-  adminProviderStatusPill: document.querySelector('#admin-provider-status-pill'),
-  adminProviderSubmit: document.querySelector('#admin-provider-submit'),
-  authCopy: document.querySelector('#auth-copy'),
-  authEmail: document.querySelector('#auth-email'),
-  authForm: document.querySelector('#auth-form'),
-  authOtp: document.querySelector('#auth-otp'),
-  authPanel: document.querySelector('#auth-panel'),
-  authSubmitButton: document.querySelector('#auth-submit-button'),
   dashboardGrid: document.querySelector('.dashboard-grid'),
-  otpField: document.querySelector('#otp-field'),
-  otpVerifyButton: document.querySelector('#otp-verify-button'),
-  quotaCard: document.querySelector('#quota-card'),
-  quotaRemaining: document.querySelector('#quota-remaining'),
-  quotaBreakdown: document.querySelector('#quota-breakdown'),
-  sessionCard: document.querySelector('#session-card'),
-  sessionEmail: document.querySelector('#session-email'),
-  signInButton: document.querySelector('#sign-in-button'),
-  signInCard: document.querySelector('#sign-in-card'),
-  signInHint: document.querySelector('#sign-in-hint'),
-  signOutButton: document.querySelector('#sign-out-button'),
   submitterId: document.querySelector('#submitter-id'),
   submitterIdLabel: document.querySelector('#submitter-id-label'),
   defaultJoinName: document.querySelector('#default-join-name'),
@@ -109,23 +53,12 @@ const getOrCreateSubmitterId = () => {
   return created;
 };
 
-let authClient = {
-  enabled: false,
-  authorizedFetch: (input, init) => fetch(input, init),
-  getCurrentUser: async () => null,
-  getPendingEmail: () => null,
-  onAuthStateChange: () => () => {},
-  requestEmailOtp: async () => {},
-  verifyEmailOtp: async () => null,
-  signOut: async () => {}
-};
-let authEnabled = false;
-let currentOperatorEmail = null;
+// 主頁以訪客模式運作（Email 登入已移除，管理功能改在 /admin）。
+// 這兩個常數保留以維持下方工作流程的判斷式語意。
+const authEnabled = false;
+const currentOperatorEmail = null;
 let currentSubmitterId = getOrCreateSubmitterId();
-let pendingAuthEmail = null;
-let unsubscribeAuthState = () => {};
 let uploadInFlight = false;
-let adminProviderState = null;
 let operatorConfig = {
   defaultJoinName: 'Solomon - NoteTaker',
   submissionTemplates: []
@@ -142,23 +75,9 @@ let currentJobsPageInfo = {
 };
 
 const updateIdentityDisplay = () => {
-  const authEntryViewModel = getAuthEntryViewModel({
-    authEnabled,
-    currentOperatorEmail,
-    pendingAuthEmail
-  });
-
-  elements.submitterId.textContent = authEnabled
-    ? currentOperatorEmail || '待登入'
-    : '訪客模式';
-  elements.submitterId.title = authEnabled ? currentOperatorEmail || '' : currentSubmitterId;
-  elements.submitterIdLabel.textContent = authEnabled ? '目前身分' : '使用模式';
-  elements.signInCard.hidden = authEntryViewModel.hidden;
-  elements.signInButton.disabled = authEntryViewModel.disabled;
-  elements.signInButton.textContent = authEntryViewModel.buttonText;
-  elements.signInHint.textContent = authEntryViewModel.hintText;
-  elements.sessionCard.hidden = !authEnabled || !currentOperatorEmail;
-  elements.sessionEmail.textContent = currentOperatorEmail || '-';
+  elements.submitterId.textContent = '訪客模式';
+  elements.submitterId.title = currentSubmitterId;
+  elements.submitterIdLabel.textContent = '使用模式';
 };
 
 const applyDefaultJoinNameToForm = () => {
@@ -192,32 +111,8 @@ const focusSharedJobIfNeeded = () => {
   pendingSharedJobId = '';
 };
 
-const setAuthMode = (enabled) => {
-  authEnabled = enabled;
-  elements.authPanel.hidden = !enabled;
-};
-
-const syncOtpUi = () => {
-  const hasPendingOtp = Boolean(authEnabled && !currentOperatorEmail && pendingAuthEmail);
-  elements.otpField.hidden = !hasPendingOtp;
-  elements.otpVerifyButton.hidden = !hasPendingOtp;
-  elements.authSubmitButton.textContent = hasPendingOtp ? '重新寄送驗證碼' : '寄送驗證碼';
-  elements.authSubmitButton.formNoValidate = hasPendingOtp;
-  elements.authEmail.value = pendingAuthEmail ?? elements.authEmail.value;
-  elements.authEmail.disabled = hasPendingOtp;
-  elements.authOtp.required = hasPendingOtp;
-  elements.authCopy.textContent = hasPendingOtp
-    ? `驗證碼已寄到 ${pendingAuthEmail}。請輸入信中的驗證碼完成登入。`
-    : '輸入公司 email 後，系統會寄出一次性驗證碼。驗證完成後，瀏覽器會記住你的登入狀態。';
-  updateIdentityDisplay();
-};
-
-const collectFormElements = (root, selector) => (root ? [...root.querySelectorAll(selector)] : []);
-
 const setDashboardInteractionEnabled = (enabled) => {
   const interactiveElements = [
-    ...collectFormElements(elements.adminProviderForm, 'select, input, button'),
-    ...collectFormElements(elements.adminOverrideForm, 'input, button'),
     ...elements.meetingForm.querySelectorAll('input, button'),
     ...elements.uploadForm.querySelectorAll('input, button'),
     elements.clearHistoryButton,
@@ -232,205 +127,7 @@ const setDashboardInteractionEnabled = (enabled) => {
   });
 };
 
-const setAdminPanelVisible = (visible) => {
-  if (!elements.adminProviderPanel) {
-    return;
-  }
-
-  elements.adminProviderPanel.hidden = !visible;
-};
-
-const setQuotaVisible = (visible) => {
-  elements.quotaCard.hidden = !visible;
-};
-
-const resetAdminProviderPanel = () => {
-  if (!elements.adminProviderPanel) {
-    return;
-  }
-
-  adminProviderState = null;
-  elements.adminProviderSelect.replaceChildren();
-  elements.adminSummaryProviderSelect.replaceChildren();
-  elements.adminProviderCurrent.textContent = '目前不可用';
-  elements.adminProviderCopy.textContent = '管理員治理設定目前不可用。';
-  elements.adminProviderStatus.textContent = '';
-  elements.adminTranscriptionModelInput.value = '';
-  elements.adminSummaryModelInput.value = '';
-  elements.adminPricingVersionInput.value = '';
-  elements.adminDefaultQuotaInput.value = '';
-  elements.adminLiveMeetingCapInput.value = '';
-  elements.adminLocalTranscriptionInput.value = '';
-  elements.adminCloudTranscriptionInput.value = '';
-  elements.adminLocalSummaryInput.value = '';
-  elements.adminCloudSummaryInput.value = '';
-  elements.adminOverrideSubmitterId.value = '';
-  elements.adminOverrideQuotaInput.value = '';
-  elements.adminSummaryModelStatus.textContent = '';
-  elements.adminAuditList.innerHTML = '<p class="admin-provider-status">尚無治理異動紀錄。</p>';
-  elements.adminUsageReportSummary.textContent = '尚無 cloud usage 資料。';
-  elements.adminUsageReportList.innerHTML = '<p class="admin-provider-status">尚無 cloud usage 資料。</p>';
-  elements.adminProviderStatusPill.textContent = '隱藏';
-  elements.adminProviderStatusPill.className = 'provider-pill blocked';
-  elements.adminProviderSubmit.disabled = true;
-  elements.adminOverrideSubmit.disabled = true;
-  setAdminPanelVisible(false);
-};
-
-const updateAdminProviderStatus = () => {
-  if (!elements.adminProviderPanel) {
-    return;
-  }
-
-  const viewModel = getAdminGovernanceViewModel({
-    state: adminProviderState,
-    selectedTranscriptionProvider: elements.adminProviderSelect.value,
-    selectedSummaryProvider: elements.adminSummaryProviderSelect.value,
-    transcriptionModelInput: elements.adminTranscriptionModelInput.value,
-    summaryModelInput: elements.adminSummaryModelInput.value,
-    pricingVersionInput: elements.adminPricingVersionInput.value,
-    overrideSubmitterId: elements.adminOverrideSubmitterId.value,
-    overrideQuotaInput: elements.adminOverrideQuotaInput.value
-  });
-
-  elements.adminProviderCurrent.textContent = viewModel.currentLabel;
-  elements.adminProviderCopy.textContent = viewModel.copyText;
-  elements.adminProviderStatus.textContent = viewModel.providerStatusText;
-  elements.adminSummaryModelStatus.textContent = viewModel.overrideStatusText;
-  elements.adminProviderStatusPill.textContent = viewModel.pillText;
-  elements.adminProviderStatusPill.className = `provider-pill ${viewModel.pillTone}`;
-  elements.adminProviderSubmit.disabled = viewModel.submitDisabled;
-  elements.adminOverrideSubmit.disabled = viewModel.overrideDisabled;
-  elements.adminSummaryModelInput.disabled = viewModel.summaryModelInputDisabled;
-  elements.adminSummaryModelInput.placeholder = viewModel.summaryModelInputDisabled
-    ? '地端 Codex 不需要輸入模型'
-    : '例如 gpt-5.4-nano';
-};
-
-const renderAuditEntries = (entries = []) => {
-  if (!elements.adminAuditList) {
-    return;
-  }
-
-  if (!entries.length) {
-    elements.adminAuditList.innerHTML = '<p class="admin-provider-status">尚無治理異動紀錄。</p>';
-    return;
-  }
-
-  elements.adminAuditList.replaceChildren(
-    ...getAuditEntryViewModels(entries, formatJobTimestamp).map((entry) => {
-      const node = document.createElement('article');
-      node.className = 'admin-audit-entry';
-      node.innerHTML = `
-        <strong>${escapeHtml(entry.action)}</strong>
-        <span>${escapeHtml(entry.target)}</span>
-        <small>${escapeHtml(entry.timestampText)}</small>
-      `;
-      return node;
-    })
-  );
-};
-
-const renderUsageReport = (payload) => {
-  if (!elements.adminUsageReportList || !elements.adminUsageReportSummary) {
-    return;
-  }
-
-  if (!payload?.rows?.length) {
-    elements.adminUsageReportSummary.textContent = '尚無 cloud usage 資料。';
-    elements.adminUsageReportList.innerHTML = '<p class="admin-provider-status">尚無 cloud usage 資料。</p>';
-    return;
-  }
-
-  elements.adminUsageReportSummary.textContent = `日期 ${payload.quotaDayKey} / 使用者 ${payload.totals.operatorCount} / 已用 ${formatUsd(payload.totals.consumedUsd)} / 保留 ${formatUsd(payload.totals.reservedUsd)}`;
-  elements.adminUsageReportList.replaceChildren(
-    ...getUsageReportRowViewModels(payload.rows).map((row) => {
-      const node = document.createElement('article');
-      node.className = 'admin-audit-entry';
-      node.innerHTML = `
-        <strong>${escapeHtml(row.identityLabel)}</strong>
-        <span>${escapeHtml(row.submitterId)}</span>
-        <small>已用 ${row.consumedLabel} / 保留 ${row.reservedLabel} / 剩餘 ${row.remainingLabel} / 總額 ${row.dailyQuotaLabel} / ${row.entryCountLabel}</small>
-      `;
-      return node;
-    })
-  );
-};
-
-const renderAdminProviderPanel = (payload, overrides = [], auditEntries = [], usageReport = null) => {
-  if (!elements.adminProviderPanel) {
-    return;
-  }
-
-  adminProviderState = {
-    ...payload,
-    overrides,
-    auditEntries,
-    usageReport
-  };
-  elements.adminProviderSelect.replaceChildren(
-    ...payload.transcriptionOptions.map((option) => {
-      const node = document.createElement('option');
-      node.value = option.value;
-      node.textContent = option.ready
-        ? formatProviderLabel(option.value)
-        : `${formatProviderLabel(option.value)}（未就緒）`;
-      node.disabled = !option.ready;
-      node.selected = option.value === payload.transcriptionProvider;
-      return node;
-    })
-  );
-  elements.adminSummaryProviderSelect.replaceChildren(
-    ...payload.summaryOptions.map((option) => {
-      const node = document.createElement('option');
-      node.value = option.value;
-      node.textContent = option.ready
-        ? formatSummaryModeLabel(option.value)
-        : `${formatSummaryModeLabel(option.value)}（未就緒）`;
-      node.disabled = !option.ready;
-      node.selected = option.value === payload.summaryProvider;
-      return node;
-    })
-  );
-  elements.adminTranscriptionModelInput.value = payload.transcriptionModel ?? '';
-  elements.adminSummaryModelInput.value = payload.summaryModel ?? '';
-  elements.adminPricingVersionInput.value = payload.pricingVersion ?? 'v1';
-  elements.adminDefaultQuotaInput.value = payload.defaultDailyCloudQuotaUsd ?? 0;
-  elements.adminLiveMeetingCapInput.value = payload.liveMeetingReservationCapUsd ?? 0;
-  elements.adminLocalTranscriptionInput.value = payload.concurrencyPools?.localTranscription ?? 1;
-  elements.adminCloudTranscriptionInput.value = payload.concurrencyPools?.cloudTranscription ?? 1;
-  elements.adminLocalSummaryInput.value = payload.concurrencyPools?.localSummary ?? 1;
-  elements.adminCloudSummaryInput.value = payload.concurrencyPools?.cloudSummary ?? 1;
-  renderAuditEntries(auditEntries);
-  renderUsageReport(usageReport);
-  setAdminPanelVisible(true);
-  updateAdminProviderStatus();
-};
-
-const renderOperatorQuota = (payload) => {
-  const viewModel = getQuotaDisplayModel(payload);
-  setQuotaVisible(!viewModel.hidden);
-  elements.quotaRemaining.textContent = viewModel.remainingLabel;
-  elements.quotaBreakdown.textContent = viewModel.breakdownText;
-};
-
-const setAuthenticatedView = (user) => {
-  currentOperatorEmail = user?.email ?? null;
-  currentSubmitterId = user?.id ?? getOrCreateSubmitterId();
-  pendingAuthEmail = user ? null : authClient.getPendingEmail();
-  elements.dashboardGrid.hidden = authEnabled && !user;
-  elements.authPanel.hidden = !authEnabled || Boolean(user);
-  setDashboardInteractionEnabled(!authEnabled || Boolean(user));
-  syncOtpUi();
-  updateIdentityDisplay();
-
-  if (!user) {
-    resetAdminProviderPanel();
-    renderOperatorQuota(null);
-  }
-};
-
-const apiFetch = async (input, init) => authClient.authorizedFetch(input, init);
+const apiFetch = async (input, init) => fetch(input, init);
 
 const setBanner = (message, kind = 'info') => {
   if (!message) {
@@ -947,66 +644,6 @@ const fetchConfig = async () => {
   setDashboardInteractionEnabled(!authEnabled || Boolean(currentOperatorEmail));
 };
 
-const fetchOperatorQuota = async () => {
-  if (authEnabled && !currentOperatorEmail) {
-    renderOperatorQuota(null);
-    return;
-  }
-
-  const url = new URL('/api/operator/quota', window.location.origin);
-  url.searchParams.set('submitterId', currentSubmitterId);
-  const response = await apiFetch(url);
-
-  if (response.status === 401) {
-    renderOperatorQuota(null);
-    return;
-  }
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch quota: ${response.status}`);
-  }
-
-  renderOperatorQuota(await response.json());
-};
-
-const fetchAdminProviderPanel = async () => {
-  if (!elements.adminProviderPanel) {
-    return;
-  }
-
-  if (!authEnabled || !currentOperatorEmail) {
-    resetAdminProviderPanel();
-    return;
-  }
-
-  const [policyResponse, overridesResponse, auditResponse, usageReportResponse] = await Promise.all([
-    apiFetch('/api/admin/ai-policy'),
-    apiFetch('/api/admin/cloud-quota/overrides'),
-    apiFetch('/api/admin/audit-log'),
-    apiFetch('/api/admin/cloud-usage/report')
-  ]);
-
-  if (policyResponse.status === 401 || policyResponse.status === 403) {
-    resetAdminProviderPanel();
-    return;
-  }
-
-  if (!policyResponse.ok || !overridesResponse.ok || !auditResponse.ok || !usageReportResponse.ok) {
-    throw new Error('Failed to fetch admin governance settings.');
-  }
-
-  const policy = await policyResponse.json();
-  const overridesPayload = await overridesResponse.json();
-  const auditPayload = await auditResponse.json();
-  const usageReportPayload = await usageReportResponse.json();
-  renderAdminProviderPanel(
-    policy,
-    overridesPayload.overrides || [],
-    auditPayload.entries || [],
-    usageReportPayload
-  );
-};
-
 const mergeJobsById = (existingJobs, incomingJobs) => {
   const nextById = new Map(existingJobs.map((job) => [job.id, job]));
   incomingJobs.forEach((job) => {
@@ -1113,7 +750,6 @@ const submitMeetingJob = async (event) => {
   setBanner('會議已加入整理流程。');
   elements.meetingForm.reset();
   applyDefaultJoinNameToForm();
-  await fetchOperatorQuota();
   await fetchJobs();
 };
 
@@ -1164,49 +800,13 @@ const submitUploadJob = async (event) => {
   elements.uploadForm.reset();
   resetUploadSelectionUi();
   uploadInFlight = false;
-  await fetchOperatorQuota();
   await fetchJobs();
-};
-
-const initializeAuth = async () => {
-  authClient = await createOperatorAuthClient();
-  setAuthMode(authClient.enabled);
-  pendingAuthEmail = authClient.getPendingEmail();
-  unsubscribeAuthState();
-  unsubscribeAuthState = authClient.onAuthStateChange(async (user) => {
-    setAuthenticatedView(user);
-
-    if (user) {
-      await fetchAdminProviderPanel().catch((error) => {
-        setBanner(error instanceof Error ? error.message : String(error), 'error');
-      });
-      await fetchOperatorQuota().catch((error) => {
-        setBanner(error instanceof Error ? error.message : String(error), 'error');
-      });
-      await fetchJobs().catch((error) => {
-        setBanner(error instanceof Error ? error.message : String(error), 'error');
-      });
-      return;
-    }
-
-    renderJobs([]);
-  });
-
-  const user = await authClient.getCurrentUser();
-  setAuthenticatedView(user);
 };
 
 const boot = async () => {
   try {
-    await initializeAuth();
+    updateIdentityDisplay();
     await fetchConfig();
-    await fetchAdminProviderPanel();
-    await fetchOperatorQuota();
-
-    if (authEnabled && !currentOperatorEmail) {
-      setBanner('請先完成 Email 驗證登入，再送出會議或上傳錄音。');
-      return;
-    }
 
     const prefill = applyQueryPrefill();
     if (prefill.shouldAutoQueue) {
@@ -1223,67 +823,9 @@ const boot = async () => {
   }
 };
 
-elements.authForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-
-  try {
-    elements.authSubmitButton.disabled = true;
-    const email = elements.authEmail.value.trim();
-    setBanner('正在寄送驗證碼...');
-    await authClient.requestEmailOtp(email);
-    pendingAuthEmail = email;
-    syncOtpUi();
-    setBanner(`驗證碼已寄到 ${email}。`, 'info');
-  } catch (error) {
-    setBanner(error instanceof Error ? error.message : String(error), 'error');
-  } finally {
-    elements.authSubmitButton.disabled = false;
-  }
-});
-
-elements.otpVerifyButton.addEventListener('click', async () => {
-  try {
-    elements.otpVerifyButton.disabled = true;
-    setBanner('正在驗證登入...');
-    const user = await authClient.verifyEmailOtp(elements.authOtp.value.trim());
-    setAuthenticatedView(user);
-    elements.authOtp.value = '';
-    setBanner('登入完成。');
-    await fetchJobs();
-  } catch (error) {
-    setBanner(error instanceof Error ? error.message : String(error), 'error');
-  } finally {
-    elements.otpVerifyButton.disabled = false;
-  }
-});
-
-elements.signInButton.addEventListener('click', () => {
-  if (!authEnabled) {
-    setBanner('登入尚未啟用。請先設定 SUPABASE_URL 與 SUPABASE_PUBLISHABLE_KEY。', 'error');
-    return;
-  }
-
-  if (elements.authPanel.hidden) {
-    return;
-  }
-
-  elements.authPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  const focusTarget = elements.otpField.hidden ? elements.authEmail : elements.authOtp;
-  focusTarget?.focus();
-});
-
 elements.meetingForm.addEventListener('submit', async (event) => {
   try {
     await submitMeetingJob(event);
-  } catch (error) {
-    setBanner(error instanceof Error ? error.message : String(error), 'error');
-  }
-});
-
-elements.signOutButton.addEventListener('click', async () => {
-  try {
-    await authClient.signOut();
-    setBanner('已登出。');
   } catch (error) {
     setBanner(error instanceof Error ? error.message : String(error), 'error');
   }
@@ -1295,117 +837,6 @@ elements.uploadForm.addEventListener('submit', async (event) => {
   } catch (error) {
     setBanner(error instanceof Error ? error.message : String(error), 'error');
     uploadInFlight = false;
-  }
-});
-
-elements.adminProviderSelect?.addEventListener('change', () => {
-  updateAdminProviderStatus();
-});
-
-elements.adminSummaryProviderSelect?.addEventListener('change', () => {
-  updateAdminProviderStatus();
-});
-
-[
-  elements.adminTranscriptionModelInput,
-  elements.adminSummaryModelInput,
-  elements.adminPricingVersionInput,
-  elements.adminDefaultQuotaInput,
-  elements.adminLiveMeetingCapInput,
-  elements.adminLocalTranscriptionInput,
-  elements.adminCloudTranscriptionInput,
-  elements.adminLocalSummaryInput,
-  elements.adminCloudSummaryInput,
-  elements.adminOverrideSubmitterId,
-  elements.adminOverrideQuotaInput
-].forEach((element) => {
-  element?.addEventListener('input', () => {
-    updateAdminProviderStatus();
-  });
-});
-
-elements.adminProviderForm?.addEventListener('submit', async (event) => {
-  event.preventDefault();
-
-  if (!adminProviderState) {
-    return;
-  }
-
-  try {
-    elements.adminProviderSubmit.disabled = true;
-    setBanner('正在更新治理設定...');
-    const response = await apiFetch('/api/admin/ai-policy', {
-      method: 'PUT',
-      headers: {
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        transcriptionProvider: elements.adminProviderSelect.value,
-        transcriptionModel: elements.adminTranscriptionModelInput.value.trim(),
-        summaryProvider: elements.adminSummaryProviderSelect.value,
-        summaryModel:
-          elements.adminSummaryProviderSelect.value === 'local-codex'
-            ? adminProviderState.summaryModel || 'gpt-5-mini'
-            : elements.adminSummaryModelInput.value.trim(),
-        pricingVersion: elements.adminPricingVersionInput.value.trim(),
-        defaultDailyCloudQuotaUsd: Number(elements.adminDefaultQuotaInput.value),
-        liveMeetingReservationCapUsd: Number(elements.adminLiveMeetingCapInput.value),
-        concurrencyPools: {
-          localTranscription: Number(elements.adminLocalTranscriptionInput.value),
-          cloudTranscription: Number(elements.adminCloudTranscriptionInput.value),
-          localSummary: Number(elements.adminLocalSummaryInput.value),
-          cloudSummary: Number(elements.adminCloudSummaryInput.value)
-        }
-      })
-    });
-    const payload = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(payload?.error?.message ?? `AI policy update failed: ${response.status}`);
-    }
-
-    setBanner('治理設定已更新。');
-    await fetchAdminProviderPanel();
-    await fetchOperatorQuota();
-  } catch (error) {
-    setBanner(error instanceof Error ? error.message : String(error), 'error');
-  } finally {
-    updateAdminProviderStatus();
-  }
-});
-
-elements.adminOverrideForm?.addEventListener('submit', async (event) => {
-  event.preventDefault();
-
-  if (!adminProviderState) {
-    return;
-  }
-
-  try {
-    elements.adminOverrideSubmit.disabled = true;
-    setBanner('正在更新個人 quota override...');
-    const response = await apiFetch('/api/admin/cloud-quota/overrides', {
-      method: 'PUT',
-      headers: {
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        submitterId: elements.adminOverrideSubmitterId.value.trim(),
-        dailyQuotaUsd: Number(elements.adminOverrideQuotaInput.value)
-      })
-    });
-    const payload = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(payload?.error?.message ?? `Quota override update failed: ${response.status}`);
-    }
-
-    setBanner(`個人 quota override 已更新為 ${formatUsd(payload.dailyQuotaUsd)}。`);
-    await fetchAdminProviderPanel();
-  } catch (error) {
-    setBanner(error instanceof Error ? error.message : String(error), 'error');
-  } finally {
-    updateAdminProviderStatus();
   }
 });
 

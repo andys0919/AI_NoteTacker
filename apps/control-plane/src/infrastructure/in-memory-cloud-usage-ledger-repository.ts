@@ -41,6 +41,14 @@ export class InMemoryCloudUsageLedgerRepository implements CloudUsageLedgerRepos
     return this.entries.filter((entry) => entry.quotaDayKey === quotaDayKey);
   }
 
+  async listRecentEntries(limit: number): Promise<CloudUsageLedgerEntry[]> {
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : this.entries.length;
+
+    return [...this.entries]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, safeLimit);
+  }
+
   async listBySubmitterAndDay(
     submitterId: string,
     quotaDayKey: string

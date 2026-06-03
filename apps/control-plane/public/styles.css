@@ -179,8 +179,9 @@ body {
 
 .dashboard-topbar-meta {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 0.7rem;
+  align-content: start;
 }
 
 .meta-card,
@@ -456,13 +457,13 @@ select {
 
 input:focus {
   border-color: var(--cyan-strong);
-  box-shadow: 0 0 0 0.2rem rgba(23, 207, 255, 0.12);
+  box-shadow: 0 0 0 0.2rem rgba(255, 208, 141, 0.18);
   transform: translateY(-1px);
 }
 
 select:focus {
   border-color: var(--cyan-strong);
-  box-shadow: 0 0 0 0.2rem rgba(23, 207, 255, 0.12);
+  box-shadow: 0 0 0 0.2rem rgba(255, 208, 141, 0.18);
   transform: translateY(-1px);
 }
 
@@ -626,7 +627,8 @@ select {
 
 .stat-pill strong {
   font-size: 0.96rem;
-  font-family: "Chakra Petch", sans-serif;
+  font-family: "Noto Sans TC", sans-serif;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
@@ -1093,7 +1095,7 @@ summary {
 
 .admin-summary-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 0.8rem;
   padding: 1rem;
 }
@@ -1153,7 +1155,8 @@ summary {
   .template-picker,
   .template-preview-grid,
   .job-meta-grid,
-  .runtime-health-card-grid {
+  .runtime-health-card-grid,
+  .admin-provider-controls {
     grid-template-columns: 1fr;
   }
 
@@ -1194,5 +1197,361 @@ summary {
   .admin-topbar {
     flex-direction: column;
     align-items: flex-start;
+  }
+}
+
+/* 管理者登入彈窗 */
+.admin-login-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  z-index: 50;
+}
+
+.admin-login-overlay[hidden] {
+  display: none;
+}
+
+.admin-login-card {
+  width: min(420px, 100%);
+}
+
+.admin-shell[hidden] {
+  display: none;
+}
+
+/* 主頁管理者入口卡片 */
+.admin-entry-card {
+  text-decoration: none;
+  transition: border-color 0.18s ease, transform 0.18s ease;
+}
+
+.admin-entry-card:hover {
+  border-color: rgba(125, 196, 225, 0.42);
+  transform: translateY(-1px);
+}
+
+.meta-card.admin-entry-card .admin-entry-hint {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.meta-card.admin-entry-card {
+  display: grid;
+  gap: 0.3rem;
+  align-content: center;
+  cursor: pointer;
+}
+
+.meta-card.admin-entry-card .meta-label {
+  margin-bottom: 0;
+  color: var(--cyan);
+}
+
+/* 管理者頁:歷史使用紀錄 */
+.admin-usage-history-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.7rem;
+  margin-bottom: 0.9rem;
+}
+
+.admin-usage-history-controls .field {
+  max-width: 220px;
+}
+
+#admin-usage-history-summary {
+  margin-bottom: 0.9rem;
+}
+
+.usage-history-table-wrap {
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid rgba(160, 183, 202, 0.18);
+  border-radius: 1rem;
+  background: rgba(6, 11, 17, 0.6);
+}
+
+.usage-history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.usage-history-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  white-space: nowrap;
+  padding: 0.6rem 0.75rem;
+  background: rgba(11, 18, 26, 0.96);
+  color: var(--muted);
+  font-weight: 600;
+  border-bottom: 1px solid rgba(160, 183, 202, 0.22);
+}
+
+.usage-history-table tbody td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid rgba(160, 183, 202, 0.1);
+  vertical-align: top;
+}
+
+.usage-history-table tbody tr:hover {
+  background: rgba(125, 196, 225, 0.06);
+}
+
+.usage-history-table .usage-num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-history-table .usage-jobid {
+  font-family: 'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-history-table .usage-history-empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 1.2rem;
+}
+
+.usage-history-table tr.usage-history-estimate {
+  opacity: 0.62;
+}
+
+.usage-jobid-button {
+  font-family: 'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  border: none;
+  padding: 0;
+  color: #7dc4e1;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.usage-jobid-button:hover {
+  color: #a8dcf0;
+}
+
+/* 工作內容彈窗 */
+.admin-job-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.admin-job-modal[hidden] {
+  display: none;
+}
+
+.admin-job-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 6, 12, 0.72);
+  backdrop-filter: blur(2px);
+}
+
+.admin-job-modal-card {
+  position: relative;
+  z-index: 1;
+  width: min(820px, 100%);
+  max-height: 86vh;
+  overflow: auto;
+  padding: 1.5rem;
+}
+
+.admin-job-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.admin-job-modal-head h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.admin-job-modal-body {
+  display: grid;
+  gap: 1rem;
+}
+
+.admin-job-modal-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.5rem;
+}
+
+.admin-job-modal-section h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.98rem;
+}
+
+.admin-job-modal-section pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(6, 11, 17, 0.7);
+  border: 1px solid rgba(160, 183, 202, 0.18);
+  border-radius: 0.8rem;
+  padding: 0.85rem 1rem;
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.admin-job-modal-section ul {
+  margin: 0.2rem 0 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.2rem;
+}
+
+/* ============================================================
+   Polish layer — 一致的焦點、對比、動效與新元件配色
+   ============================================================ */
+
+/* 登入彈窗:加上遮罩讓它讀起來像對話框,卡片加頂部漸層條 */
+.admin-login-overlay {
+  background: radial-gradient(circle at 50% 30%, rgba(242, 188, 107, 0.06), transparent 60%),
+    rgba(2, 6, 12, 0.66);
+  backdrop-filter: blur(6px);
+}
+
+.admin-login-card {
+  padding: 1.75rem;
+}
+
+.admin-login-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  z-index: 2;
+  background: linear-gradient(90deg, var(--cyan), var(--lime));
+  opacity: 0.9;
+}
+
+.admin-login-card .auth-actions .action-button {
+  width: 100%;
+}
+
+/* 歷史用量「依 model」卡片:用 teal/amber 漸層強調,與其它資訊卡一致 */
+.runtime-health-card-info {
+  border-color: rgba(125, 225, 192, 0.22);
+  background:
+    linear-gradient(135deg, rgba(125, 225, 192, 0.08), rgba(242, 188, 107, 0.04)),
+    rgba(6, 11, 17, 0.82);
+}
+
+.runtime-health-card-info strong {
+  color: var(--lime);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 工作 ID 連結改用主題 teal,取代藍色 */
+.usage-jobid-button {
+  color: var(--lime);
+}
+
+.usage-jobid-button:hover {
+  color: var(--cyan-strong);
+  text-decoration-thickness: 2px;
+}
+
+/* 摘要區數字一律對齊(等寬數字) */
+.admin-summary-strip strong,
+.usage-history-table .usage-num,
+.admin-job-modal-meta strong {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 鍵盤可見焦點(滑鼠點擊不顯示,避免干擾) */
+a:focus-visible,
+button:focus-visible,
+.toolbar-button:focus-visible,
+.action-button:focus-visible,
+.mini-button:focus-visible,
+.filter-chip:focus-visible,
+.usage-jobid-button:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--cyan-strong);
+  outline-offset: 2px;
+  border-radius: 0.6rem;
+}
+
+/* 小螢幕:縮小主標、收斂內距、表格可橫向捲動 */
+@media (max-width: 560px) {
+  .shell,
+  .admin-shell {
+    width: calc(100vw - 1.5rem);
+    padding: 1.25rem 0 3rem;
+  }
+
+  .dashboard-topbar,
+  .hero {
+    padding: 1.1rem 1.1rem;
+  }
+
+  .dashboard-topbar h1 {
+    font-size: clamp(1.5rem, 6vw, 2rem);
+  }
+
+  .panel {
+    border-radius: 1.3rem;
+  }
+
+  .workflow-panel,
+  .form-panel,
+  .queue-panel,
+  .admin-governance-panel {
+    padding: 1.15rem;
+  }
+
+  .admin-job-modal,
+  .admin-login-overlay {
+    padding: 0.85rem;
+  }
+}
+
+/* 尊重使用者的減少動效偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .action-button:hover,
+  .toolbar-button:hover:not(:disabled),
+  .filter-chip:hover,
+  .admin-entry-card:hover {
+    transform: none;
   }
 }

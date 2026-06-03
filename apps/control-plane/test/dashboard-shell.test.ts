@@ -31,14 +31,26 @@ describe('dashboard shell markup', () => {
     expect(html).toContain('Jobs & Archive');
   });
 
-  it('renders a visible login entry point in the dashboard shell', () => {
+  it('removes the email login portal and quota card from the dashboard shell', () => {
     const html = readFileSync(
       resolve(import.meta.dirname, '../public/index.html'),
       'utf-8'
     );
 
-    expect(html).toContain('sign-in-button');
-    expect(html).toContain('登入');
-    expect(html).toContain('Email 驗證登入');
+    expect(html).not.toContain('sign-in-button');
+    expect(html).not.toContain('Email 驗證登入');
+    expect(html).not.toContain('登入入口');
+    expect(html).not.toContain('quota-card');
+    expect(html).not.toContain('今日雲端額度');
+  });
+
+  it('links to the admin console from the dashboard shell', () => {
+    const html = readFileSync(
+      resolve(import.meta.dirname, '../public/index.html'),
+      'utf-8'
+    );
+
+    expect(html).toContain('admin-entry-link');
+    expect(html).toContain('href="/admin"');
   });
 });

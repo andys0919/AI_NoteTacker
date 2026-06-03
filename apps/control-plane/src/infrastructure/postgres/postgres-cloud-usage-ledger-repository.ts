@@ -164,6 +164,21 @@ export class PostgresCloudUsageLedgerRepository implements CloudUsageLedgerRepos
     return result.rows.map(mapRow);
   }
 
+  async listRecentEntries(limit: number): Promise<CloudUsageLedgerEntry[]> {
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 500;
+    const result = await this.database.query<LedgerRow>(
+      `
+        SELECT *
+        FROM cloud_usage_ledger
+        ORDER BY created_at DESC
+        LIMIT $1
+      `,
+      [safeLimit]
+    );
+
+    return result.rows.map(mapRow);
+  }
+
   async listBySubmitterAndDay(
     submitterId: string,
     quotaDayKey: string

@@ -243,6 +243,9 @@ const recordingJobSchemaSql = `
   ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS summary_lease_expires_at TIMESTAMPTZ;
 
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS operator_hidden_at TIMESTAMPTZ;
+
   CREATE INDEX IF NOT EXISTS recording_jobs_submitter_archive_idx
   ON recording_jobs (submitter_id, created_at DESC, id DESC);
 
@@ -727,6 +730,24 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
         SELECT *
         FROM recording_jobs
         WHERE id = $1
+          AND operator_hidden_at IS NULL
+      `,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return undefined;
+    }
+
+    return mapRowToRecordingJob(result.rows[0]);
+  }
+
+  async getByIdIncludingHidden(id: string): Promise<RecordingJob | undefined> {
+    const result = await this.database.query<RecordingJobRow>(
+      `
+        SELECT *
+        FROM recording_jobs
+        WHERE id = $1
       `,
       [id]
     );
@@ -744,6 +765,7 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
         SELECT *
         FROM recording_jobs
         WHERE submitter_id = $1
+          AND operator_hidden_at IS NULL
         ORDER BY created_at DESC
       `,
       [submitterId]
@@ -819,6 +841,7 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           terminal_notification_state
         FROM recording_jobs
         WHERE submitter_id = $1
+          AND operator_hidden_at IS NULL
         ${cursorClause}
         ORDER BY created_at DESC, id DESC
         LIMIT ${limitPlaceholder}
@@ -859,6 +882,7 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) AS failed_count
         FROM recording_jobs
         WHERE submitter_id = $1
+          AND operator_hidden_at IS NULL
       `,
       [submitterId]
     );
@@ -936,12 +960,16 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
   }
 
   async deleteTerminalJobForSubmitter(id: string, submitterId: string): Promise<boolean> {
+    // Soft delete: hide the job from the operator's own views but keep the row (and its
+    // transcript / summary content) so the admin console can still audit it.
     const result = await this.database.query<{ id: string }>(
       `
-        DELETE FROM recording_jobs
+        UPDATE recording_jobs
+        SET operator_hidden_at = now()
         WHERE id = $1
           AND submitter_id = $2
           AND state IN ('failed', 'completed')
+          AND operator_hidden_at IS NULL
         RETURNING id
       `,
       [id, submitterId]
@@ -951,14 +979,15 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
   }
 
   async clearTerminalHistoryForSubmitter(submitterId: string): Promise<number> {
-    // Single atomic statement: deleting by predicate and returning the affected ids yields
-    // the same count as the prior SELECT-then-DELETE-by-id, without the extra round-trip or
-    // the TOCTOU window between the two queries.
+    // Soft delete: a single atomic UPDATE hides all terminal jobs for this submitter while
+    // preserving the content for admin auditing.
     const result = await this.database.query<{ id: string }>(
       `
-        DELETE FROM recording_jobs
+        UPDATE recording_jobs
+        SET operator_hidden_at = now()
         WHERE submitter_id = $1
           AND state IN ('failed', 'completed')
+          AND operator_hidden_at IS NULL
         RETURNING id
       `,
       [submitterId]

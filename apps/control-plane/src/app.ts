@@ -60,6 +60,10 @@ import {
   buildTranscriptPreview
 } from './domain/recording-job-list-item.js';
 import { buildRuntimeHealthReport } from './domain/runtime-health-report.js';
+import {
+  createAdminConsoleAuthFromEnvironment,
+  type AdminConsoleAuth
+} from './infrastructure/admin-console-auth.js';
 import { InMemoryTranscriptionProviderSettingsRepository } from './infrastructure/in-memory-transcription-provider-settings-repository.js';
 import { InMemoryAdminAuditLogRepository } from './infrastructure/in-memory-admin-audit-log-repository.js';
 import { InMemoryCloudUsageLedgerRepository } from './infrastructure/in-memory-cloud-usage-ledger-repository.js';
@@ -113,6 +117,15 @@ const adminCloudUsageReportQuerySchema = z.object({
     .trim()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional()
+});
+
+const adminLoginSchema = z.object({
+  username: z.string().min(1).max(120),
+  password: z.string().min(1).max(200)
+});
+
+const adminUsageHistoryQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(5000).optional()
 });
 
 const operatorJobExportQuerySchema = z.object({
@@ -316,6 +329,7 @@ type AppOptions = {
   maxMeetingJobBacklog?: number;
   maxTranscriptionJobBacklog?: number;
   adminEmails?: string[];
+  adminConsoleAuth?: AdminConsoleAuth;
   internalServiceToken?: string;
   staleMeetingJobAfterMs?: number;
   staleMeetingFinalizationAfterMs?: number;
@@ -1057,6 +1071,7 @@ export const createApp = (
       email.toLowerCase()
     )
   );
+  const adminConsoleAuth = options.adminConsoleAuth ?? createAdminConsoleAuthFromEnvironment();
   const upload = multer({
     dest: tmpdir(),
     limits: {
@@ -1408,10 +1423,36 @@ export const createApp = (
     return (await resolveAuthenticatedOperatorFromRequest(request, response))?.id;
   };
 
+  const readAdminConsoleToken = (request: express.Request): string | undefined => {
+    const headerToken = request.header('x-admin-console-token');
+
+    if (headerToken && headerToken.trim().length > 0) {
+      return headerToken.trim();
+    }
+
+    const bearer = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+    return bearer && bearer.length > 0 ? bearer : undefined;
+  };
+
+  const resolveAdminConsoleOperatorFromRequest = (
+    request: express.Request
+  ): AuthenticatedOperator | undefined => {
+    const session = adminConsoleAuth.verifyToken(readAdminConsoleToken(request));
+    return session ? adminConsoleAuth.toOperator() : undefined;
+  };
+
   const requireAdminOperator = async (
     request: express.Request,
     response: express.Response
   ): Promise<AuthenticatedOperator | undefined> => {
+    // The simple admin-console session (username/password login) takes priority and
+    // works even when Supabase operator auth is disabled (guest mode).
+    const consoleOperator = resolveAdminConsoleOperatorFromRequest(request);
+
+    if (consoleOperator) {
+      return consoleOperator;
+    }
+
     const authenticatedOperator = await resolveAuthenticatedOperatorFromRequest(request, response);
 
     if (!authenticatedOperator) {
@@ -1536,6 +1577,54 @@ export const createApp = (
       enabled,
       supabaseUrl: enabled ? process.env.SUPABASE_URL : undefined,
       supabasePublishableKey: enabled ? process.env.SUPABASE_PUBLISHABLE_KEY : undefined
+    });
+  });
+
+  app.post('/api/admin/login', (request, response) => {
+    const parsedRequest = adminLoginSchema.safeParse(request.body);
+
+    if (!parsedRequest.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: '請輸入帳號與密碼。'
+        }
+      });
+    }
+
+    if (
+      !adminConsoleAuth.verifyCredentials(
+        parsedRequest.data.username,
+        parsedRequest.data.password
+      )
+    ) {
+      return response.status(401).json({
+        error: {
+          code: 'admin-login-invalid',
+          message: '帳號或密碼錯誤。'
+        }
+      });
+    }
+
+    const issued = adminConsoleAuth.issueToken();
+
+    return response.status(200).json({
+      token: issued.token,
+      expiresAt: issued.expiresAt,
+      username: adminConsoleAuth.username
+    });
+  });
+
+  app.get('/api/admin/session', (request, response) => {
+    const operator = resolveAdminConsoleOperatorFromRequest(request);
+
+    if (!operator) {
+      return response.status(401).json(authRequiredResponse);
+    }
+
+    return response.status(200).json({
+      username: adminConsoleAuth.username,
+      operatorId: operator.id
     });
   });
 
@@ -1802,6 +1891,194 @@ export const createApp = (
         consumedUsd: roundUsd(rows.reduce((total, row) => total + row.consumedUsd, 0))
       },
       rows
+    });
+  });
+
+  app.get('/api/admin/usage/history', async (request, response) => {
+    const parsedQuery = adminUsageHistoryQuerySchema.safeParse(request.query);
+
+    if (!parsedQuery.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedQuery.error.issues[0]?.message ?? 'The request query is invalid.'
+        }
+      });
+    }
+
+    const authenticatedOperator = await requireAdminOperator(request, response);
+
+    if (!authenticatedOperator) {
+      return;
+    }
+
+    const limit = parsedQuery.data.limit ?? 500;
+    const ledgerEntries = await cloudUsageLedgerRepository.listRecentEntries(limit);
+
+    const readNumber = (value: unknown): number =>
+      typeof value === 'number' && Number.isFinite(value) ? value : 0;
+
+    const entries = ledgerEntries.map((entry) => {
+      const detail = entry.detail ?? {};
+      const inputTokens = readNumber(detail.promptTokens);
+      const outputTokens = readNumber(detail.completionTokens);
+      const totalTokens =
+        readNumber(detail.totalTokens) || inputTokens + outputTokens;
+      const audioMs =
+        entry.stage === 'transcription'
+          ? readNumber(detail.audioMs) || readNumber(entry.usageQuantity)
+          : 0;
+
+      return {
+        id: entry.id,
+        createdAt: entry.createdAt,
+        quotaDayKey: entry.quotaDayKey,
+        jobId: entry.jobId,
+        submitterId: entry.submitterId,
+        stage: entry.stage,
+        provider: entry.provider,
+        model: entry.model,
+        entryType: entry.entryType,
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        audioMs,
+        costUsd: roundUsd(entry.costUsd)
+      };
+    });
+
+    const submitterIds = [...new Set(entries.map((entry) => entry.submitterId))];
+    const submitterEmails: Record<string, string> = {};
+    await Promise.all(
+      submitterIds.map(async (submitterId) => {
+        const user = await authenticatedUserRepository?.getById(submitterId);
+
+        if (user?.email) {
+          submitterEmails[submitterId] = user.email;
+        }
+      })
+    );
+
+    const byModelMap = new Map<
+      string,
+      {
+        model: string;
+        stage: string;
+        provider: string;
+        entryCount: number;
+        inputTokens: number;
+        outputTokens: number;
+        totalTokens: number;
+        costUsd: number;
+      }
+    >();
+
+    for (const entry of entries) {
+      const key = `${entry.stage}::${entry.provider}::${entry.model}`;
+      const current = byModelMap.get(key) ?? {
+        model: entry.model,
+        stage: entry.stage,
+        provider: entry.provider,
+        entryCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: 0
+      };
+
+      current.entryCount += 1;
+      current.inputTokens += entry.inputTokens;
+      current.outputTokens += entry.outputTokens;
+      current.totalTokens += entry.totalTokens;
+      current.costUsd = roundUsd(current.costUsd + entry.costUsd);
+      byModelMap.set(key, current);
+    }
+
+    const byModel = [...byModelMap.values()].sort((left, right) => right.costUsd - left.costUsd);
+
+    const totals = entries.reduce(
+      (accumulator, entry) => {
+        accumulator.inputTokens += entry.inputTokens;
+        accumulator.outputTokens += entry.outputTokens;
+        accumulator.totalTokens += entry.totalTokens;
+        accumulator.totalCostUsd = roundUsd(accumulator.totalCostUsd + entry.costUsd);
+        accumulator.audioMs += entry.audioMs;
+
+        if (entry.entryType === 'actual') {
+          accumulator.actualEntryCount += 1;
+        }
+
+        return accumulator;
+      },
+      {
+        entryCount: entries.length,
+        actualEntryCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        totalCostUsd: 0,
+        audioMs: 0
+      }
+    );
+
+    return response.status(200).json({
+      generatedAt: new Date().toISOString(),
+      limit,
+      totals,
+      byModel,
+      submitterEmails,
+      entries
+    });
+  });
+
+  app.get('/api/admin/jobs/:id', async (request, response) => {
+    const authenticatedOperator = await requireAdminOperator(request, response);
+
+    if (!authenticatedOperator) {
+      return;
+    }
+
+    const job = await repository.getByIdIncludingHidden(request.params.id);
+
+    if (!job) {
+      return response.status(404).json(notFoundResponse(request.params.id));
+    }
+
+    const ledgerEntries = await cloudUsageLedgerRepository.listByJob(job.id);
+    const actualTranscriptionCostUsd = roundUsd(
+      ledgerEntries
+        .filter((entry) => entry.entryType === 'actual' && entry.stage === 'transcription')
+        .reduce((total, entry) => total + entry.costUsd, 0)
+    );
+    const actualSummaryCostUsd = roundUsd(
+      ledgerEntries
+        .filter((entry) => entry.entryType === 'actual' && entry.stage === 'summary')
+        .reduce((total, entry) => total + entry.costUsd, 0)
+    );
+    const user = await authenticatedUserRepository?.getById(job.submitterId);
+
+    return response.status(200).json({
+      ...toApiRecordingJob({
+        ...job,
+        actualTranscriptionCostUsd,
+        actualSummaryCostUsd,
+        actualCloudCostUsd: roundUsd(actualTranscriptionCostUsd + actualSummaryCostUsd)
+      }),
+      submitterEmail: user?.email,
+      ledgerEntries: ledgerEntries.map((entry) => ({
+        stage: entry.stage,
+        entryType: entry.entryType,
+        provider: entry.provider,
+        model: entry.model,
+        costUsd: roundUsd(entry.costUsd),
+        inputTokens:
+          typeof entry.detail?.promptTokens === 'number' ? entry.detail.promptTokens : 0,
+        outputTokens:
+          typeof entry.detail?.completionTokens === 'number' ? entry.detail.completionTokens : 0,
+        totalTokens:
+          typeof entry.detail?.totalTokens === 'number' ? entry.detail.totalTokens : 0,
+        createdAt: entry.createdAt
+      }))
     });
   });
 

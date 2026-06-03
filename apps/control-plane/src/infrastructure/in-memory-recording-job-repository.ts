@@ -24,6 +24,9 @@ const compareByCreatedAtDesc = (left: RecordingJob, right: RecordingJob): number
 
 export class InMemoryRecordingJobRepository implements RecordingJobRepository {
   private readonly jobs = new Map<string, RecordingJob>();
+  // Soft-deleted job ids: hidden from the submitter's own views but still
+  // retrievable by getById so the admin console can audit them.
+  private readonly operatorHiddenJobIds = new Set<string>();
 
   async save(job: RecordingJob): Promise<RecordingJob> {
     this.jobs.set(job.id, job);
@@ -84,12 +87,20 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
   }
 
   async getById(id: string): Promise<RecordingJob | undefined> {
+    if (this.operatorHiddenJobIds.has(id)) {
+      return undefined;
+    }
+
+    return this.jobs.get(id);
+  }
+
+  async getByIdIncludingHidden(id: string): Promise<RecordingJob | undefined> {
     return this.jobs.get(id);
   }
 
   async listBySubmitter(submitterId: string): Promise<RecordingJob[]> {
     return [...this.jobs.values()]
-      .filter((job) => job.submitterId === submitterId)
+      .filter((job) => job.submitterId === submitterId && !this.operatorHiddenJobIds.has(job.id))
       .sort(compareByCreatedAtDesc);
   }
 
@@ -122,7 +133,9 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
   }
 
   async summarizeBySubmitter(submitterId: string): Promise<RecordingJobStats> {
-    const jobs = [...this.jobs.values()].filter((job) => job.submitterId === submitterId);
+    const jobs = [...this.jobs.values()].filter(
+      (job) => job.submitterId === submitterId && !this.operatorHiddenJobIds.has(job.id)
+    );
 
     return {
       totalCount: jobs.length,
@@ -170,20 +183,32 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
   async deleteTerminalJobForSubmitter(id: string, submitterId: string): Promise<boolean> {
     const job = this.jobs.get(id);
 
-    if (!job || job.submitterId !== submitterId || !terminalStates.has(job.state)) {
+    if (
+      !job ||
+      job.submitterId !== submitterId ||
+      !terminalStates.has(job.state) ||
+      this.operatorHiddenJobIds.has(id)
+    ) {
       return false;
     }
 
-    return this.jobs.delete(id);
+    // Soft delete: keep the row, just hide it from the submitter's views.
+    this.operatorHiddenJobIds.add(id);
+    return true;
   }
 
   async clearTerminalHistoryForSubmitter(submitterId: string): Promise<number> {
     const terminalJobIds = [...this.jobs.values()]
-      .filter((job) => job.submitterId === submitterId && terminalStates.has(job.state))
+      .filter(
+        (job) =>
+          job.submitterId === submitterId &&
+          terminalStates.has(job.state) &&
+          !this.operatorHiddenJobIds.has(job.id)
+      )
       .map((job) => job.id);
 
     terminalJobIds.forEach((id) => {
-      this.jobs.delete(id);
+      this.operatorHiddenJobIds.add(id);
     });
 
     return terminalJobIds.length;

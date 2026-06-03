@@ -31,6 +31,11 @@ export interface RecordingJobRepository {
     expiresAt: string;
   }): Promise<RecordingJob | undefined>;
   getById(id: string): Promise<RecordingJob | undefined>;
+  /**
+   * Like getById, but also returns jobs that an operator soft-deleted from their
+   * own history. Used by the admin console to audit hidden jobs.
+   */
+  getByIdIncludingHidden(id: string): Promise<RecordingJob | undefined>;
   listBySubmitter(submitterId: string): Promise<RecordingJob[]>;
   listBySubmitterPage(
     submitterId: string,

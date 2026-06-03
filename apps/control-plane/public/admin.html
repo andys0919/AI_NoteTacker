@@ -17,30 +17,68 @@
     <div class="background-glow background-glow-left" aria-hidden="true"></div>
     <div class="background-glow background-glow-right" aria-hidden="true"></div>
 
-    <main class="admin-shell">
+    <div id="admin-login-overlay" class="admin-login-overlay">
+      <section id="auth-panel" class="panel form-panel admin-login-card">
+        <div class="section-heading">
+          <p class="eyebrow">Admin Access</p>
+          <h2>管理者登入</h2>
+        </div>
+        <p class="hero-text auth-copy">輸入管理者帳號與密碼後即可進入。</p>
+        <form id="admin-login-form" class="stack-form auth-form">
+          <label class="field">
+            <span>帳號</span>
+            <input
+              id="admin-login-username"
+              name="username"
+              type="text"
+              autocomplete="username"
+              placeholder="admin"
+              required
+            />
+          </label>
+          <label class="field">
+            <span>密碼</span>
+            <input
+              id="admin-login-password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              placeholder="請輸入密碼"
+              required
+            />
+          </label>
+          <div class="auth-actions">
+            <button id="admin-login-button" class="action-button" type="submit">登入</button>
+          </div>
+          <p id="admin-login-status" class="admin-provider-status"></p>
+        </form>
+      </section>
+    </div>
+
+    <main class="admin-shell" id="admin-shell" hidden>
       <aside class="admin-rail panel">
         <p class="eyebrow">Operations Console</p>
         <h1>AI 治理設定</h1>
         <p class="hero-text">
-          這裡只給管理員使用。調整 AI 路由、雲端額度、併發池與使用報表，不影響一般同仁的主頁操作。
+          這裡只給管理員使用。查詢歷史使用紀錄、調整要使用的模型、雲端額度與併發池，不影響一般同仁的主頁操作。
         </p>
         <div class="admin-rail-points">
           <article class="hero-point">
-            <strong>摘要模式</strong>
-            <span>只分雲端與地端 Codex，雲端才需要自填模型。</span>
+            <strong>歷史使用紀錄</strong>
+            <span>每筆工作的 input/output token、使用的模型與費用一次看清楚。</span>
           </article>
           <article class="hero-point">
-            <strong>Cloud 額度</strong>
-            <span>調整預設 quota 與個人 override，讓成本可控。</span>
+            <strong>模型設定</strong>
+            <span>直接切換轉寫與摘要要使用的模型，套用到之後的工作。</span>
           </article>
           <article class="hero-point">
             <strong>使用報表</strong>
-            <span>直接看今日每位使用者的 consumed、reserved 與 remaining。</span>
+            <span>查看今日每位使用者的 consumed、reserved 與 remaining。</span>
           </article>
         </div>
         <div class="admin-rail-actions">
           <a class="toolbar-button" href="/">回主頁</a>
-          <button id="sign-out-button" class="toolbar-button compact" type="button">登出</button>
+          <button id="sign-out-button" class="toolbar-button compact" type="button" hidden>登出</button>
         </div>
       </aside>
 
@@ -56,43 +94,6 @@
           </div>
         </section>
 
-        <section id="auth-panel" class="panel form-panel auth-panel" hidden>
-          <div class="section-heading">
-            <p class="eyebrow">Admin Access</p>
-            <h2>Email 驗證登入</h2>
-          </div>
-          <p id="auth-copy" class="hero-text auth-copy">
-            使用管理員 email 驗證登入後，才可進入治理設定頁。
-          </p>
-          <form id="auth-form" class="stack-form auth-form">
-            <label class="field">
-              <span>Email</span>
-              <input id="auth-email" name="email" type="email" placeholder="you@example.com" required />
-            </label>
-            <label id="otp-field" class="field" hidden>
-              <span>驗證碼</span>
-              <input id="auth-otp" name="otp" type="text" inputmode="numeric" maxlength="12" placeholder="輸入信件中的驗證碼" />
-            </label>
-            <div class="auth-actions">
-              <button id="auth-submit-button" class="action-button" type="submit">寄送驗證碼</button>
-              <button id="otp-verify-button" class="action-button secondary" type="button" hidden>驗證並登入</button>
-            </div>
-          </form>
-        </section>
-
-        <section id="admin-denied-panel" class="panel form-panel auth-panel" hidden>
-          <div class="section-heading">
-            <p class="eyebrow">Admin Only</p>
-            <h2>沒有管理權限</h2>
-          </div>
-          <p class="hero-text">
-            你的帳號已登入，但不在 `ADMIN_EMAILS` 允許名單內。請使用管理員 email 重新登入，或回主頁使用一般操作功能。
-          </p>
-          <div class="admin-rail-actions">
-            <a class="toolbar-button" href="/">回主頁</a>
-          </div>
-        </section>
-
         <section id="admin-content" class="admin-content" hidden>
           <section class="panel admin-summary-strip">
             <div class="meta-card">
@@ -100,8 +101,12 @@
               <span id="session-email">-</span>
             </div>
             <div class="meta-card">
-              <span class="meta-label">今日 Cloud Usage</span>
-              <strong id="admin-usage-report-summary">$0.000</strong>
+              <span class="meta-label">歷史 Token 用量</span>
+              <strong id="admin-usage-history-total-tokens">0</strong>
+            </div>
+            <div class="meta-card">
+              <span class="meta-label">歷史總費用</span>
+              <strong id="admin-usage-history-total-cost">$0.000</strong>
             </div>
             <div class="meta-card">
               <span class="meta-label">目前路由</span>
@@ -113,24 +118,59 @@
             </div>
           </section>
 
-          <section id="admin-runtime-health-panel" class="panel admin-governance-panel">
+          <section id="admin-usage-history-panel" class="panel admin-governance-panel">
             <div class="section-heading">
-              <p class="eyebrow">Runtime Health</p>
-              <h2>執行狀態</h2>
+              <p class="eyebrow">Usage History</p>
+              <h2>歷史使用紀錄（INPUT / OUTPUT Token）</h2>
             </div>
-            <p id="admin-runtime-health-summary" class="hero-text admin-provider-copy">
-              正在讀取 runtime health...
+            <p id="admin-usage-history-copy" class="hero-text admin-provider-copy">
+              這裡列出每一筆雲端處理的輸入 / 輸出 token、使用的模型與費用。
             </p>
-            <div id="admin-runtime-health-cards" class="runtime-health-card-grid"></div>
-            <div id="admin-runtime-health-list" class="admin-audit-list">
-              <p class="admin-provider-status">尚無 runtime health 資料。</p>
+            <form id="admin-usage-history-form" class="admin-usage-history-controls">
+              <label class="field admin-summary-model-field">
+                <span>顯示筆數</span>
+                <select id="admin-usage-history-limit" name="limit">
+                  <option value="100">最近 100 筆</option>
+                  <option value="500" selected>最近 500 筆</option>
+                  <option value="1000">最近 1000 筆</option>
+                  <option value="5000">全部（上限 5000）</option>
+                </select>
+              </label>
+              <button id="admin-usage-history-refresh" class="toolbar-button" type="submit">
+                重新整理
+              </button>
+            </form>
+            <p id="admin-usage-history-summary" class="admin-provider-status">正在讀取歷史使用紀錄...</p>
+            <div id="admin-usage-history-by-model" class="runtime-health-card-grid"></div>
+            <div class="usage-history-table-wrap">
+              <table class="usage-history-table">
+                <thead>
+                  <tr>
+                    <th>時間</th>
+                    <th>階段</th>
+                    <th>Provider</th>
+                    <th>Model</th>
+                    <th class="usage-num">Input Tokens</th>
+                    <th class="usage-num">Output Tokens</th>
+                    <th class="usage-num">Total Tokens</th>
+                    <th class="usage-num">費用 (USD)</th>
+                    <th>提交者</th>
+                    <th>工作</th>
+                  </tr>
+                </thead>
+                <tbody id="admin-usage-history-rows">
+                  <tr>
+                    <td colspan="10" class="usage-history-empty">尚無使用紀錄。</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </section>
 
           <section id="admin-provider-panel" class="panel admin-governance-panel">
             <div class="section-heading">
               <p class="eyebrow">AI Routing</p>
-              <h2>治理設定</h2>
+              <h2>要使用的模型與治理設定</h2>
             </div>
             <p id="admin-provider-copy" class="hero-text admin-provider-copy">
               治理設定只會影響之後新送出的工作。
@@ -226,11 +266,25 @@
                   <input id="admin-cloud-summary-input" type="number" min="1" step="1" />
                 </label>
                 <button id="admin-provider-submit" class="toolbar-button" type="submit">
-                  更新治理設定
+                  更新模型與治理設定
                 </button>
               </div>
               <p id="admin-provider-status" class="admin-provider-status">正在讀取治理設定...</p>
             </form>
+          </section>
+
+          <section id="admin-runtime-health-panel" class="panel admin-governance-panel">
+            <div class="section-heading">
+              <p class="eyebrow">Runtime Health</p>
+              <h2>執行狀態</h2>
+            </div>
+            <p id="admin-runtime-health-summary" class="hero-text admin-provider-copy">
+              正在讀取 runtime health...
+            </p>
+            <div id="admin-runtime-health-cards" class="runtime-health-card-grid"></div>
+            <div id="admin-runtime-health-list" class="admin-audit-list">
+              <p class="admin-provider-status">尚無 runtime health 資料。</p>
+            </div>
           </section>
 
           <section class="admin-grid">
@@ -285,6 +339,7 @@
               <p class="eyebrow">Cloud Usage</p>
               <h2>今日使用報表</h2>
             </div>
+            <p id="admin-usage-report-summary" class="admin-provider-status">尚無 cloud usage 資料。</p>
             <div id="admin-usage-report-list" class="admin-audit-list">
               <p class="admin-provider-status">尚無 cloud usage 資料。</p>
             </div>
@@ -292,6 +347,19 @@
         </section>
       </section>
     </main>
+
+    <div id="admin-job-modal" class="admin-job-modal" hidden>
+      <div class="admin-job-modal-backdrop" data-close="true"></div>
+      <div class="admin-job-modal-card panel" role="dialog" aria-modal="true" aria-labelledby="admin-job-modal-title">
+        <div class="admin-job-modal-head">
+          <h2 id="admin-job-modal-title">工作內容</h2>
+          <button id="admin-job-modal-close" class="toolbar-button compact" type="button" data-close="true">關閉</button>
+        </div>
+        <div id="admin-job-modal-body" class="admin-job-modal-body">
+          <p class="admin-provider-status">正在載入...</p>
+        </div>
+      </div>
+    </div>
 
     <script type="module" src="/admin.js"></script>
   </body>

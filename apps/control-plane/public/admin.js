@@ -1,4 +1,3 @@
-import { createOperatorAuthClient } from '/auth-client.js';
 import { formatJobTimestamp } from '/dashboard-copy.js';
 import { escapeHtml } from '/escape-html.js';
 import {
@@ -11,10 +10,31 @@ import {
 } from '/governance-panel.js';
 import { getRuntimeHealthViewModel } from '/runtime-health-panel.js';
 
+const TOKEN_STORAGE_KEY = 'solomon-notetaker-admin-token';
+
 const elements = {
-  adminAuditList: document.querySelector('#admin-audit-list'),
+  loginOverlay: document.querySelector('#admin-login-overlay'),
+  adminShell: document.querySelector('#admin-shell'),
+  loginForm: document.querySelector('#admin-login-form'),
+  loginUsername: document.querySelector('#admin-login-username'),
+  loginPassword: document.querySelector('#admin-login-password'),
+  loginButton: document.querySelector('#admin-login-button'),
+  loginStatus: document.querySelector('#admin-login-status'),
   adminContent: document.querySelector('#admin-content'),
-  adminDeniedPanel: document.querySelector('#admin-denied-panel'),
+  sessionEmail: document.querySelector('#session-email'),
+  signOutButton: document.querySelector('#sign-out-button'),
+  usageHistoryForm: document.querySelector('#admin-usage-history-form'),
+  usageHistoryLimit: document.querySelector('#admin-usage-history-limit'),
+  usageHistorySummary: document.querySelector('#admin-usage-history-summary'),
+  usageHistoryByModel: document.querySelector('#admin-usage-history-by-model'),
+  usageHistoryRows: document.querySelector('#admin-usage-history-rows'),
+  usageHistoryTotalTokens: document.querySelector('#admin-usage-history-total-tokens'),
+  usageHistoryTotalCost: document.querySelector('#admin-usage-history-total-cost'),
+  jobModal: document.querySelector('#admin-job-modal'),
+  jobModalTitle: document.querySelector('#admin-job-modal-title'),
+  jobModalBody: document.querySelector('#admin-job-modal-body'),
+  jobModalClose: document.querySelector('#admin-job-modal-close'),
+  adminAuditList: document.querySelector('#admin-audit-list'),
   adminUsageReportList: document.querySelector('#admin-usage-report-list'),
   adminUsageReportSummary: document.querySelector('#admin-usage-report-summary'),
   adminProviderCopy: document.querySelector('#admin-provider-copy'),
@@ -24,7 +44,6 @@ const elements = {
   adminRuntimeHealthList: document.querySelector('#admin-runtime-health-list'),
   adminRuntimeHealthPanel: document.querySelector('#admin-runtime-health-panel'),
   adminRuntimeHealthSummary: document.querySelector('#admin-runtime-health-summary'),
-  adminProviderPanel: document.querySelector('#admin-provider-panel'),
   adminProviderSelect: document.querySelector('#admin-provider-select'),
   adminTranscriptionModelInput: document.querySelector('#admin-transcription-model-input'),
   adminSummaryProviderSelect: document.querySelector('#admin-summary-provider-select'),
@@ -43,70 +62,58 @@ const elements = {
   adminSummaryModelStatus: document.querySelector('#admin-summary-model-status'),
   adminProviderStatus: document.querySelector('#admin-provider-status'),
   adminProviderStatusPill: document.querySelector('#admin-provider-status-pill'),
-  adminProviderSubmit: document.querySelector('#admin-provider-submit'),
-  authCopy: document.querySelector('#auth-copy'),
-  authEmail: document.querySelector('#auth-email'),
-  authForm: document.querySelector('#auth-form'),
-  authOtp: document.querySelector('#auth-otp'),
-  authPanel: document.querySelector('#auth-panel'),
-  authSubmitButton: document.querySelector('#auth-submit-button'),
-  otpField: document.querySelector('#otp-field'),
-  otpVerifyButton: document.querySelector('#otp-verify-button'),
-  sessionEmail: document.querySelector('#session-email'),
-  signOutButton: document.querySelector('#sign-out-button')
+  adminProviderSubmit: document.querySelector('#admin-provider-submit')
 };
 
-let authClient = {
-  enabled: false,
-  authorizedFetch: (input, init) => fetch(input, init),
-  getCurrentUser: async () => null,
-  getPendingEmail: () => null,
-  onAuthStateChange: () => () => {},
-  requestEmailOtp: async () => {},
-  verifyEmailOtp: async () => null,
-  signOut: async () => {}
-};
-let authEnabled = false;
-let currentOperatorEmail = null;
-let pendingAuthEmail = null;
-let unsubscribeAuthState = () => {};
+let adminToken = window.localStorage.getItem(TOKEN_STORAGE_KEY);
+let adminUsername = null;
 let adminProviderState = null;
 
-const apiFetch = async (input, init) => authClient.authorizedFetch(input, init);
+const tokenFormatter = new Intl.NumberFormat('en-US');
+const formatTokens = (value) => tokenFormatter.format(Math.round(Number(value) || 0));
+
+const setToken = (token) => {
+  adminToken = token;
+  if (token) {
+    window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } else {
+    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+  }
+};
+
+const apiFetch = async (input, init = {}) => {
+  const headers = new Headers(init.headers ?? {});
+  if (adminToken) {
+    headers.set('authorization', `Bearer ${adminToken}`);
+    headers.set('x-admin-console-token', adminToken);
+  }
+  return fetch(input, { ...init, headers });
+};
+
+const setLoginStatus = (message) => {
+  if (elements.loginStatus) {
+    elements.loginStatus.textContent = message ?? '';
+  }
+};
 
 const setBanner = (message) => {
-  if (!elements.adminProviderStatus) {
-    return;
+  if (elements.adminProviderStatus) {
+    elements.adminProviderStatus.textContent = message ?? '';
   }
-  // Always write (empty string clears) so a stale error message can be dismissed
-  // programmatically; the previous early-return left old text on screen forever.
-  elements.adminProviderStatus.textContent = message ?? '';
 };
 
-const syncOtpUi = () => {
-  const hasPendingOtp = Boolean(authEnabled && !currentOperatorEmail && pendingAuthEmail);
-  elements.otpField.hidden = !hasPendingOtp;
-  elements.otpVerifyButton.hidden = !hasPendingOtp;
-  elements.authSubmitButton.textContent = hasPendingOtp ? '重新寄送驗證碼' : '寄送驗證碼';
-  elements.authEmail.value = pendingAuthEmail ?? elements.authEmail.value;
-  elements.authEmail.disabled = hasPendingOtp;
-  elements.authOtp.required = hasPendingOtp;
-  elements.authCopy.textContent = hasPendingOtp
-    ? `驗證碼已寄到 ${pendingAuthEmail}。請輸入信中的驗證碼完成登入。`
-    : '使用管理員 email 驗證登入後，才可進入治理設定頁。';
-};
-
-const resetAdminView = () => {
-  adminProviderState = null;
-  elements.adminProviderSelect.replaceChildren();
-  elements.adminSummaryProviderSelect.replaceChildren();
-  elements.adminAuditList.innerHTML = '<p class="admin-provider-status">尚無治理異動紀錄。</p>';
-  elements.adminRuntimeHealthSummary.textContent = '尚無 runtime health 資料。';
-  elements.adminRuntimeHealthCards.innerHTML = '';
-  elements.adminRuntimeHealthList.innerHTML = '<p class="admin-provider-status">尚無 runtime health 資料。</p>';
-  elements.adminUsageReportSummary.textContent = '尚無 cloud usage 資料。';
-  elements.adminUsageReportList.innerHTML = '<p class="admin-provider-status">尚無 cloud usage 資料。</p>';
+const showLoginView = () => {
+  elements.loginOverlay.hidden = false;
+  elements.adminShell.hidden = true;
   elements.adminContent.hidden = true;
+  elements.signOutButton.hidden = true;
+};
+
+const showAdminView = () => {
+  elements.loginOverlay.hidden = true;
+  elements.adminShell.hidden = false;
+  elements.adminContent.hidden = false;
+  elements.signOutButton.hidden = false;
 };
 
 const renderAuditEntries = (entries = []) => {
@@ -149,6 +156,229 @@ const renderUsageReport = (payload) => {
       return node;
     })
   );
+};
+
+const stageLabel = (stage) => (stage === 'transcription' ? '轉寫' : stage === 'summary' ? '摘要' : stage);
+
+const renderUsageHistory = (payload) => {
+  const totals = payload?.totals ?? {};
+  const entries = payload?.entries ?? [];
+  const submitterEmails = payload?.submitterEmails ?? {};
+
+  elements.usageHistoryTotalTokens.textContent = formatTokens(totals.totalTokens);
+  elements.usageHistoryTotalCost.textContent = formatUsd(totals.totalCostUsd);
+
+  if (!entries.length) {
+    elements.usageHistorySummary.textContent = '尚無使用紀錄。';
+    elements.usageHistoryByModel.replaceChildren();
+    elements.usageHistoryRows.innerHTML =
+      '<tr><td colspan="10" class="usage-history-empty">尚無使用紀錄。</td></tr>';
+    return;
+  }
+
+  elements.usageHistorySummary.textContent =
+    `共 ${formatTokens(totals.entryCount)} 筆紀錄 / 輸入 ${formatTokens(totals.inputTokens)} tokens / ` +
+    `輸出 ${formatTokens(totals.outputTokens)} tokens / 合計 ${formatTokens(totals.totalTokens)} tokens / ` +
+    `總費用 ${formatUsd(totals.totalCostUsd)}`;
+
+  const byModel = payload?.byModel ?? [];
+  elements.usageHistoryByModel.replaceChildren(
+    ...byModel.map((row) => {
+      const node = document.createElement('article');
+      node.className = 'runtime-health-card runtime-health-card-info';
+      node.innerHTML = `
+        <span class="meta-label">${escapeHtml(row.model)}（${escapeHtml(stageLabel(row.stage))}）</span>
+        <strong>${escapeHtml(formatUsd(row.costUsd))}</strong>
+        <small>輸入 ${escapeHtml(formatTokens(row.inputTokens))} / 輸出 ${escapeHtml(formatTokens(row.outputTokens))} / ${escapeHtml(formatTokens(row.entryCount))} 筆</small>
+      `;
+      return node;
+    })
+  );
+
+  elements.usageHistoryRows.replaceChildren(
+    ...entries.map((entry) => {
+      const row = document.createElement('tr');
+      const identity = submitterEmails[entry.submitterId] || entry.submitterId;
+      const cells = [
+        { text: formatJobTimestamp(entry.createdAt) },
+        { text: stageLabel(entry.stage) },
+        { text: formatProviderLabel(entry.provider) },
+        { text: entry.model || '-' },
+        { text: entry.stage === 'summary' ? formatTokens(entry.inputTokens) : '—', cls: 'usage-num' },
+        { text: entry.stage === 'summary' ? formatTokens(entry.outputTokens) : '—', cls: 'usage-num' },
+        {
+          text:
+            entry.stage === 'transcription'
+              ? `${formatTokens(Math.round((entry.audioMs || 0) / 1000))} 秒音訊`
+              : formatTokens(entry.totalTokens),
+          cls: 'usage-num'
+        },
+        { text: formatUsd(entry.costUsd), cls: 'usage-num' },
+        { text: identity, title: entry.submitterId },
+        { text: entry.jobId, title: entry.jobId, jobId: entry.jobId }
+      ];
+
+      for (const cell of cells) {
+        const td = document.createElement('td');
+        if (cell.jobId) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'usage-jobid-button';
+          button.textContent = cell.text;
+          button.dataset.jobId = cell.jobId;
+          button.title = `${cell.title}（點擊查看內容）`;
+          td.append(button);
+        } else {
+          td.textContent = cell.text;
+          if (cell.cls) {
+            td.className = cell.cls;
+          }
+          if (cell.title) {
+            td.title = cell.title;
+          }
+        }
+        row.append(td);
+      }
+
+      if (entry.entryType !== 'actual') {
+        row.classList.add('usage-history-estimate');
+      }
+
+      return row;
+    })
+  );
+};
+
+const closeJobModal = () => {
+  elements.jobModal.hidden = true;
+  elements.jobModalBody.replaceChildren();
+};
+
+const buildModalSection = (title, contentNode) => {
+  const section = document.createElement('div');
+  section.className = 'admin-job-modal-section';
+  const heading = document.createElement('h3');
+  heading.textContent = title;
+  section.append(heading, contentNode);
+  return section;
+};
+
+const renderJobModal = (job) => {
+  elements.jobModalTitle.textContent = job.uploadedFileName || job.meetingUrl || `工作 ${job.id}`;
+
+  const children = [];
+
+  const meta = document.createElement('div');
+  meta.className = 'admin-job-modal-meta';
+  const metaItems = [
+    ['工作 ID', job.id],
+    ['狀態', job.displayState || job.state],
+    ['提交者', job.submitterEmail || job.submitterId],
+    ['轉寫模型', job.transcriptionModel || '-'],
+    ['摘要模型', job.summaryModel || '-'],
+    ['建立時間', formatJobTimestamp(job.createdAt)]
+  ];
+  for (const [label, value] of metaItems) {
+    const card = document.createElement('div');
+    card.className = 'meta-card';
+    const labelNode = document.createElement('span');
+    labelNode.className = 'meta-label';
+    labelNode.textContent = label;
+    const valueNode = document.createElement('span');
+    valueNode.textContent = value ?? '-';
+    card.append(labelNode, valueNode);
+    meta.append(card);
+  }
+  children.push(meta);
+
+  if (job.ledgerEntries?.length) {
+    const list = document.createElement('ul');
+    for (const entry of job.ledgerEntries) {
+      const item = document.createElement('li');
+      const tokenPart =
+        entry.stage === 'summary'
+          ? `輸入 ${formatTokens(entry.inputTokens)} / 輸出 ${formatTokens(entry.outputTokens)} tokens`
+          : `${formatTokens(entry.totalTokens)} tokens`;
+      item.textContent = `${stageLabel(entry.stage)}（${entry.model}）：${tokenPart}，費用 ${formatUsd(entry.costUsd)}`;
+      list.append(item);
+    }
+    children.push(buildModalSection('Token / 費用明細', list));
+  }
+
+  if (job.summaryArtifact?.text) {
+    const pre = document.createElement('pre');
+    pre.textContent = job.summaryArtifact.text;
+    children.push(buildModalSection('AI 摘要（輸出內容）', pre));
+
+    const structured = job.summaryArtifact.structured;
+    if (structured) {
+      const groups = [
+        ['重點', structured.keyPoints],
+        ['待辦事項', structured.actionItems],
+        ['決策重點', structured.decisions],
+        ['風險提醒', structured.risks],
+        ['待確認問題', structured.openQuestions]
+      ];
+      for (const [title, items] of groups) {
+        if (items?.length) {
+          const list = document.createElement('ul');
+          for (const value of items) {
+            const item = document.createElement('li');
+            item.textContent = value;
+            list.append(item);
+          }
+          children.push(buildModalSection(title, list));
+        }
+      }
+    }
+  }
+
+  if (job.transcriptArtifact?.segments?.length) {
+    const pre = document.createElement('pre');
+    pre.textContent = job.transcriptArtifact.segments.map((segment) => segment.text).join('\n');
+    children.push(buildModalSection('逐字稿（輸入內容）', pre));
+  }
+
+  if (!job.summaryArtifact?.text && !job.transcriptArtifact?.segments?.length) {
+    const note = document.createElement('p');
+    note.className = 'admin-provider-status';
+    note.textContent = '這筆工作目前沒有可顯示的逐字稿或摘要內容。';
+    children.push(note);
+  }
+
+  elements.jobModalBody.replaceChildren(...children);
+};
+
+const openJobModal = async (jobId) => {
+  elements.jobModal.hidden = false;
+  elements.jobModalTitle.textContent = '工作內容';
+  const loading = document.createElement('p');
+  loading.className = 'admin-provider-status';
+  loading.textContent = '正在載入...';
+  elements.jobModalBody.replaceChildren(loading);
+
+  try {
+    const response = await apiFetch(`/api/admin/jobs/${encodeURIComponent(jobId)}`);
+
+    if (response.status === 404) {
+      const note = document.createElement('p');
+      note.className = 'admin-provider-status';
+      note.textContent = '這筆工作的逐字稿與摘要內容已被清除（歷史紀錄已刪除），僅保留用量統計。';
+      elements.jobModalBody.replaceChildren(note);
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(`載入失敗：${response.status}`);
+    }
+
+    renderJobModal(await response.json());
+  } catch (error) {
+    const note = document.createElement('p');
+    note.className = 'admin-provider-status';
+    note.textContent = error instanceof Error ? error.message : String(error);
+    elements.jobModalBody.replaceChildren(note);
+  }
 };
 
 const renderRuntimeHealth = (payload) => {
@@ -229,7 +459,8 @@ const renderAdminPanel = (
   overrides = [],
   auditEntries = [],
   usageReport = null,
-  runtimeHealth = null
+  runtimeHealth = null,
+  usageHistory = null
 ) => {
   adminProviderState = {
     ...payload,
@@ -238,7 +469,7 @@ const renderAdminPanel = (
     usageReport,
     runtimeHealth
   };
-  elements.sessionEmail.textContent = currentOperatorEmail || '-';
+  elements.sessionEmail.textContent = adminUsername || '-';
   elements.adminProviderSelect.replaceChildren(
     ...payload.transcriptionOptions.map((option) => {
       const node = document.createElement('option');
@@ -275,9 +506,22 @@ const renderAdminPanel = (
   renderAuditEntries(auditEntries);
   renderUsageReport(usageReport);
   renderRuntimeHealth(runtimeHealth);
-  elements.adminContent.hidden = false;
-  elements.adminDeniedPanel.hidden = true;
+  renderUsageHistory(usageHistory);
   updateAdminProviderStatus();
+};
+
+const getHistoryLimit = () => Number(elements.usageHistoryLimit?.value) || 500;
+
+const fetchUsageHistory = async () => {
+  const url = new URL('/api/admin/usage/history', window.location.origin);
+  url.searchParams.set('limit', String(getHistoryLimit()));
+  const response = await apiFetch(url);
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch usage history: ${response.status}`);
+  }
+
+  renderUsageHistory(await response.json());
 };
 
 const fetchAdminPanel = async () => {
@@ -286,25 +530,29 @@ const fetchAdminPanel = async () => {
     overridesResponse,
     auditResponse,
     usageReportResponse,
-    runtimeHealthResponse
+    runtimeHealthResponse,
+    usageHistoryResponse
   ] = await Promise.all([
     apiFetch('/api/admin/ai-policy'),
     apiFetch('/api/admin/cloud-quota/overrides'),
     apiFetch('/api/admin/audit-log'),
     apiFetch('/api/admin/cloud-usage/report'),
-    apiFetch('/api/admin/runtime-health')
+    apiFetch('/api/admin/runtime-health'),
+    (() => {
+      const url = new URL('/api/admin/usage/history', window.location.origin);
+      url.searchParams.set('limit', String(getHistoryLimit()));
+      return apiFetch(url);
+    })()
   ]);
 
-  if (policyResponse.status === 401) {
-    resetAdminView();
-    elements.authPanel.hidden = false;
-    return;
-  }
-
-  if (policyResponse.status === 403) {
-    resetAdminView();
-    elements.authPanel.hidden = true;
-    elements.adminDeniedPanel.hidden = false;
+  if (
+    policyResponse.status === 401 ||
+    policyResponse.status === 403 ||
+    usageHistoryResponse.status === 401
+  ) {
+    setToken(null);
+    showLoginView();
+    setLoginStatus('登入已過期，請重新登入。');
     return;
   }
 
@@ -313,7 +561,8 @@ const fetchAdminPanel = async () => {
     !overridesResponse.ok ||
     !auditResponse.ok ||
     !usageReportResponse.ok ||
-    !runtimeHealthResponse.ok
+    !runtimeHealthResponse.ok ||
+    !usageHistoryResponse.ok
   ) {
     throw new Error('Failed to fetch admin governance settings.');
   }
@@ -323,76 +572,81 @@ const fetchAdminPanel = async () => {
   const auditPayload = await auditResponse.json();
   const usageReportPayload = await usageReportResponse.json();
   const runtimeHealthPayload = await runtimeHealthResponse.json();
+  const usageHistoryPayload = await usageHistoryResponse.json();
 
-  elements.authPanel.hidden = true;
+  showAdminView();
   renderAdminPanel(
     policy,
     overridesPayload.overrides || [],
     auditPayload.entries || [],
     usageReportPayload,
-    runtimeHealthPayload
+    runtimeHealthPayload,
+    usageHistoryPayload
   );
 };
 
-const setAuthenticatedView = (user) => {
-  currentOperatorEmail = user?.email ?? null;
-  pendingAuthEmail = user ? null : authClient.getPendingEmail();
-  syncOtpUi();
-
-  if (!user) {
-    resetAdminView();
-    elements.adminDeniedPanel.hidden = true;
-  }
-};
-
-const initializeAuth = async () => {
-  authClient = await createOperatorAuthClient();
-  authEnabled = authClient.enabled;
-  pendingAuthEmail = authClient.getPendingEmail();
-  unsubscribeAuthState();
-  unsubscribeAuthState = authClient.onAuthStateChange(async (user) => {
-    setAuthenticatedView(user);
-
-    if (user) {
-      await fetchAdminPanel().catch((error) => {
-        setBanner(error instanceof Error ? error.message : String(error));
-      });
-    }
-  });
-
-  const user = await authClient.getCurrentUser();
-  setAuthenticatedView(user);
-};
-
-elements.authForm.addEventListener('submit', async (event) => {
+elements.loginForm.addEventListener('submit', async (event) => {
   event.preventDefault();
 
   try {
-    elements.authSubmitButton.disabled = true;
-    const email = elements.authEmail.value.trim();
-    setBanner('正在寄送驗證碼...');
-    await authClient.requestEmailOtp(email);
-    pendingAuthEmail = email;
-    syncOtpUi();
-    setBanner(`驗證碼已寄到 ${email}。`);
+    elements.loginButton.disabled = true;
+    setLoginStatus('正在登入...');
+    const response = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        username: elements.loginUsername.value.trim(),
+        password: elements.loginPassword.value
+      })
+    });
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(payload?.error?.message ?? `登入失敗：${response.status}`);
+    }
+
+    setToken(payload.token);
+    adminUsername = payload.username ?? elements.loginUsername.value.trim();
+    elements.loginPassword.value = '';
+    setLoginStatus('');
+    await fetchAdminPanel();
   } catch (error) {
-    setBanner(error instanceof Error ? error.message : String(error));
+    setLoginStatus(error instanceof Error ? error.message : String(error));
   } finally {
-    elements.authSubmitButton.disabled = false;
+    elements.loginButton.disabled = false;
   }
 });
 
-elements.otpVerifyButton.addEventListener('click', async () => {
+elements.usageHistoryForm?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+
   try {
-    elements.otpVerifyButton.disabled = true;
-    const user = await authClient.verifyEmailOtp(elements.authOtp.value.trim());
-    setAuthenticatedView(user);
-    elements.authOtp.value = '';
-    await fetchAdminPanel();
+    elements.usageHistorySummary.textContent = '正在讀取歷史使用紀錄...';
+    await fetchUsageHistory();
   } catch (error) {
-    setBanner(error instanceof Error ? error.message : String(error));
-  } finally {
-    elements.otpVerifyButton.disabled = false;
+    elements.usageHistorySummary.textContent =
+      error instanceof Error ? error.message : String(error);
+  }
+});
+
+elements.usageHistoryRows?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-job-id]');
+  if (button?.dataset.jobId) {
+    openJobModal(button.dataset.jobId);
+  }
+});
+
+elements.jobModal?.addEventListener('click', (event) => {
+  if (event.target.dataset?.close === 'true') {
+    closeJobModal();
+  }
+});
+
+elements.jobModalClose?.addEventListener('click', closeJobModal);
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && elements.jobModal && !elements.jobModal.hidden) {
+    closeJobModal();
   }
 });
 
@@ -423,6 +677,7 @@ elements.adminProviderForm.addEventListener('submit', async (event) => {
   }
 
   try {
+    setBanner('正在更新模型與治理設定...');
     const response = await apiFetch('/api/admin/ai-policy', {
       method: 'PUT',
       headers: {
@@ -454,6 +709,7 @@ elements.adminProviderForm.addEventListener('submit', async (event) => {
     }
 
     await fetchAdminPanel();
+    setBanner('模型與治理設定已更新。');
   } catch (error) {
     setBanner(error instanceof Error ? error.message : String(error));
   }
@@ -489,26 +745,35 @@ elements.adminOverrideForm.addEventListener('submit', async (event) => {
   }
 });
 
-elements.signOutButton.addEventListener('click', async () => {
-  try {
-    await authClient.signOut();
-  } catch (error) {
-    setBanner(error instanceof Error ? error.message : String(error));
-  }
+elements.signOutButton.addEventListener('click', () => {
+  setToken(null);
+  adminUsername = null;
+  adminProviderState = null;
+  showLoginView();
+  setLoginStatus('已登出。');
 });
 
 const boot = async () => {
-  try {
-    await initializeAuth();
+  if (!adminToken) {
+    showLoginView();
+    return;
+  }
 
-    if (currentOperatorEmail) {
-      await fetchAdminPanel();
+  try {
+    const sessionResponse = await apiFetch('/api/admin/session');
+
+    if (!sessionResponse.ok) {
+      setToken(null);
+      showLoginView();
       return;
     }
 
-    elements.authPanel.hidden = false;
+    const session = await sessionResponse.json();
+    adminUsername = session.username ?? null;
+    await fetchAdminPanel();
   } catch (error) {
-    setBanner(error instanceof Error ? error.message : String(error));
+    setLoginStatus(error instanceof Error ? error.message : String(error));
+    showLoginView();
   }
 };
 

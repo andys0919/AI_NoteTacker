@@ -33,46 +33,11 @@
             <span class="meta-label">預設顯示名稱</span>
             <span id="default-join-name">Solomon - NoteTaker</span>
           </div>
-          <div id="quota-card" class="meta-card compact-meta" hidden>
-            <span class="meta-label">今日雲端額度</span>
-            <strong id="quota-remaining">$0.000</strong>
-            <span id="quota-breakdown">已用 $0.000 / 保留 $0.000 / 總額 $0.000</span>
-          </div>
-          <div id="sign-in-card" class="meta-card compact-meta session-meta" hidden>
-            <span class="meta-label">登入入口</span>
-            <span id="sign-in-hint">使用公司 email 驗證後開始送件。</span>
-            <button id="sign-in-button" class="toolbar-button compact" type="button">登入</button>
-          </div>
-          <div id="session-card" class="meta-card compact-meta session-meta" hidden>
-            <span class="meta-label">已登入帳號</span>
-            <span id="session-email">-</span>
-            <button id="sign-out-button" class="toolbar-button compact" type="button">登出</button>
-          </div>
+          <a id="admin-entry-link" class="meta-card compact-meta admin-entry-card" href="/admin">
+            <span class="meta-label">管理者</span>
+            <span class="admin-entry-hint">使用紀錄與模型設定</span>
+          </a>
         </div>
-      </section>
-
-      <section id="auth-panel" class="panel form-panel auth-panel" hidden>
-        <div class="section-heading">
-          <p class="eyebrow">Email Access</p>
-          <h2>Email 驗證登入</h2>
-        </div>
-        <p id="auth-copy" class="hero-text auth-copy">
-          輸入公司 email 後，系統會寄出一次性驗證碼。驗證完成後，瀏覽器會記住你的登入狀態。
-        </p>
-        <form id="auth-form" class="stack-form auth-form">
-          <label class="field">
-            <span>Email</span>
-            <input id="auth-email" name="email" type="email" placeholder="you@example.com" required />
-          </label>
-          <label id="otp-field" class="field" hidden>
-            <span>驗證碼</span>
-            <input id="auth-otp" name="otp" type="text" inputmode="numeric" maxlength="12" placeholder="輸入信件中的驗證碼" />
-          </label>
-          <div class="auth-actions">
-            <button id="auth-submit-button" class="action-button" type="submit">寄送驗證碼</button>
-            <button id="otp-verify-button" class="action-button secondary" type="button" hidden>驗證並登入</button>
-          </div>
-        </form>
       </section>
 
       <section class="dashboard-grid">
