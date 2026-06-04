@@ -1216,7 +1216,7 @@ summary {
 }
 
 .admin-login-card {
-  width: min(420px, 100%);
+  width: min(440px, 100%);
 }
 
 .admin-shell[hidden] {
@@ -1436,13 +1436,32 @@ summary {
 
 /* 登入彈窗:加上遮罩讓它讀起來像對話框,卡片加頂部漸層條 */
 .admin-login-overlay {
-  background: radial-gradient(circle at 50% 30%, rgba(242, 188, 107, 0.06), transparent 60%),
-    rgba(2, 6, 12, 0.66);
-  backdrop-filter: blur(6px);
+  background:
+    radial-gradient(circle at 50% 18%, rgba(242, 188, 107, 0.12), transparent 56%),
+    radial-gradient(circle at 50% 100%, rgba(125, 225, 192, 0.08), transparent 58%),
+    rgba(2, 6, 12, 0.74);
+  backdrop-filter: blur(10px);
 }
 
 .admin-login-card {
-  padding: 1.75rem;
+  padding: 2.4rem 2.2rem 1.9rem;
+  border-radius: 1.85rem;
+  border-color: rgba(242, 188, 107, 0.2);
+  box-shadow:
+    0 44px 130px rgba(0, 0, 0, 0.58),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  animation: admin-login-rise 540ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes admin-login-rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .admin-login-card::before {
@@ -1451,12 +1470,264 @@ summary {
   inset: 0 0 auto 0;
   height: 3px;
   z-index: 2;
-  background: linear-gradient(90deg, var(--cyan), var(--lime));
-  opacity: 0.9;
+  background: linear-gradient(90deg, transparent, var(--cyan), var(--lime), transparent);
+  opacity: 0.95;
 }
 
-.admin-login-card .auth-actions .action-button {
+/* 品牌標誌 */
+.admin-login-brand {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin-bottom: 1.6rem;
+}
+
+.admin-login-mark {
+  display: grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 0.95rem;
+  color: #07101a;
+  background: linear-gradient(135deg, var(--cyan-strong), var(--lime));
+  box-shadow: 0 14px 34px rgba(242, 188, 107, 0.3);
+}
+
+.admin-login-mark svg {
+  width: 1.55rem;
+  height: 1.55rem;
+}
+
+.admin-login-brand-copy {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.admin-login-brand-name {
+  font-family: "Noto Serif TC", serif;
+  font-weight: 700;
+  font-size: 1.06rem;
+  letter-spacing: 0.01em;
+}
+
+.admin-login-brand-sub {
+  font-size: 0.72rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* 標題 */
+.admin-login-head {
+  position: relative;
+  z-index: 1;
+  margin-bottom: 1.5rem;
+}
+
+.admin-login-head .eyebrow {
+  margin-bottom: 0.5rem;
+}
+
+.admin-login-head h2 {
+  margin: 0;
+  font-family: "Noto Serif TC", serif;
+  font-weight: 700;
+  font-size: 1.75rem;
+  letter-spacing: 0.02em;
+}
+
+.admin-login-copy {
+  margin: 0.6rem 0 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.7;
+}
+
+/* 表單 */
+.admin-login-form {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 1.1rem;
+}
+
+.auth-field {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.auth-field-label {
+  font-family: "Noto Sans TC", sans-serif;
+  font-size: 0.88rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text);
+}
+
+.auth-field-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.auth-field-icon {
+  position: absolute;
+  left: 1rem;
+  width: 1.15rem;
+  height: 1.15rem;
+  color: var(--muted);
+  pointer-events: none;
+  transition: color 160ms ease;
+}
+
+.auth-field-control input {
   width: 100%;
+  padding: 0.95rem 1rem 0.95rem 2.85rem;
+  border: 1px solid rgba(160, 183, 202, 0.18);
+  border-radius: 0.95rem;
+  background: rgba(1, 6, 11, 0.9);
+  color: var(--text);
+  font-family: "Noto Sans TC", sans-serif;
+  font-size: 0.98rem;
+  outline: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.auth-field-control--password input {
+  padding-right: 3rem;
+}
+
+.auth-field-control input::placeholder {
+  color: rgba(157, 172, 190, 0.55);
+}
+
+.auth-field-control input:focus {
+  border-color: var(--cyan-strong);
+  box-shadow: 0 0 0 0.22rem rgba(255, 208, 141, 0.16);
+  background: rgba(3, 9, 15, 0.96);
+  transform: none;
+}
+
+.auth-field-control:focus-within .auth-field-icon {
+  color: var(--cyan-strong);
+}
+
+.auth-field-toggle {
+  position: absolute;
+  right: 0.55rem;
+  display: grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  border: 0;
+  border-radius: 0.7rem;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease;
+}
+
+.auth-field-toggle:hover {
+  color: var(--cyan-strong);
+  background: rgba(242, 188, 107, 0.1);
+}
+
+.auth-field-toggle svg {
+  width: 1.2rem;
+  height: 1.2rem;
+}
+
+.auth-field-toggle .icon-eye-off {
+  display: none;
+}
+
+.auth-field-toggle.is-visible .icon-eye {
+  display: none;
+}
+
+.auth-field-toggle.is-visible .icon-eye-off {
+  display: block;
+}
+
+/* 登入按鈕 */
+.admin-login-submit {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 0.3rem;
+  padding: 1rem;
+  font-size: 1rem;
+}
+
+.admin-login-submit svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  transition: transform 160ms ease;
+}
+
+.admin-login-submit:hover:not(:disabled) svg {
+  transform: translateX(3px);
+}
+
+.admin-login-submit:disabled {
+  opacity: 0.7;
+  cursor: progress;
+  transform: none;
+  box-shadow: none;
+}
+
+/* 狀態訊息 */
+.admin-login-status {
+  margin: 0.2rem 0 0;
+  min-height: 1.2rem;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: var(--muted);
+  transition: color 160ms ease;
+}
+
+.admin-login-status.is-loading {
+  color: var(--cyan-strong);
+}
+
+.admin-login-status.is-error {
+  color: var(--danger);
+}
+
+/* 回主頁 */
+.admin-login-back {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+  margin-top: 1.5rem;
+  padding-top: 1.3rem;
+  border-top: 1px solid rgba(160, 183, 202, 0.12);
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-decoration: none;
+  transition: color 160ms ease;
+}
+
+.admin-login-back svg {
+  width: 1rem;
+  height: 1rem;
+  transition: transform 160ms ease;
+}
+
+.admin-login-back:hover {
+  color: var(--cyan-strong);
+}
+
+.admin-login-back:hover svg {
+  transform: translateX(-3px);
 }
 
 /* 歷史用量「依 model」卡片:用 teal/amber 漸層強調,與其它資訊卡一致 */
@@ -1535,6 +1806,15 @@ summary:focus-visible {
   .admin-login-overlay {
     padding: 0.85rem;
   }
+
+  .admin-login-card {
+    padding: 1.9rem 1.4rem 1.5rem;
+    border-radius: 1.5rem;
+  }
+
+  .admin-login-head h2 {
+    font-size: 1.5rem;
+  }
 }
 
 /* 尊重使用者的減少動效偏好 */
@@ -1552,6 +1832,180 @@ summary:focus-visible {
   .toolbar-button:hover:not(:disabled),
   .filter-chip:hover,
   .admin-entry-card:hover {
+    transform: none;
+  }
+}
+
+/* ============================================================
+   Admin dashboard polish — 左欄品牌、區塊標頭徽章、統計磚、主要按鈕
+   ============================================================ */
+
+/* 左欄品牌(沿用登入頁標誌) */
+.admin-rail-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-bottom: 0.3rem;
+}
+
+.admin-rail-brand .admin-login-mark {
+  width: 2.55rem;
+  height: 2.55rem;
+  border-radius: 0.8rem;
+  box-shadow: 0 10px 26px rgba(242, 188, 107, 0.26);
+}
+
+.admin-rail-brand .admin-login-mark svg {
+  width: 1.3rem;
+  height: 1.3rem;
+}
+
+.admin-rail-brand-copy {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.admin-rail-brand-name {
+  font-family: "Noto Serif TC", serif;
+  font-weight: 700;
+  font-size: 1rem;
+  letter-spacing: 0.01em;
+}
+
+.admin-rail-brand-sub {
+  font-size: 0.68rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* 區塊標頭:icon 徽章 + 文字鎖定排版 */
+.admin-governance-panel .section-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin-bottom: 1.3rem;
+}
+
+.section-heading-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 0.85rem;
+  color: var(--cyan-strong);
+  border: 1px solid rgba(242, 188, 107, 0.22);
+  background:
+    linear-gradient(135deg, rgba(242, 188, 107, 0.14), rgba(125, 225, 192, 0.06)),
+    rgba(6, 11, 17, 0.7);
+}
+
+.section-heading-icon svg {
+  width: 1.4rem;
+  height: 1.4rem;
+}
+
+.admin-governance-panel .section-heading-text {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.admin-governance-panel .section-heading .eyebrow {
+  margin-bottom: 0;
+}
+
+.admin-governance-panel .section-heading h2 {
+  font-size: 1.32rem;
+}
+
+/* 統計磚:左側漸層條 + 大號等寬數字 + 輕微浮起 */
+.admin-summary-strip .meta-card {
+  overflow: hidden;
+  padding-left: 1.25rem;
+  border-color: rgba(160, 183, 202, 0.16);
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.035), transparent 62%),
+    rgba(6, 11, 17, 0.86);
+  transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.admin-summary-strip .meta-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--cyan), var(--lime));
+  opacity: 0.85;
+}
+
+.admin-summary-strip .meta-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(242, 188, 107, 0.28);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.32);
+}
+
+.admin-summary-strip .meta-card strong {
+  font-size: 1.5rem;
+  letter-spacing: 0.01em;
+}
+
+/* 主要動作按鈕:實心強調,取代弱化的 ghost 樣式 */
+.admin-action-primary {
+  border: 0;
+  color: #04121b;
+  background: linear-gradient(120deg, var(--cyan), #ffdfa7);
+  font-weight: 700;
+  font-size: 0.84rem;
+  letter-spacing: 0.03em;
+  text-transform: none;
+  box-shadow: 0 14px 32px rgba(242, 188, 107, 0.22);
+}
+
+.admin-action-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: transparent;
+  box-shadow: 0 18px 40px rgba(242, 188, 107, 0.3);
+}
+
+/* 頂部導覽列:加上品牌色細緻邊框 */
+.admin-shell .admin-topbar {
+  border-color: rgba(242, 188, 107, 0.16);
+}
+
+/* runtime health / by-model 卡片:hover 提示 */
+.runtime-health-card {
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.runtime-health-card:hover {
+  border-color: rgba(242, 188, 107, 0.24);
+}
+
+/* audit / usage 列表項:hover 提示 */
+.admin-audit-entry {
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.admin-audit-entry:hover {
+  border-color: rgba(242, 188, 107, 0.22);
+  background: rgba(8, 13, 20, 0.82);
+}
+
+@media (max-width: 560px) {
+  .admin-governance-panel .section-heading h2 {
+    font-size: 1.15rem;
+  }
+
+  .section-heading-icon {
+    width: 2.3rem;
+    height: 2.3rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-summary-strip .meta-card:hover,
+  .admin-action-primary:hover:not(:disabled) {
     transform: none;
   }
 }

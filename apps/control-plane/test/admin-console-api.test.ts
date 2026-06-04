@@ -13,7 +13,7 @@ describe('admin console (username/password) API', () => {
   const buildAuth = () =>
     createAdminConsoleAuth({
       username: 'admin',
-      password: 'solomonvbnAndy',
+      password: 'solomonvbuandy',
       sessionSecret: 'unit-test-secret'
     });
 
@@ -47,7 +47,7 @@ describe('admin console (username/password) API', () => {
       })
     });
 
-  const login = async (app: ReturnType<typeof buildApp>, password = 'solomonvbnAndy') => {
+  const login = async (app: ReturnType<typeof buildApp>, password = 'solomonvbuandy') => {
     const response = await request(app)
       .post('/api/admin/login')
       .send({ username: 'admin', password });

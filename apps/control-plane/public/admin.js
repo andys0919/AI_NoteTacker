@@ -18,6 +18,7 @@ const elements = {
   loginForm: document.querySelector('#admin-login-form'),
   loginUsername: document.querySelector('#admin-login-username'),
   loginPassword: document.querySelector('#admin-login-password'),
+  loginPasswordToggle: document.querySelector('#admin-login-password-toggle'),
   loginButton: document.querySelector('#admin-login-button'),
   loginStatus: document.querySelector('#admin-login-status'),
   adminContent: document.querySelector('#admin-content'),
@@ -90,9 +91,16 @@ const apiFetch = async (input, init = {}) => {
   return fetch(input, { ...init, headers });
 };
 
-const setLoginStatus = (message) => {
-  if (elements.loginStatus) {
-    elements.loginStatus.textContent = message ?? '';
+const setLoginStatus = (message, tone) => {
+  if (!elements.loginStatus) {
+    return;
+  }
+  elements.loginStatus.textContent = message ?? '';
+  elements.loginStatus.classList.remove('is-error', 'is-loading');
+  if (tone === 'error') {
+    elements.loginStatus.classList.add('is-error');
+  } else if (tone === 'loading') {
+    elements.loginStatus.classList.add('is-loading');
   }
 };
 
@@ -590,7 +598,7 @@ elements.loginForm.addEventListener('submit', async (event) => {
 
   try {
     elements.loginButton.disabled = true;
-    setLoginStatus('正在登入...');
+    setLoginStatus('正在登入...', 'loading');
     const response = await fetch('/api/admin/login', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -611,10 +619,23 @@ elements.loginForm.addEventListener('submit', async (event) => {
     setLoginStatus('');
     await fetchAdminPanel();
   } catch (error) {
-    setLoginStatus(error instanceof Error ? error.message : String(error));
+    setLoginStatus(error instanceof Error ? error.message : String(error), 'error');
   } finally {
     elements.loginButton.disabled = false;
   }
+});
+
+elements.loginPasswordToggle?.addEventListener('click', () => {
+  const input = elements.loginPassword;
+  if (!input) {
+    return;
+  }
+  const reveal = input.type === 'password';
+  input.type = reveal ? 'text' : 'password';
+  elements.loginPasswordToggle.classList.toggle('is-visible', reveal);
+  elements.loginPasswordToggle.setAttribute('aria-pressed', String(reveal));
+  elements.loginPasswordToggle.setAttribute('aria-label', reveal ? '隱藏密碼' : '顯示密碼');
+  input.focus();
 });
 
 elements.usageHistoryForm?.addEventListener('submit', async (event) => {

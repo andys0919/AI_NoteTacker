@@ -22,7 +22,7 @@ export interface AdminConsoleAuth {
 }
 
 const DEFAULT_USERNAME = 'admin';
-const DEFAULT_PASSWORD = 'solomonvbnAndy';
+const DEFAULT_PASSWORD = 'solomonvbuandy';
 const DEFAULT_SESSION_TTL_HOURS = 12;
 
 const base64UrlEncode = (value: string): string =>
