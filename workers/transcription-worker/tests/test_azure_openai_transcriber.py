@@ -59,6 +59,126 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
             [{"start_ms": 0, "end_ms": 1250, "text": "這是測試"}],
         )
 
+    def test_sends_language_and_prompt_fields_when_configured(self) -> None:
+        captured = {}
+
+        def fake_urlopen(http_request):
+            captured["body"] = http_request.data
+            return _FakeResponse(json.dumps({"language": "zh", "text": "你好"}).encode("utf-8"))
+
+        transcriber = AzureOpenAiTranscriber(
+            endpoint="https://azure.example.test",
+            deployment="gpt-4o-transcribe",
+            api_key="secret",
+            api_version="2025-03-01-preview",
+            language="zh",
+            prompt="請輸出繁體中文並保留標點。",
+            urlopen=fake_urlopen,
+            duration_resolver=lambda _path: 1000,
+        )
+
+        with open("/tmp/azure-openai-transcriber-lang-test.wav", "wb") as handle:
+            handle.write(b"fake-audio")
+
+        transcriber.transcribe("/tmp/azure-openai-transcriber-lang-test.wav")
+
+        body = captured["body"]
+        self.assertIn(b'name="language"', body)
+        self.assertIn("zh".encode("utf-8"), body)
+        self.assertIn(b'name="prompt"', body)
+        self.assertIn("請輸出繁體中文並保留標點。".encode("utf-8"), body)
+
+    def test_omits_language_and_prompt_fields_when_not_configured(self) -> None:
+        captured = {}
+
+        def fake_urlopen(http_request):
+            captured["body"] = http_request.data
+            return _FakeResponse(json.dumps({"language": "zh", "text": "你好"}).encode("utf-8"))
+
+        transcriber = AzureOpenAiTranscriber(
+            endpoint="https://azure.example.test",
+            deployment="gpt-4o-transcribe",
+            api_key="secret",
+            urlopen=fake_urlopen,
+            duration_resolver=lambda _path: 1000,
+        )
+
+        with open("/tmp/azure-openai-transcriber-nolang-test.wav", "wb") as handle:
+            handle.write(b"fake-audio")
+
+        transcriber.transcribe("/tmp/azure-openai-transcriber-nolang-test.wav")
+
+        body = captured["body"]
+        self.assertNotIn(b'name="language"', body)
+        self.assertNotIn(b'name="prompt"', body)
+
+    def test_splits_text_blob_into_sentence_segments_with_interpolated_timestamps(self) -> None:
+        def fake_urlopen(_http_request):
+            payload = {"language": "zh", "text": "你好。今天天氣很好！"}
+            return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+        transcriber = AzureOpenAiTranscriber(
+            endpoint="https://azure.example.test",
+            deployment="gpt-4o-transcribe",
+            api_key="secret",
+            urlopen=fake_urlopen,
+            upload_plan_builder=lambda path: [
+                {"path": path, "start_ms": 0, "end_ms": 1000, "cleanup": False}
+            ],
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as source:
+            source.write(b"source")
+            source_path = source.name
+
+        result = transcriber.transcribe(source_path)
+        os.remove(source_path)
+
+        self.assertEqual(
+            result["segments"],
+            [
+                {"start_ms": 0, "end_ms": 300, "text": "你好。"},
+                {"start_ms": 300, "end_ms": 1000, "text": "今天天氣很好！"},
+            ],
+        )
+
+    def test_restores_punctuation_before_splitting_into_segments(self) -> None:
+        class _StubPunctuator:
+            def restore(self, text):
+                # Simulate the chat punctuator adding sentence boundaries.
+                return "你好。今天天氣很好！"
+
+        def fake_urlopen(_http_request):
+            return _FakeResponse(
+                json.dumps({"language": "zh", "text": "你好今天天氣很好"}).encode("utf-8")
+            )
+
+        transcriber = AzureOpenAiTranscriber(
+            endpoint="https://azure.example.test",
+            deployment="gpt-4o-transcribe",
+            api_key="secret",
+            punctuator=_StubPunctuator(),
+            urlopen=fake_urlopen,
+            upload_plan_builder=lambda path: [
+                {"path": path, "start_ms": 0, "end_ms": 1000, "cleanup": False}
+            ],
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as source:
+            source.write(b"source")
+            source_path = source.name
+
+        result = transcriber.transcribe(source_path)
+        os.remove(source_path)
+
+        self.assertEqual(
+            result["segments"],
+            [
+                {"start_ms": 0, "end_ms": 300, "text": "你好。"},
+                {"start_ms": 300, "end_ms": 1000, "text": "今天天氣很好！"},
+            ],
+        )
+
     def test_combines_chunked_upload_results_with_offsets_and_progress(self) -> None:
         responses = iter(
             [

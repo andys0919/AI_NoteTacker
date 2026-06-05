@@ -1,6 +1,9 @@
 import unittest
 
-from transcription_worker.config import read_transcription_worker_config
+from transcription_worker.config import (
+    DEFAULT_AZURE_TRANSCRIBE_PROMPT,
+    read_transcription_worker_config,
+)
 
 
 class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
@@ -34,6 +37,10 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
                 "azure_openai_deployment": None,
                 "azure_openai_api_key": None,
                 "azure_openai_api_version": "2025-03-01-preview",
+                "azure_openai_transcribe_language": "",
+                "azure_openai_transcribe_prompt": DEFAULT_AZURE_TRANSCRIBE_PROMPT,
+                "transcript_punctuation_enabled": True,
+                "transcript_punctuation_model": "gpt-5.4-mini",
             },
         )
 
@@ -54,6 +61,61 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
         self.assertEqual(config["azure_openai_deployment"], "gpt-4o-transcribe")
         self.assertEqual(config["azure_openai_api_key"], "secret")
         self.assertEqual(config["azure_openai_api_version"], "2025-04-01-preview")
+
+    def test_defaults_transcribe_prompt_to_traditional_chinese_hint(self) -> None:
+        config = read_transcription_worker_config(
+            {
+                "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                "WORKER_ID": "transcriber-alpha",
+                "WHISPER_MODEL": "large-v3",
+            }
+        )
+
+        self.assertEqual(config["azure_openai_transcribe_language"], "")
+        self.assertEqual(
+            config["azure_openai_transcribe_prompt"], DEFAULT_AZURE_TRANSCRIBE_PROMPT
+        )
+        self.assertIn("繁體中文", str(config["azure_openai_transcribe_prompt"]))
+
+    def test_enables_transcript_punctuation_by_default_with_summary_model(self) -> None:
+        config = read_transcription_worker_config(
+            {
+                "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                "WORKER_ID": "transcriber-alpha",
+                "WHISPER_MODEL": "large-v3",
+            }
+        )
+
+        self.assertIs(config["transcript_punctuation_enabled"], True)
+        self.assertEqual(config["transcript_punctuation_model"], "gpt-5.4-mini")
+
+    def test_allows_disabling_and_overriding_punctuation_model(self) -> None:
+        config = read_transcription_worker_config(
+            {
+                "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                "WORKER_ID": "transcriber-alpha",
+                "WHISPER_MODEL": "large-v3",
+                "TRANSCRIPT_PUNCTUATION_ENABLED": "false",
+                "AZURE_OPENAI_PUNCTUATION_MODEL": "gpt-4o-mini",
+            }
+        )
+
+        self.assertIs(config["transcript_punctuation_enabled"], False)
+        self.assertEqual(config["transcript_punctuation_model"], "gpt-4o-mini")
+
+    def test_allows_overriding_transcribe_language_and_prompt(self) -> None:
+        config = read_transcription_worker_config(
+            {
+                "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                "WORKER_ID": "transcriber-alpha",
+                "WHISPER_MODEL": "large-v3",
+                "AZURE_OPENAI_TRANSCRIBE_LANGUAGE": "zh",
+                "AZURE_OPENAI_TRANSCRIBE_PROMPT": "請輸出繁體中文。",
+            }
+        )
+
+        self.assertEqual(config["azure_openai_transcribe_language"], "zh")
+        self.assertEqual(config["azure_openai_transcribe_prompt"], "請輸出繁體中文。")
 
     def test_uses_local_deployment_defaults_for_gpu_whisper(self) -> None:
         config = read_transcription_worker_config(

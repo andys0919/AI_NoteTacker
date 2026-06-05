@@ -8,6 +8,9 @@ The transcription worker handles uploaded-media and completed recording artifact
 - prepares canonical audio with FFmpeg when needed
 - runs Whisper transcription
 - can alternatively run Azure OpenAI `gpt-4o-transcribe` when the claimed job is latched to that provider
+  - sends a Traditional Chinese style `prompt` (overridable) so output is Traditional Chinese
+  - restores punctuation via a chat model (gpt-4o-transcribe returns none and `prompt` cannot force it) under a strict fidelity guard — the rewrite is only accepted when it adds nothing but punctuation/whitespace, otherwise the raw text is kept, so a flaky/hallucinating call never corrupts or fails the transcript
+  - splits the punctuated text into one segment per sentence (gpt-4o-transcribe has no native segmentation)
 - can run summary generation through local Codex or Azure OpenAI based on the claimed job snapshot
 - waits for a control-plane summary slot before beginning summary generation so local/cloud summary pools stay separate
 - posts transcript and summary artifacts back to the control plane
@@ -46,6 +49,10 @@ Important variables:
   - `AZURE_OPENAI_DEPLOYMENT`
   - `AZURE_OPENAI_API_KEY`
   - `AZURE_OPENAI_API_VERSION`
+  - `AZURE_OPENAI_TRANSCRIBE_LANGUAGE` (BCP-47 hint, e.g. `zh`; blank = auto-detect)
+  - `AZURE_OPENAI_TRANSCRIBE_PROMPT` (style hint; blank = built-in Traditional Chinese + punctuation prompt)
+  - `TRANSCRIPT_PUNCTUATION_ENABLED` (default `true`; set `false` to keep raw unpunctuated text)
+  - `AZURE_OPENAI_PUNCTUATION_MODEL` (chat model for punctuation restore; blank = reuse `SUMMARY_MODEL`; uses the summary endpoint/key)
 - optional Azure hosted summary:
   - `AZURE_OPENAI_SUMMARY_ENDPOINT`
   - `AZURE_OPENAI_SUMMARY_API_KEY`

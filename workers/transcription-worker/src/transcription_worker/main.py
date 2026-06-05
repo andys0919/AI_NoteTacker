@@ -2,6 +2,9 @@ import os
 import time
 
 from meeting_ai_pipeline.artifact_downloader import RecordingArtifactDownloader, S3ArtifactStorage
+from transcription_worker.azure_openai_punctuation_restorer import (
+    AzureOpenAiPunctuationRestorer,
+)
 from transcription_worker.azure_openai_transcriber import AzureOpenAiTranscriber
 from transcription_worker.config import read_transcription_worker_config
 from transcription_worker.control_plane_client import ControlPlaneClient
@@ -56,11 +59,25 @@ def main() -> None:
         and config.get("azure_openai_deployment")
         and config.get("azure_openai_api_key")
     ):
+        punctuator = None
+        if (
+            config.get("transcript_punctuation_enabled")
+            and config.get("azure_openai_summary_endpoint")
+            and config.get("azure_openai_summary_api_key")
+        ):
+            punctuator = AzureOpenAiPunctuationRestorer(
+                endpoint=str(config["azure_openai_summary_endpoint"]),
+                api_key=str(config["azure_openai_summary_api_key"]),
+                model=str(config["transcript_punctuation_model"]),
+            )
         transcriber_registry["azure-openai-gpt-4o-transcribe"] = AzureOpenAiTranscriber(
             endpoint=str(config["azure_openai_endpoint"]),
             deployment=str(config["azure_openai_deployment"]),
             api_key=str(config["azure_openai_api_key"]),
             api_version=str(config["azure_openai_api_version"]),
+            language=str(config["azure_openai_transcribe_language"]),
+            prompt=str(config["azure_openai_transcribe_prompt"]),
+            punctuator=punctuator,
         )
     while True:
         try:

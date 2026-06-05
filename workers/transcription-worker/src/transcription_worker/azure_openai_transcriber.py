@@ -12,6 +12,15 @@ DEFAULT_AZURE_MP3_BITRATE = "64k"
 MAX_AUDIO_DURATION_MS = 1500 * 1000
 DEFAULT_MAX_CHUNK_DURATION_MS = 20 * 60 * 1000
 
+# Characters that close a sentence. gpt-4o-transcribe only supports response_format
+# "json"/"text" (no verbose_json), so it returns one undivided text blob per upload.
+# We split that blob on these boundaries so the stored transcript reads as one line
+# per sentence instead of a single wall of text. ASCII "." is intentionally excluded
+# to avoid splitting decimals/abbreviations.
+SENTENCE_ENDING_CHARS = frozenset("。！？!?…；;\n")
+# Closing marks that belong to the sentence that just ended (e.g. the 」 in 「好。」).
+SENTENCE_TRAILING_CHARS = frozenset("」』）)】》〉”’\"'")
+
 
 class AzureOpenAiTranscriber:
     def __init__(
@@ -20,6 +29,9 @@ class AzureOpenAiTranscriber:
         deployment: str,
         api_key: str,
         api_version: str = "2025-03-01-preview",
+        language: str = "",
+        prompt: str = "",
+        punctuator=None,
         urlopen=None,
         duration_resolver=None,
         upload_plan_builder=None,
@@ -29,6 +41,9 @@ class AzureOpenAiTranscriber:
         self.deployment = deployment
         self.api_key = api_key
         self.api_version = api_version
+        self.language = language or ""
+        self.prompt = prompt or ""
+        self.punctuator = punctuator
         self.urlopen = urlopen or request.urlopen
         self.duration_resolver = duration_resolver or self._resolve_duration_ms
         self.upload_plan_builder = upload_plan_builder or self._build_upload_plan
@@ -57,17 +72,17 @@ class AzureOpenAiTranscriber:
                         for segment in payload.get("segments", [])
                     ]
                 else:
-                    text = (payload.get("text") or "").strip()
-                    part_segments = (
-                        [
-                            {
-                                "start_ms": part["start_ms"],
-                                "end_ms": part["end_ms"],
-                                "text": text,
-                            }
-                        ]
-                        if text
-                        else []
+                    text = payload.get("text") or ""
+                    # gpt-4o-transcribe returns an unpunctuated blob; restore
+                    # punctuation BEFORE splitting so there are sentence boundaries
+                    # to split on. The punctuator self-guards (keeps raw text on any
+                    # failure), so this never breaks the job.
+                    if self.punctuator is not None and text.strip():
+                        text = self.punctuator.restore(text)
+                    part_segments = self._split_text_into_segments(
+                        text,
+                        part["start_ms"],
+                        part["end_ms"],
                     )
 
                 collected_segments.extend(part_segments)
@@ -106,14 +121,19 @@ class AzureOpenAiTranscriber:
         with open(upload_path, "rb") as handle:
             audio_bytes = handle.read()
 
-        body = b"".join(
-            [
-                self._encode_field(boundary, "model", self.deployment),
-                self._encode_field(boundary, "response_format", "json"),
-                self._encode_file(boundary, "file", file_name, content_type, audio_bytes),
-                f"--{boundary}--\r\n".encode("utf-8"),
-            ]
+        fields = [
+            self._encode_field(boundary, "model", self.deployment),
+            self._encode_field(boundary, "response_format", "json"),
+        ]
+        if self.language:
+            fields.append(self._encode_field(boundary, "language", self.language))
+        if self.prompt:
+            fields.append(self._encode_field(boundary, "prompt", self.prompt))
+        fields.append(
+            self._encode_file(boundary, "file", file_name, content_type, audio_bytes)
         )
+        fields.append(f"--{boundary}--\r\n".encode("utf-8"))
+        body = b"".join(fields)
 
         http_request = request.Request(
             f"{self.endpoint}/openai/deployments/{self.deployment}/audio/transcriptions?api-version={self.api_version}",
@@ -134,6 +154,65 @@ class AzureOpenAiTranscriber:
             if details:
                 message = f"{message}: {details}"
             raise RuntimeError(message) from error
+
+    def _split_text_into_segments(self, text: str, start_ms: int, end_ms: int) -> list[dict]:
+        total_chars = len(text)
+        if total_chars == 0:
+            return []
+
+        span_ms = max(0, end_ms - start_ms)
+        segments: list[dict] = []
+        sentence_start = 0
+        index = 0
+
+        while index < total_chars:
+            if text[index] in SENTENCE_ENDING_CHARS:
+                cut = index + 1
+                while cut < total_chars and text[cut] in SENTENCE_ENDING_CHARS:
+                    cut += 1
+                while cut < total_chars and text[cut] in SENTENCE_TRAILING_CHARS:
+                    cut += 1
+                self._append_text_segment(
+                    segments, text, sentence_start, cut, total_chars, start_ms, span_ms
+                )
+                sentence_start = cut
+                index = cut
+            else:
+                index += 1
+
+        if sentence_start < total_chars:
+            self._append_text_segment(
+                segments, text, sentence_start, total_chars, total_chars, start_ms, span_ms
+            )
+
+        return segments
+
+    def _append_text_segment(
+        self,
+        segments: list[dict],
+        text: str,
+        char_start: int,
+        char_end: int,
+        total_chars: int,
+        start_ms: int,
+        span_ms: int,
+    ) -> None:
+        cleaned = text[char_start:char_end].strip()
+        if not cleaned:
+            return
+
+        segment_start = start_ms + int(round(span_ms * char_start / total_chars))
+        segment_end = start_ms + int(round(span_ms * char_end / total_chars))
+        if segment_end < segment_start:
+            segment_end = segment_start
+
+        segments.append(
+            {
+                "start_ms": segment_start,
+                "end_ms": segment_end,
+                "text": cleaned,
+            }
+        )
 
     def _build_upload_plan(self, local_audio_path: str) -> list[dict]:
         total_duration_ms = self.duration_resolver(local_audio_path)

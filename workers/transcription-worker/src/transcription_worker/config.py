@@ -1,5 +1,14 @@
 from typing import Mapping
 
+# Default style hint sent to gpt-4o-transcribe as the `prompt` field. The model has
+# no explicit traditional/simplified toggle, so we bias it with a natural Traditional
+# Chinese (Taiwan) sentence that already carries punctuation. Override per-deployment
+# with AZURE_OPENAI_TRANSCRIBE_PROMPT (e.g. for English-first meetings).
+DEFAULT_AZURE_TRANSCRIBE_PROMPT = (
+    "這是一場以繁體中文進行的會議，以下為完整逐字稿，"
+    "內容使用繁體中文（台灣用語）並保留正確的標點符號，例如，。、？！。"
+)
+
 
 def read_transcription_worker_config(environment: Mapping[str, str | None]) -> dict[str, str | int]:
     control_plane_base_url = environment.get("CONTROL_PLANE_BASE_URL")
@@ -51,4 +60,14 @@ def read_transcription_worker_config(environment: Mapping[str, str | None]) -> d
         "azure_openai_api_key": environment.get("AZURE_OPENAI_API_KEY"),
         "azure_openai_api_version": environment.get("AZURE_OPENAI_API_VERSION")
         or "2025-03-01-preview",
+        "azure_openai_transcribe_language": environment.get("AZURE_OPENAI_TRANSCRIBE_LANGUAGE")
+        or "",
+        "azure_openai_transcribe_prompt": environment.get("AZURE_OPENAI_TRANSCRIBE_PROMPT")
+        or DEFAULT_AZURE_TRANSCRIBE_PROMPT,
+        "transcript_punctuation_enabled": (
+            environment.get("TRANSCRIPT_PUNCTUATION_ENABLED") or "true"
+        ).lower()
+        == "true",
+        "transcript_punctuation_model": environment.get("AZURE_OPENAI_PUNCTUATION_MODEL")
+        or summary_model,
     }
