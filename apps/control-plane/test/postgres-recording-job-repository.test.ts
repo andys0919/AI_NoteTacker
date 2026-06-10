@@ -91,6 +91,24 @@ describe('PostgresRecordingJobRepository', () => {
     expect(reloaded?.summaryArtifact?.text).toBe('hello team summary');
   });
 
+  it('persists and reloads the meeting passcode', async () => {
+    const created = createRecordingJob({
+      meetingUrl: 'https://us06web.zoom.us/j/81609875791',
+      platform: 'zoom',
+      meetingPasscode: '424242'
+    });
+
+    await repository.save(created);
+
+    const reloaded = await repository.getById(created.id);
+
+    expect(reloaded?.meetingPasscode).toBe('424242');
+
+    const claimed = await repository.claimNextQueued('worker-passcode');
+
+    expect(claimed?.meetingPasscode).toBe('424242');
+  });
+
   it('claims the next queued job for a worker', async () => {
     const first = createRecordingJob({
       meetingUrl: 'https://meet.google.com/aaa-bbbb-ccc',

@@ -44,6 +44,7 @@ type RecordingJobRow = {
   input_source: RecordingInputSource;
   submitter_id: string;
   requested_join_name: string;
+  meeting_passcode: string | null;
   submission_template_id: SubmissionTemplateId | null;
   summary_profile: SummaryProfile | null;
   preferred_export_format: PreferredExportFormat | null;
@@ -104,6 +105,7 @@ const recordingJobSchemaSql = `
     input_source TEXT NOT NULL DEFAULT 'meeting-link',
     submitter_id TEXT NOT NULL DEFAULT 'anonymous',
     requested_join_name TEXT NOT NULL DEFAULT 'Solomon - NoteTaker',
+    meeting_passcode TEXT,
     submission_template_id TEXT,
     summary_profile TEXT,
     preferred_export_format TEXT,
@@ -172,6 +174,8 @@ const recordingJobSchemaSql = `
   ADD COLUMN IF NOT EXISTS submitter_id TEXT NOT NULL DEFAULT 'anonymous';
   ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS requested_join_name TEXT NOT NULL DEFAULT 'Solomon - NoteTaker';
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS meeting_passcode TEXT;
   ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS submission_template_id TEXT;
   ALTER TABLE recording_jobs
@@ -309,6 +313,7 @@ const mapRowToRecordingJob = (row: RecordingJobRow): RecordingJob => ({
   inputSource: row.input_source,
   submitterId: row.submitter_id,
   requestedJoinName: row.requested_join_name,
+  meetingPasscode: row.meeting_passcode ?? undefined,
   submissionTemplateId: row.submission_template_id ?? undefined,
   summaryProfile: row.summary_profile ?? undefined,
   preferredExportFormat: row.preferred_export_format ?? undefined,
@@ -554,9 +559,10 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           job_history,
           terminal_notification_sent_at,
           terminal_notification_target,
-          terminal_notification_state
+          terminal_notification_state,
+          meeting_passcode
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::timestamptz, $22::timestamptz, $23::timestamptz, $24, $25::timestamptz, $26::timestamptz, $27::timestamptz, $28, $29::timestamptz, $30::timestamptz, $31::timestamptz, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42::timestamptz, $43::timestamptz, $44, $45, $46::jsonb, $47::jsonb, $48::jsonb, $49, $50, $51, $52, $53::jsonb, $54::timestamptz, $55, $56)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::timestamptz, $22::timestamptz, $23::timestamptz, $24, $25::timestamptz, $26::timestamptz, $27::timestamptz, $28, $29::timestamptz, $30::timestamptz, $31::timestamptz, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42::timestamptz, $43::timestamptz, $44, $45, $46::jsonb, $47::jsonb, $48::jsonb, $49, $50, $51, $52, $53::jsonb, $54::timestamptz, $55, $56, $57)
         ON CONFLICT (id) DO UPDATE SET
           meeting_url = EXCLUDED.meeting_url,
           platform = EXCLUDED.platform,
@@ -612,7 +618,8 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           job_history = EXCLUDED.job_history,
           terminal_notification_sent_at = EXCLUDED.terminal_notification_sent_at,
           terminal_notification_target = EXCLUDED.terminal_notification_target,
-          terminal_notification_state = EXCLUDED.terminal_notification_state
+          terminal_notification_state = EXCLUDED.terminal_notification_state,
+          meeting_passcode = EXCLUDED.meeting_passcode
         RETURNING *
       `,
       [
@@ -671,7 +678,8 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
         job.jobHistory ? JSON.stringify(job.jobHistory) : null,
         job.terminalNotificationSentAt ?? null,
         job.terminalNotificationTarget ?? null,
-        job.terminalNotificationState ?? null
+        job.terminalNotificationState ?? null,
+        job.meetingPasscode ?? null
       ]
     );
 

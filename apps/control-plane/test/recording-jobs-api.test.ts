@@ -987,6 +987,61 @@ describe('recording jobs API', () => {
     expect(listed.body.jobs[0].requestedJoinName).toBe('Solomon - NoteTaker');
   });
 
+  it('passes the meeting passcode to worker claims without echoing it to operator APIs', async () => {
+    const app = createApp();
+
+    const created = await request(app)
+      .post('/api/operator/jobs/meetings')
+      .send({
+        submitterId: 'operator-passcode',
+        meetingUrl: 'https://us06web.zoom.us/j/81609875791',
+        meetingPasscode: '424242'
+      });
+
+    expect(created.status).toBe(201);
+    expect(created.body.meetingPasscode).toBeUndefined();
+
+    const listed = await request(app)
+      .get('/api/operator/jobs')
+      .query({ submitterId: 'operator-passcode' });
+
+    expect(listed.status).toBe(200);
+    expect(listed.body.jobs[0].meetingPasscode).toBeUndefined();
+
+    const claim = await request(app)
+      .post('/recording-workers/claims')
+      .send({
+        workerId: 'worker-passcode'
+      });
+
+    expect(claim.status).toBe(200);
+    expect(claim.body.id).toBe(created.body.id);
+    expect(claim.body.meetingPasscode).toBe('424242');
+  });
+
+  it('treats a blank meeting passcode as not provided', async () => {
+    const app = createApp();
+
+    const created = await request(app)
+      .post('/api/operator/jobs/meetings')
+      .send({
+        submitterId: 'operator-passcode-blank',
+        meetingUrl: 'https://us06web.zoom.us/j/81609875791',
+        meetingPasscode: '   '
+      });
+
+    expect(created.status).toBe(201);
+
+    const claim = await request(app)
+      .post('/recording-workers/claims')
+      .send({
+        workerId: 'worker-passcode-blank'
+      });
+
+    expect(claim.status).toBe(200);
+    expect(claim.body.meetingPasscode).toBeUndefined();
+  });
+
   it('returns operator job lists with full transcript/summary content inline', async () => {
     const app = createApp();
 

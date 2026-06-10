@@ -101,6 +101,7 @@ const operatorMeetingJobRequestSchema = z.object({
   submitterId: z.string().trim().min(1).max(120).optional(),
   meetingUrl: z.url(),
   requestedJoinName: z.string().trim().max(120).optional(),
+  meetingPasscode: z.string().trim().max(64).optional(),
   submissionTemplateId: z.enum(submissionTemplateIds).optional()
 });
 
@@ -484,6 +485,9 @@ const toWorkerClaimResponse = (
   stage: 'recording' | 'transcription' | 'summary'
 ) => ({
   ...toApiRecordingJob(job),
+  // Worker-only field: the operator/admin APIs (toApiRecordingJob) must never echo
+  // the meeting passcode back to browsers.
+  meetingPasscode: job.meetingPasscode,
   leaseToken:
     stage === 'recording'
       ? job.recordingLeaseToken
@@ -2697,6 +2701,7 @@ export const createApp = (
         parsedRequest.data.requestedJoinName,
         workflowTemplate.requestedJoinName
       ),
+      meetingPasscode: parsedRequest.data.meetingPasscode || undefined,
       submissionTemplateId: workflowTemplate.id,
       summaryProfile: workflowTemplate.summaryProfile,
       preferredExportFormat: workflowTemplate.preferredExportFormat,

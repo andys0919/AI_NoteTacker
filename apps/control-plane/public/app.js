@@ -737,6 +737,7 @@ const submitMeetingJob = async (event) => {
       submitterId: currentSubmitterId,
       meetingUrl: formData.get('meetingUrl'),
       requestedJoinName: formData.get('requestedJoinName'),
+      meetingPasscode: formData.get('meetingPasscode'),
       submissionTemplateId: selectedTemplateId
     })
   });

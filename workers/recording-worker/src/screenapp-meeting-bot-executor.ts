@@ -34,7 +34,8 @@ export class ScreenappMeetingBotExecutor implements RecordingWorkerExecutor {
         teamId: this.options.teamId,
         timezone: this.options.timezone,
         userId: this.options.userId,
-        botId: job.id
+        botId: job.id,
+        ...(job.meetingPasscode ? { meetingPassword: job.meetingPasscode } : {})
       })
     });
 

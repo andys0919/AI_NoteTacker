@@ -17,6 +17,9 @@ const bugService_1 = require("../services/bugService");
 const MeetBotBase_1 = require("./MeetBotBase");
 const constants_1 = require("../constants");
 const { detectJoinRequestEvidence } = require("./join_request_evidence.cjs");
+const { detectZoomPasscodeError, resolveZoomPasscodePlan } = require("./zoom_passcode.cjs");
+const ZOOM_PASSCODE_REQUIRED_MESSAGE = '此 Zoom 會議需要密碼。請在主頁的「會議密碼」欄位填入密碼後重新提交，或改貼上含 pwd 參數的完整邀請連結。';
+const ZOOM_PASSCODE_INCORRECT_MESSAGE = '提供的 Zoom 會議密碼不正確，請確認密碼後重新提交。';
 class BotBase extends AbstractMeetBot_1.AbstractMeetBot {
     constructor(logger, correlationId) {
         super();
@@ -32,7 +35,7 @@ class ZoomBot extends BotBase {
     constructor(logger, correlationId) {
         super(logger, correlationId);
     }
-    async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader }) {
+    async join({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, uploader, meetingPassword }) {
         const _state = ['processing'];
         const handleUpload = async () => {
             this._logger.info('Begin recording upload to server', { userId, teamId });
@@ -42,7 +45,7 @@ class ZoomBot extends BotBase {
         };
         try {
             const pushState = (st) => _state.push(st);
-            await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, pushState, uploader });
+            await this.joinMeeting({ url, name, bearerToken, teamId, timezone, userId, eventId, botId, pushState, uploader, meetingPassword });
             // Finish the upload before patching status so an upload failure is reflected as 'failed'
             let uploadResult;
             try {
@@ -80,7 +83,7 @@ class ZoomBot extends BotBase {
         }
     }
     async joinMeeting({ pushState, ...params }) {
-        const { url, name, bearerToken } = params;
+        const { url, name, bearerToken, meetingPassword } = params;
         this._logger.info('Launching browser for Zoom...', { userId: params.userId });
         this.page = await (0, chromium_1.default)(url, this._correlationId, 'zoom');
         await this.page.route('**/*.exe', (route) => {
@@ -262,8 +265,37 @@ class ZoomBot extends BotBase {
         await iframe.waitForSelector('input[type="text"]', { timeout: 60000 });
         this._logger.info('Waiting for 5 seconds...');
         await this.page.waitForTimeout(5000);
+        const passcodeFieldVisible = await iframe
+            .locator('#input-for-pwd')
+            .isVisible()
+            .catch(() => false);
+        const passcodePlan = resolveZoomPasscodePlan({
+            passcodeFieldVisible,
+            providedPasscode: meetingPassword,
+        });
+        this._logger.info('Zoom passcode plan...', { passcodeFieldVisible, action: passcodePlan.action });
+        if (passcodePlan.action === 'fail') {
+            // Without a passcode the Join button stays disabled and the click below would
+            // time out with a generic error. Fail fast with an actionable message instead.
+            await (0, botService_1.addBotLog)({
+                level: 'error',
+                message: ZOOM_PASSCODE_REQUIRED_MESSAGE,
+                provider: 'zoom',
+                token: bearerToken,
+                botId: params.botId,
+                eventId: params.eventId,
+                category: 'JoinRequest',
+                subCategory: 'PasscodeRequired',
+            }, this._logger);
+            throw new Error('Zoom meeting requires a passcode but none was provided');
+        }
+        if (passcodePlan.action === 'fill') {
+            this._logger.info('Filling the meeting passcode field...');
+            await iframe.fill('#input-for-pwd', passcodePlan.passcode);
+        }
         this._logger.info('Filling the input field with the name...');
-        await iframe.fill('input[type="text"]', name ? name : 'ScreenApp Notetaker');
+        const hasNamedInput = (await iframe.locator('#input-for-name').count()) > 0;
+        await iframe.fill(hasNamedInput ? '#input-for-name' : 'input[type="text"]', name ? name : 'ScreenApp Notetaker');
         await this.page.waitForTimeout(3000);
         this._logger.info('Clicking the "Join" button...');
         const joinButton = await iframe.locator('button', { hasText: 'Join' });
@@ -296,6 +328,7 @@ class ZoomBot extends BotBase {
             const wanderingTime = config_1.default.joinWaitTime * 60 * 1000;
             let waitTimeout;
             let waitInterval;
+            let passcodeRejected = false;
             const waitAtLobbyPromise = new Promise((resolveMe) => {
                 waitTimeout = setTimeout(() => {
                     clearInterval(waitInterval);
@@ -309,6 +342,13 @@ class ZoomBot extends BotBase {
                             bodyText,
                         });
                         await reportJoinRequestSubmitted(bodyText);
+                        if (detectZoomPasscodeError(bodyText)) {
+                            passcodeRejected = true;
+                            clearInterval(waitInterval);
+                            clearTimeout(waitTimeout);
+                            resolveMe(false);
+                            return;
+                        }
                         if (evidence.status === 'denied') {
                             clearInterval(waitInterval);
                             clearTimeout(waitTimeout);
@@ -357,6 +397,20 @@ class ZoomBot extends BotBase {
             });
             const joined = await waitAtLobbyPromise;
             if (!joined) {
+                if (passcodeRejected) {
+                    this._logger.error('Zoom rejected the provided meeting passcode.', { botId: params.botId });
+                    await (0, botService_1.addBotLog)({
+                        level: 'error',
+                        message: ZOOM_PASSCODE_INCORRECT_MESSAGE,
+                        provider: 'zoom',
+                        token: bearerToken,
+                        botId: params.botId,
+                        eventId: params.eventId,
+                        category: 'JoinRequest',
+                        subCategory: 'PasscodeIncorrect',
+                    }, this._logger);
+                    throw new Error('Zoom rejected the provided meeting passcode');
+                }
                 const bodyText = await this.page.evaluate(() => document.body.innerText);
                 const userDenied = (bodyText || '')?.includes(constants_1.ZOOM_REQUEST_DENIED);
                 this._logger.error('Cant finish wait at the lobby check', { userDenied, waitingAtLobbySuccess: joined, bodyText });

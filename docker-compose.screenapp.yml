@@ -77,6 +77,8 @@ services:
       - ./ops/meeting-bot/MicrosoftTeamsBot.js:/usr/src/app/dist/bots/MicrosoftTeamsBot.js:ro
       - ./ops/meeting-bot/ZoomBot.js:/usr/src/app/dist/bots/ZoomBot.js:ro
       - ./ops/meeting-bot/join_request_evidence.cjs:/usr/src/app/dist/bots/join_request_evidence.cjs:ro
+      - ./ops/meeting-bot/zoom_passcode.cjs:/usr/src/app/dist/bots/zoom_passcode.cjs:ro
+      - ./ops/meeting-bot/zoom-route.js:/usr/src/app/dist/app/zoom.js:ro
     depends_on:
       control-plane:
         condition: service_healthy

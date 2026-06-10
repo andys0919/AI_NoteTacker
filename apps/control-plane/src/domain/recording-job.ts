@@ -73,6 +73,7 @@ export type RecordingJob = {
   inputSource: RecordingInputSource;
   submitterId: string;
   requestedJoinName: string;
+  meetingPasscode?: string;
   submissionTemplateId?: SubmissionTemplateId;
   summaryProfile?: SummaryProfile;
   preferredExportFormat?: PreferredExportFormat;
@@ -127,6 +128,7 @@ type CreateRecordingJobInput = {
   inputSource?: RecordingInputSource;
   submitterId?: string;
   requestedJoinName?: string;
+  meetingPasscode?: string;
   submissionTemplateId?: SubmissionTemplateId;
   summaryProfile?: SummaryProfile;
   preferredExportFormat?: PreferredExportFormat;
@@ -223,6 +225,7 @@ export const createRecordingJob = ({
   inputSource = 'meeting-link',
   submitterId = 'anonymous',
   requestedJoinName = DEFAULT_JOIN_NAME,
+  meetingPasscode,
   submissionTemplateId = 'general',
   summaryProfile = 'general',
   preferredExportFormat = 'markdown',
@@ -243,6 +246,7 @@ export const createRecordingJob = ({
   inputSource,
   submitterId,
   requestedJoinName,
+  meetingPasscode,
   submissionTemplateId,
   summaryProfile,
   preferredExportFormat,

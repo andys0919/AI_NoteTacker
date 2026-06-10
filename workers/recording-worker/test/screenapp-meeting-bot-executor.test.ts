@@ -130,5 +130,29 @@ describe('ScreenappMeetingBotExecutor', () => {
       userId: 'worker-user',
       botId: 'job_zoom'
     });
+    expect(requests[0]?.body).not.toHaveProperty('meetingPassword');
+  });
+
+  it('forwards the meeting passcode as meetingPassword when the claimed job has one', async () => {
+    const executor = new ScreenappMeetingBotExecutor({
+      meetingBotBaseUrl: baseUrl,
+      bearerToken: 'internal-token',
+      botName: 'AI NoteTacker',
+      teamId: 'team-123',
+      timezone: 'UTC',
+      userId: 'worker-user'
+    });
+
+    await executor.execute({
+      id: 'job_zoom_passcode',
+      meetingUrl: 'https://us06web.zoom.us/j/81609875791',
+      platform: 'zoom',
+      state: 'joining',
+      meetingPasscode: '424242'
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.path).toBe('/zoom/join');
+    expect(requests[0]?.body.meetingPassword).toBe('424242');
   });
 });

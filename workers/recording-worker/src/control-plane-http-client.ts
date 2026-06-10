@@ -9,6 +9,7 @@ export type WorkerClaimedJob = {
   inputSource?: 'meeting-link';
   submitterId?: string;
   requestedJoinName?: string;
+  meetingPasscode?: string;
   state: 'joining' | 'recording' | 'transcribing' | 'completed' | 'failed' | 'queued';
   assignedWorkerId?: string;
 };
