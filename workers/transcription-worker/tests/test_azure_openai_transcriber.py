@@ -235,6 +235,143 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
         self.assertEqual(progress_updates[-1]["processed_ms"], 2500)
         self.assertEqual(progress_updates[-1]["percent"], 100)
 
+    def test_retries_sparse_long_chunk_as_smaller_uploads(self) -> None:
+        fallback_texts = [
+            "第一小段有足夠多的逐字稿內容用來代表這五分鐘的語音討論,不是空白也不是一句提示。",
+            "第二小段同樣回傳完整逐字稿內容,證明長音訊分片被改切之後可以恢復正常辨識。",
+            "第三小段保留會議討論內容,避免前二十分鐘只有一句話卻被系統當成成功轉錄。",
+            "第四小段也有足夠文字,讓整個二十分鐘區間不會再被一個過短回應覆蓋掉。",
+        ]
+        responses = iter(
+            [
+                {"language": "zh", "text": "這一句"},
+                *({"language": "zh", "text": text} for text in fallback_texts),
+            ]
+        )
+        requested_files = []
+        created_paths = []
+        transcode_calls = []
+        removed_paths = []
+
+        def fake_urlopen(http_request):
+            marker = b'filename="'
+            start = http_request.data.index(marker) + len(marker)
+            end = http_request.data.index(b'"', start)
+            requested_files.append(os.path.basename(http_request.data[start:end].decode("utf-8")))
+            return _FakeResponse(json.dumps(next(responses)).encode("utf-8"))
+
+        def fake_new_temp_audio_path(suffix):
+            handle = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            handle.write(b"fallback")
+            handle.close()
+            created_paths.append(handle.name)
+            return handle.name
+
+        def fake_transcode(source_path, output_path, start_ms=None, duration_ms=None):
+            transcode_calls.append((source_path, start_ms, duration_ms))
+            with open(output_path, "wb") as handle:
+                handle.write(b"fallback")
+
+        def fake_remove(path):
+            removed_paths.append(path)
+            if os.path.exists(path):
+                os.remove(path)
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as source:
+            source.write(b"source")
+            source_path = source.name
+
+        transcriber = AzureOpenAiTranscriber(
+            endpoint="https://azure.example.test",
+            deployment="gpt-4o-transcribe",
+            api_key="secret",
+            urlopen=fake_urlopen,
+            upload_plan_builder=lambda _path: [
+                {"path": source_path, "start_ms": 0, "end_ms": 1_200_000, "cleanup": False}
+            ],
+            remove_file=fake_remove,
+        )
+        transcriber.audio_activity_detector = lambda _path: True
+        transcriber.sparse_retry_chunk_duration_ms = 300_000
+        transcriber._new_temp_audio_path = fake_new_temp_audio_path
+        transcriber._transcode_for_upload = fake_transcode
+
+        result = transcriber.transcribe(source_path)
+
+        if os.path.exists(source_path):
+            os.remove(source_path)
+
+        self.assertEqual(len(requested_files), 5)
+        self.assertEqual(
+            transcode_calls,
+            [
+                (source_path, 0, 300_000),
+                (source_path, 300_000, 300_000),
+                (source_path, 600_000, 300_000),
+                (source_path, 900_000, 300_000),
+            ],
+        )
+        self.assertTrue(all(path in removed_paths for path in created_paths))
+        self.assertEqual(
+            [segment["text"] for segment in result["segments"]],
+            fallback_texts,
+        )
+        self.assertEqual(result["segments"][0]["start_ms"], 0)
+        self.assertEqual(result["segments"][-1]["end_ms"], 1_200_000)
+
+    def test_rejects_audible_long_chunk_when_retry_stays_sparse(self) -> None:
+        responses = iter(
+            [
+                {"language": "zh", "text": "一句"},
+                {"language": "zh", "text": ""},
+                {"language": "zh", "text": "嗯"},
+                {"language": "zh", "text": ""},
+                {"language": "zh", "text": "好"},
+            ]
+        )
+        created_paths = []
+
+        def fake_urlopen(_http_request):
+            return _FakeResponse(json.dumps(next(responses)).encode("utf-8"))
+
+        def fake_new_temp_audio_path(suffix):
+            handle = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            handle.write(b"fallback")
+            handle.close()
+            created_paths.append(handle.name)
+            return handle.name
+
+        def fake_transcode(_source_path, output_path, start_ms=None, duration_ms=None):
+            with open(output_path, "wb") as handle:
+                handle.write(b"fallback")
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as source:
+            source.write(b"source")
+            source_path = source.name
+
+        transcriber = AzureOpenAiTranscriber(
+            endpoint="https://azure.example.test",
+            deployment="gpt-4o-transcribe",
+            api_key="secret",
+            urlopen=fake_urlopen,
+            upload_plan_builder=lambda _path: [
+                {"path": source_path, "start_ms": 0, "end_ms": 1_200_000, "cleanup": False}
+            ],
+        )
+        transcriber.audio_activity_detector = lambda _path: True
+        transcriber.sparse_retry_chunk_duration_ms = 300_000
+        transcriber._new_temp_audio_path = fake_new_temp_audio_path
+        transcriber._transcode_for_upload = fake_transcode
+
+        with self.assertRaisesRegex(RuntimeError, "suspiciously sparse"):
+            transcriber.transcribe(source_path)
+
+        if os.path.exists(source_path):
+            os.remove(source_path)
+        for path in created_paths:
+            if os.path.exists(path):
+                os.remove(path)
+
     def test_surfaces_http_error_body_in_the_failure_message(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as source:
             source.write(b"source")
