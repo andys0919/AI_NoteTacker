@@ -1,7 +1,12 @@
 import type {
   CloudUsageCostSummary,
   CloudUsageLedgerEntry,
+  CloudUsageLedgerEntryInput,
   CloudUsageLedgerRepository
+} from '../domain/cloud-usage-ledger-repository.js';
+import {
+  CloudUsageLedgerConflictError,
+  isSameCloudUsageLedgerPayload
 } from '../domain/cloud-usage-ledger-repository.js';
 import { roundUsd } from '../domain/cloud-usage.js';
 
@@ -11,19 +16,16 @@ const nextId = (): string => `usage_${crypto.randomUUID().replace(/-/g, '')}`;
 export class InMemoryCloudUsageLedgerRepository implements CloudUsageLedgerRepository {
   private readonly entries: CloudUsageLedgerEntry[] = [];
 
-  async append(
-    input: Omit<CloudUsageLedgerEntry, 'id' | 'createdAt'>
-  ): Promise<CloudUsageLedgerEntry> {
+  async append(input: CloudUsageLedgerEntryInput): Promise<CloudUsageLedgerEntry> {
     if (input.entryKey) {
       const existing = this.entries.find((entry) => entry.entryKey === input.entryKey);
 
       if (existing) {
-        const updated = {
-          ...existing,
-          ...input
-        };
-        this.entries.splice(this.entries.indexOf(existing), 1, updated);
-        return updated;
+        if (isSameCloudUsageLedgerPayload(existing, input)) {
+          return existing;
+        }
+
+        throw new CloudUsageLedgerConflictError(input.entryKey);
       }
     }
 
@@ -75,23 +77,54 @@ export class InMemoryCloudUsageLedgerRepository implements CloudUsageLedgerRepos
 
       const current = summaries[entry.jobId] ?? {
         actualTranscriptionCostUsd: 0,
+        hasUnpricedTranscriptionUsage: false,
+        actualPunctuationCostUsd: 0,
+        hasUnpricedPunctuationUsage: false,
         actualSummaryCostUsd: 0,
-        actualCloudCostUsd: 0
+        hasUnpricedSummaryUsage: false,
+        actualCloudCostUsd: 0,
+        hasUnpricedUsage: false
       };
 
       if (entry.stage === 'transcription') {
-        current.actualTranscriptionCostUsd = roundUsd(
-          current.actualTranscriptionCostUsd + entry.costUsd
-        );
+        if (entry.pricingStatus === 'priced') {
+          current.actualTranscriptionCostUsd = roundUsd(
+            current.actualTranscriptionCostUsd + entry.costUsd
+          );
+        } else {
+          current.hasUnpricedTranscriptionUsage = true;
+        }
+      }
+
+      if (entry.stage === 'punctuation') {
+        if (entry.pricingStatus === 'priced') {
+          current.actualPunctuationCostUsd = roundUsd(
+            current.actualPunctuationCostUsd + entry.costUsd
+          );
+        } else {
+          current.hasUnpricedPunctuationUsage = true;
+        }
       }
 
       if (entry.stage === 'summary') {
-        current.actualSummaryCostUsd = roundUsd(current.actualSummaryCostUsd + entry.costUsd);
+        if (entry.pricingStatus === 'priced') {
+          current.actualSummaryCostUsd = roundUsd(current.actualSummaryCostUsd + entry.costUsd);
+        } else {
+          current.hasUnpricedSummaryUsage = true;
+        }
       }
 
-      current.actualCloudCostUsd = roundUsd(
-        current.actualTranscriptionCostUsd + current.actualSummaryCostUsd
-      );
+      current.hasUnpricedUsage =
+        current.hasUnpricedTranscriptionUsage ||
+        current.hasUnpricedPunctuationUsage ||
+        current.hasUnpricedSummaryUsage;
+      current.actualCloudCostUsd = current.hasUnpricedUsage
+        ? null
+        : roundUsd(
+            current.actualTranscriptionCostUsd +
+              current.actualPunctuationCostUsd +
+              current.actualSummaryCostUsd
+          );
       summaries[entry.jobId] = current;
     }
 

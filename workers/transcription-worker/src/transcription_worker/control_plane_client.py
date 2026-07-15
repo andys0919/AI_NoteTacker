@@ -3,9 +3,15 @@ from urllib import request
 
 
 class ControlPlaneClient:
-    def __init__(self, base_url: str, internal_service_token: str | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        internal_service_token: str | None = None,
+        timeout_seconds: int = 30,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.internal_service_token = internal_service_token
+        self.timeout_seconds = timeout_seconds
 
     def claim_next_job(self, worker_id: str) -> dict | None:
         response = self._post_json(
@@ -48,7 +54,10 @@ class ControlPlaneClient:
             method="GET",
         )
 
-        with request.urlopen(http_request) as response:  # noqa: S310
+        with request.urlopen(  # noqa: S310
+            http_request,
+            timeout=self.timeout_seconds,
+        ) as response:
             body = response.read()
             return json.loads(body.decode("utf-8")) if body else None
 
@@ -77,7 +86,10 @@ class ControlPlaneClient:
             data=encoded_payload,
         )
 
-        with request.urlopen(http_request) as response:  # noqa: S310
+        with request.urlopen(  # noqa: S310
+            http_request,
+            timeout=self.timeout_seconds,
+        ) as response:
             if response.status == 204:
                 return None
 

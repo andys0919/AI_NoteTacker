@@ -30,4 +30,16 @@ describe('admin shell markup', () => {
     expect(response.text).toContain('admin-runtime-health-panel');
     expect(response.text).toContain('/admin.js');
   });
+
+  it('explains that unknown provider rates stay unpriced instead of showing zero cost', () => {
+    const html = readFileSync(
+      resolve(import.meta.dirname, '../public/admin.html'),
+      'utf-8'
+    );
+
+    expect(html).toContain('沒有官方費率的用量會標示「未定價」');
+    expect(html).toContain('<span class="meta-label">歷史費用</span>');
+    expect(html).toContain('<strong id="admin-usage-history-total-cost">—</strong>');
+    expect(html).not.toContain('<strong id="admin-usage-history-total-cost">$0.000</strong>');
+  });
 });

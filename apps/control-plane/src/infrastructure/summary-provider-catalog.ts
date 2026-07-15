@@ -27,12 +27,29 @@ type CatalogInput = {
 
 const hasValue = (value: string | undefined): boolean => (value ?? '').trim().length > 0;
 
+const isResponsesEndpoint = (value: string | undefined): boolean => {
+  if (!hasValue(value)) {
+    return false;
+  }
+
+  try {
+    const endpoint = new URL(value ?? '');
+    return (
+      endpoint.protocol === 'https:' &&
+      endpoint.pathname.replace(/\/+$/, '') === '/openai/v1/responses'
+    );
+  } catch {
+    return false;
+  }
+};
+
 export const createSummaryProviderCatalog = (
   input: CatalogInput = {}
 ): SummaryProviderCatalog => {
   const localReady = input.summaryEnabled ?? true;
   const azureReady =
-    hasValue(input.azureOpenAiSummaryEndpoint) && hasValue(input.azureOpenAiSummaryApiKey);
+    isResponsesEndpoint(input.azureOpenAiSummaryEndpoint) &&
+    hasValue(input.azureOpenAiSummaryApiKey);
 
   const options: SummaryProviderOption[] = [
     {
@@ -47,7 +64,7 @@ export const createSummaryProviderCatalog = (
       ready: azureReady,
       reason: azureReady
         ? undefined
-        : 'AZURE_OPENAI_SUMMARY_ENDPOINT and AZURE_OPENAI_SUMMARY_API_KEY are required.'
+        : 'AZURE_OPENAI_SUMMARY_ENDPOINT must target /openai/v1/responses and AZURE_OPENAI_SUMMARY_API_KEY is required.'
     }
   ];
 
@@ -72,11 +89,6 @@ export const createSummaryProviderCatalogFromEnvironment = (
   createSummaryProviderCatalog({
     defaultProvider: environment.DEFAULT_SUMMARY_PROVIDER,
     summaryEnabled: (environment.SUMMARY_ENABLED ?? 'true').toLowerCase() === 'true',
-    azureOpenAiSummaryEndpoint:
-      environment.AZURE_OPENAI_SUMMARY_ENDPOINT ||
-      (environment.AZURE_OPENAI_ENDPOINT
-        ? `${environment.AZURE_OPENAI_ENDPOINT.replace(/\/+$/, '')}/openai/v1/chat/completions`
-        : undefined),
-    azureOpenAiSummaryApiKey:
-      environment.AZURE_OPENAI_SUMMARY_API_KEY || environment.AZURE_OPENAI_API_KEY
+    azureOpenAiSummaryEndpoint: environment.AZURE_OPENAI_SUMMARY_ENDPOINT,
+    azureOpenAiSummaryApiKey: environment.AZURE_OPENAI_SUMMARY_API_KEY
   });

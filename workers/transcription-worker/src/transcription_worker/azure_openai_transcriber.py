@@ -8,6 +8,12 @@ import uuid
 import urllib.error
 from urllib import request
 
+from transcription_worker.transcript_normalizer import TranscriptNormalizer
+from transcription_worker.transcription_context import (
+    build_transcription_prompt,
+    resolve_transcription_context,
+)
+
 MAX_AUDIO_UPLOAD_BYTES = 25 * 1024 * 1024
 DEFAULT_AZURE_MP3_BITRATE = "64k"
 MAX_AUDIO_DURATION_MS = 1500 * 1000
@@ -26,6 +32,13 @@ AUDIO_ACTIVITY_MEAN_VOLUME_DB = -45.0
 SENTENCE_ENDING_CHARS = frozenset("。！？!?…；;\n")
 # Closing marks that belong to the sentence that just ended (e.g. the 」 in 「好。」).
 SENTENCE_TRAILING_CHARS = frozenset("」』）)】》〉”’\"'")
+_ALIGNMENT_IGNORED = frozenset(
+    "，。、？！；：「」『』（）()【】《》…—－　 \t\r\n!?;,.:\"'"
+)
+
+
+def _strip_for_alignment(text: str) -> str:
+    return "".join(char for char in text if char not in _ALIGNMENT_IGNORED)
 
 
 class AzureOpenAiTranscriber:
@@ -44,6 +57,8 @@ class AzureOpenAiTranscriber:
         audio_activity_detector=None,
         sparse_retry_chunk_duration_ms: int = DEFAULT_SPARSE_RETRY_CHUNK_DURATION_MS,
         remove_file=None,
+        timeout_seconds: int = 300,
+        normalizer=None,
     ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.deployment = deployment
@@ -58,16 +73,40 @@ class AzureOpenAiTranscriber:
         self.audio_activity_detector = audio_activity_detector or self._has_audio_activity
         self.sparse_retry_chunk_duration_ms = sparse_retry_chunk_duration_ms
         self.remove_file = remove_file or os.remove
+        self.timeout_seconds = timeout_seconds
+        self.normalizer = normalizer or TranscriptNormalizer()
 
-    def transcribe(self, local_audio_path: str, on_progress=None) -> dict:
+    def transcribe(
+        self,
+        local_audio_path: str,
+        on_progress=None,
+        on_punctuation_usage=None,
+        on_transcription_usage=None,
+        workflow_context=None,
+    ) -> dict:
+        resolved_context = resolve_transcription_context(workflow_context)
+        request_prompt = build_transcription_prompt(self.prompt, resolved_context)
         upload_plan = self.upload_plan_builder(local_audio_path)
         total_ms = upload_plan[-1]["end_ms"] if upload_plan else 0
         collected_segments = []
         detected_language = "unknown"
+        successful_audio_ms = 0
+
+        def report_transcription_usage(update):
+            nonlocal successful_audio_ms
+            successful_audio_ms += update["audio_ms"]
+            if on_transcription_usage is not None:
+                on_transcription_usage(update)
 
         try:
             for part in upload_plan:
-                part_result = self._transcribe_part_with_sparse_retry(part)
+                part_result = self._transcribe_part_with_sparse_retry(
+                    part,
+                    on_punctuation_usage=on_punctuation_usage,
+                    on_transcription_usage=report_transcription_usage,
+                    workflow_context=resolved_context,
+                    request_prompt=request_prompt,
+                )
 
                 if part_result.get("language") and detected_language == "unknown":
                     detected_language = part_result["language"]
@@ -96,13 +135,27 @@ class AzureOpenAiTranscriber:
             "language": detected_language,
             "segments": collected_segments,
             "usage": {
-                "audio_ms": total_ms,
+                "audio_ms": successful_audio_ms,
             },
         }
 
-    def _transcribe_part_with_sparse_retry(self, part: dict) -> dict:
-        payload = self._transcribe_upload(part["path"])
-        part_result = self._payload_to_transcript_result(payload, part)
+    def _transcribe_part_with_sparse_retry(
+        self,
+        part: dict,
+        on_punctuation_usage=None,
+        on_transcription_usage=None,
+        workflow_context=None,
+        request_prompt="",
+    ) -> dict:
+        payload = self._transcribe_upload(part["path"], request_prompt=request_prompt)
+        if on_transcription_usage is not None:
+            on_transcription_usage({"audio_ms": self._part_duration_ms(part)})
+        part_result = self._payload_to_transcript_result(
+            payload,
+            part,
+            on_punctuation_usage=on_punctuation_usage,
+            workflow_context=workflow_context,
+        )
 
         if not self._is_suspicious_sparse_part(part, part_result["text"]):
             return part_result
@@ -113,8 +166,19 @@ class AzureOpenAiTranscriber:
 
         try:
             for retry_part in retry_parts:
-                retry_payload = self._transcribe_upload(retry_part["path"])
-                retry_result = self._payload_to_transcript_result(retry_payload, retry_part)
+                retry_payload = self._transcribe_upload(
+                    retry_part["path"], request_prompt=request_prompt
+                )
+                if on_transcription_usage is not None:
+                    on_transcription_usage(
+                        {"audio_ms": self._part_duration_ms(retry_part)}
+                    )
+                retry_result = self._payload_to_transcript_result(
+                    retry_payload,
+                    retry_part,
+                    on_punctuation_usage=on_punctuation_usage,
+                    workflow_context=workflow_context,
+                )
                 if retry_result.get("language") and detected_language == "unknown":
                     detected_language = retry_result["language"]
                 retry_segments.extend(retry_result["segments"])
@@ -143,39 +207,150 @@ class AzureOpenAiTranscriber:
             "text": retry_text,
         }
 
-    def _payload_to_transcript_result(self, payload: dict, part: dict) -> dict:
+    def _payload_to_transcript_result(
+        self,
+        payload: dict,
+        part: dict,
+        on_punctuation_usage=None,
+        workflow_context=None,
+    ) -> dict:
+        context = workflow_context or {}
+        language = payload.get("language") or "unknown"
+        language_confidence = payload.get("language_probability")
         if payload.get("segments"):
-            segments = [
-                {
-                    "start_ms": part["start_ms"] + int(float(segment.get("start", 0)) * 1000),
-                    "end_ms": part["start_ms"] + int(float(segment.get("end", 0)) * 1000),
-                    "text": segment.get("text", ""),
-                }
-                for segment in payload.get("segments", [])
-            ]
+            segments = []
+            for segment in payload.get("segments", []):
+                start_ms = part["start_ms"] + int(float(segment.get("start", 0)) * 1000)
+                end_ms = part["start_ms"] + int(float(segment.get("end", 0)) * 1000)
+                normalized = self.normalizer.normalize(
+                    segment.get("text", ""),
+                    language=language,
+                    language_confidence=language_confidence,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    timing_source="provider",
+                    glossary=context.get("glossary", []),
+                )
+                segments.append(
+                    self._build_evidence_segment(start_ms, end_ms, normalized)
+                )
             return {
-                "language": payload.get("language") or "unknown",
+                "language": language,
                 "segments": segments,
                 "text": self._segments_to_text(segments),
             }
 
-        text = payload.get("text") or ""
+        raw_text = payload.get("text") or ""
+        normalized = self.normalizer.normalize(
+            raw_text,
+            language=language,
+            language_confidence=language_confidence,
+            start_ms=part["start_ms"],
+            end_ms=part["end_ms"],
+            timing_source="estimated",
+            glossary=context.get("glossary", []),
+        )
+        text = normalized["display_text"]
         # gpt-4o-transcribe returns an unpunctuated blob; restore punctuation
         # BEFORE splitting so there are sentence boundaries to split on. The
         # punctuator self-guards (keeps raw text on any failure), so this never
         # breaks the job.
         if self.punctuator is not None and text.strip():
-            text = self.punctuator.restore(text)
+            if hasattr(self.punctuator, "restore_with_usage"):
+                punctuation_result = self.punctuator.restore_with_usage(text)
+                text = punctuation_result["text"]
+                if on_punctuation_usage is not None:
+                    on_punctuation_usage(punctuation_result["usage"])
+            else:
+                text = self.punctuator.restore(text)
 
+        display_segments = self._split_text_into_segments(
+            text,
+            part["start_ms"],
+            part["end_ms"],
+        )
+        segments = self._attach_blob_evidence(display_segments, normalized)
         return {
-            "language": payload.get("language") or "unknown",
-            "segments": self._split_text_into_segments(
-                text,
-                part["start_ms"],
-                part["end_ms"],
-            ),
+            "language": language,
+            "segments": segments,
             "text": text,
         }
+
+    def _build_evidence_segment(self, start_ms: int, end_ms: int, normalized: dict) -> dict:
+        segment = {
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "text": normalized["display_text"],
+            **normalized,
+        }
+        segment.pop("timing_source", None)
+        segment["timing_source"] = normalized["timing_source"]
+        return segment
+
+    def _attach_blob_evidence(self, display_segments: list[dict], normalized: dict) -> list[dict]:
+        if not display_segments:
+            return []
+        raw_parts = self._split_raw_for_display_segments(
+            normalized["raw_text"], display_segments
+        )
+        if raw_parts is None:
+            display_segments = [
+                {
+                    "start_ms": display_segments[0]["start_ms"],
+                    "end_ms": display_segments[-1]["end_ms"],
+                    "text": normalized["display_text"],
+                }
+            ]
+            raw_parts = [normalized["raw_text"]]
+
+        evidence_segments = []
+        for segment, raw_part in zip(display_segments, raw_parts, strict=True):
+            flags = [
+                flag
+                for flag in normalized["review_flags"]
+                if flag["original_text"] in raw_part
+                or flag["reason"] == "normalization-failed"
+            ]
+            evidence = {
+                "start_ms": segment["start_ms"],
+                "end_ms": segment["end_ms"],
+                "text": segment["text"],
+                "raw_text": raw_part,
+                "display_text": segment["text"],
+                "language": normalized["language"],
+                "timing_source": normalized["timing_source"],
+                "review_flags": flags,
+            }
+            if "language_confidence" in normalized:
+                evidence["language_confidence"] = normalized["language_confidence"]
+            evidence_segments.append(evidence)
+        return evidence_segments
+
+    def _split_raw_for_display_segments(
+        self, raw_text: str, display_segments: list[dict]
+    ) -> list[str] | None:
+        raw_total = len(_strip_for_alignment(raw_text))
+        display_counts = [
+            len(_strip_for_alignment(segment["text"])) for segment in display_segments
+        ]
+        if raw_total != sum(display_counts):
+            return None
+
+        parts = []
+        raw_start = 0
+        cursor = 0
+        for target_count in display_counts[:-1]:
+            significant_count = 0
+            while cursor < len(raw_text) and significant_count < target_count:
+                if raw_text[cursor] not in _ALIGNMENT_IGNORED:
+                    significant_count += 1
+                cursor += 1
+            while cursor < len(raw_text) and raw_text[cursor] in _ALIGNMENT_IGNORED:
+                cursor += 1
+            parts.append(raw_text[raw_start:cursor])
+            raw_start = cursor
+        parts.append(raw_text[raw_start:])
+        return parts if len(parts) == len(display_segments) else None
 
     def _build_sparse_retry_upload_plan(self, part: dict) -> list[dict]:
         retry_chunk_duration_ms = getattr(
@@ -265,7 +440,7 @@ class AzureOpenAiTranscriber:
 
         return float(match.group(1)) >= AUDIO_ACTIVITY_MEAN_VOLUME_DB
 
-    def _transcribe_upload(self, upload_path: str) -> dict:
+    def _transcribe_upload(self, upload_path: str, request_prompt: str = "") -> dict:
         boundary = f"----AINoteTacker{uuid.uuid4().hex}"
         content_type = mimetypes.guess_type(upload_path)[0] or "application/octet-stream"
         file_name = os.path.basename(upload_path)
@@ -279,8 +454,8 @@ class AzureOpenAiTranscriber:
         ]
         if self.language:
             fields.append(self._encode_field(boundary, "language", self.language))
-        if self.prompt:
-            fields.append(self._encode_field(boundary, "prompt", self.prompt))
+        if request_prompt:
+            fields.append(self._encode_field(boundary, "prompt", request_prompt))
         fields.append(
             self._encode_file(boundary, "file", file_name, content_type, audio_bytes)
         )
@@ -298,7 +473,10 @@ class AzureOpenAiTranscriber:
         )
 
         try:
-            with self.urlopen(http_request) as response:  # noqa: S310
+            with self.urlopen(  # noqa: S310
+                http_request,
+                timeout=self.timeout_seconds,
+            ) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             details = error.read().decode("utf-8", errors="replace").strip()

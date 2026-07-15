@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assignSummaryJobToWorker,
+  assignTranscriptionJobToWorker,
   attachRecordingArtifact,
   attachSummaryArtifact,
   attachTranscriptArtifact,
@@ -86,6 +88,53 @@ describe('recording job lifecycle', () => {
     expect(terminalFailure.state).toBe('failed');
     expect(terminalFailure.failureCode).toBe('transcription-failed');
     expect(terminalFailure.transcriptionAttemptCount).toBe(3);
+  });
+
+  it('retains every scheduler-issued transcription and summary lease token', () => {
+    const transcriptionReady = attachRecordingArtifact(
+      createRecordingJob({
+        meetingUrl: 'uploaded://issued-leases.wav',
+        platform: 'uploaded-audio',
+        inputSource: 'uploaded-audio',
+        summaryRequested: true
+      }),
+      {
+        storageKey: 'recordings/job_issued/meeting.wav',
+        downloadUrl: 'https://storage.example.test/recordings/job_issued/meeting.wav',
+        contentType: 'audio/wav'
+      }
+    );
+    const firstAttempt = assignTranscriptionJobToWorker(
+      transcriptionReady,
+      'transcriber-alpha'
+    );
+    const released = releaseTranscriptionJobForRetry(
+      firstAttempt,
+      { code: 'transcription-failed', message: 'retry this attempt' },
+      3
+    );
+    const secondAttempt = assignTranscriptionJobToWorker(released, 'transcriber-beta');
+
+    expect(secondAttempt.issuedTranscriptionLeaseTokens).toEqual([
+      firstAttempt.transcriptionLeaseToken,
+      secondAttempt.transcriptionLeaseToken
+    ]);
+
+    const summaryReady = attachTranscriptArtifact(secondAttempt, {
+      storageKey: 'transcripts/job_issued/transcript.json',
+      downloadUrl: 'https://storage.example.test/transcripts/job_issued/transcript.json',
+      contentType: 'application/json',
+      language: 'en',
+      segments: [{ startMs: 0, endMs: 1_000, text: 'issued lease history' }]
+    });
+    const summaryAttempt = assignSummaryJobToWorker(summaryReady, 'summary-alpha');
+
+    expect(summaryAttempt.issuedSummaryLeaseTokens).toEqual([
+      summaryAttempt.summaryLeaseToken
+    ]);
+    expect(summaryAttempt.issuedTranscriptionLeaseTokens).toEqual(
+      secondAttempt.issuedTranscriptionLeaseTokens
+    );
   });
 
   it('stores a summary artifact on a completed job', () => {

@@ -9,6 +9,7 @@ import {
   filterJobsByQuickFilter,
   getJobActionSet
 } from '/dashboard-workflows.js';
+import { renderTranscriptReviewMarkup } from '/transcript-review.js';
 
 const DEFAULT_OPERATOR_ID_KEY = 'solomon-notetaker-operator-id';
 const elements = {
@@ -344,9 +345,9 @@ const createJobCard = (job) => {
     ? `
       <details>
         <summary>逐字稿${job.transcriptArtifact ? '' : '（預覽）'}</summary>
-        <pre class="transcript-preview">${escapeHtml(job.transcriptArtifact
-          ? job.transcriptArtifact.segments.map((segment) => segment.text).join('\n')
-          : job.transcriptPreview)}</pre>
+        ${job.transcriptArtifact
+          ? `<div class="transcript-preview">${renderTranscriptReviewMarkup(job.transcriptArtifact.segments)}</div>`
+          : `<pre class="transcript-preview">${escapeHtml(job.transcriptPreview)}</pre>`}
       </details>
     `
     : '';
@@ -428,36 +429,16 @@ const createJobCard = (job) => {
           `
           : ''
       }
-      ${
-        viewModel.transcriptionCostLabel
-          ? `
+      ${viewModel.costItems
+        .map(
+          (item) => `
             <div class="job-meta-item">
-              <span>${viewModel.transcriptionCostLabel}</span>
-              <strong>${viewModel.transcriptionCostValue}</strong>
+              <span>${escapeHtml(item.label)}</span>
+              <strong>${escapeHtml(item.value)}</strong>
             </div>
           `
-          : ''
-      }
-      ${
-        viewModel.summaryCostLabel
-          ? `
-            <div class="job-meta-item">
-              <span>${viewModel.summaryCostLabel}</span>
-              <strong>${viewModel.summaryCostValue}</strong>
-            </div>
-          `
-          : ''
-      }
-      ${
-        viewModel.totalCostLabel
-          ? `
-            <div class="job-meta-item">
-              <span>${viewModel.totalCostLabel}</span>
-              <strong>${viewModel.totalCostValue}</strong>
-            </div>
-          `
-          : ''
-      }
+        )
+        .join('')}
     </div>
     ${actionBlock}
     ${renderOptionalMarkup(failureBlock)}

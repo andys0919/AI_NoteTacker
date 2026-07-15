@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-notetacker.local/schemas/multilingual-transcription-results-v1.json",
+  "title": "AI NoteTacker multilingual transcription benchmark results",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "corpusVersion", "provider", "model", "cases"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "corpusVersion": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "minLength": 1 },
+    "model": { "type": "string", "minLength": 1 },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "rawText", "displayText", "summaryClaims", "actionItems", "decisions", "latencyMs", "usage"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "rawText": { "type": "string" },
+          "displayText": { "type": "string" },
+          "summaryClaims": { "$ref": "#/$defs/stringList" },
+          "actionItems": { "$ref": "#/$defs/stringList" },
+          "decisions": { "$ref": "#/$defs/stringList" },
+          "latencyMs": { "type": "number", "minimum": 0 },
+          "usage": {
+            "type": "object",
+            "additionalProperties": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "stringList": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

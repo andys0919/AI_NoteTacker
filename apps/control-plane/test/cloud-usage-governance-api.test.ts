@@ -81,7 +81,7 @@ describe('cloud usage governance API', () => {
       }),
       summaryProviderCatalog: createSummaryProviderCatalog({
         summaryEnabled: true,
-        azureOpenAiSummaryEndpoint: 'https://azure-summary.example.test/openai/v1/chat/completions',
+        azureOpenAiSummaryEndpoint: 'https://azure-summary.example.test/openai/v1/responses',
         azureOpenAiSummaryApiKey: 'secret'
       })
     });
@@ -178,7 +178,7 @@ describe('cloud usage governance API', () => {
     expect(created.body.summaryProvider).toBe('azure-openai');
     expect(created.body.summaryModel).toBe('gpt-5.4-nano');
     expect(created.body.pricingVersion).toBe('v1');
-    expect(created.body.reservedCloudQuotaUsd).toBe(0.11);
+    expect(created.body.reservedCloudQuotaUsd).toBe(0.2);
 
     const changedAgain = await request(app)
       .put('/api/admin/ai-policy')
@@ -321,10 +321,17 @@ describe('cloud usage governance API', () => {
 
     expect(created.status).toBe(201);
 
+    const transcriptionClaim = await request(app)
+      .post('/transcription-workers/claims')
+      .send({ workerId: 'transcription-worker-consumed' });
+
+    expect(transcriptionClaim.status).toBe(200);
+
     const transcriptStored = await request(app)
       .post(`/recording-jobs/${created.body.id}/events`)
       .send({
         type: 'transcript-artifact-stored',
+        leaseToken: transcriptionClaim.body.leaseToken,
         transcriptArtifact: {
           storageKey: `transcripts/${created.body.id}/transcript.json`,
           downloadUrl: `https://storage.example.test/transcripts/${created.body.id}/transcript.json`,
@@ -339,10 +346,17 @@ describe('cloud usage governance API', () => {
 
     expect(transcriptStored.status).toBe(202);
 
+    const summaryClaim = await request(app)
+      .post('/summary-workers/claims')
+      .send({ workerId: 'summary-worker-consumed' });
+
+    expect(summaryClaim.status).toBe(200);
+
     const summaryStored = await request(app)
       .post(`/recording-jobs/${created.body.id}/events`)
       .send({
         type: 'summary-artifact-stored',
+        leaseToken: summaryClaim.body.leaseToken,
         summaryArtifact: {
           model: 'gpt-5.4-nano',
           reasoningEffort: 'cloud-default',
@@ -358,7 +372,9 @@ describe('cloud usage governance API', () => {
         },
         usage: {
           promptTokens: 1000,
+          cachedPromptTokens: 0,
           completionTokens: 500,
+          reasoningCompletionTokens: 0,
           totalTokens: 1500
         }
       });
@@ -371,20 +387,24 @@ describe('cloud usage governance API', () => {
 
     expect(quota.status).toBe(200);
     expect(quota.body.reservedUsd).toBe(0);
-    expect(quota.body.consumedUsd).toBeGreaterThan(0);
-    expect(quota.body.remainingUsd).toBeLessThan(2);
+    expect(quota.body.consumedUsd).toBeNull();
+    expect(quota.body.pricedConsumedUsd).toBe(0);
+    expect(quota.body.hasUnpricedUsage).toBe(true);
+    expect(quota.body.remainingUsd).toBe(2);
 
     const jobs = await request(app)
       .get('/api/operator/jobs')
       .set('authorization', 'Bearer operator-token');
 
     expect(jobs.status).toBe(200);
-    expect(jobs.body.jobs[0].actualTranscriptionCostUsd).toBe(0.03);
-    expect(jobs.body.jobs[0].actualSummaryCostUsd).toBeGreaterThan(0);
-    expect(jobs.body.jobs[0].actualCloudCostUsd).toBeGreaterThan(0);
-    expect(jobs.body.jobs[0].actualCloudCostUsd).toBe(
-      jobs.body.jobs[0].actualTranscriptionCostUsd + jobs.body.jobs[0].actualSummaryCostUsd
-    );
+    expect(jobs.body.jobs[0].actualTranscriptionCostUsd).toBe(0);
+    expect(jobs.body.jobs[0].hasUnpricedTranscriptionUsage).toBe(true);
+    expect(jobs.body.jobs[0].actualPunctuationCostUsd).toBe(0);
+    expect(jobs.body.jobs[0].hasUnpricedPunctuationUsage).toBe(false);
+    expect(jobs.body.jobs[0].actualSummaryCostUsd).toBe(0);
+    expect(jobs.body.jobs[0].hasUnpricedSummaryUsage).toBe(true);
+    expect(jobs.body.jobs[0].actualCloudCostUsd).toBeNull();
+    expect(jobs.body.jobs[0].hasUnpricedUsage).toBe(true);
   });
 
   it('keeps summary reservation held after cloud transcription settles but before summary finishes', async () => {
@@ -419,10 +439,17 @@ describe('cloud usage governance API', () => {
 
     expect(created.status).toBe(201);
 
+    const transcriptionClaim = await request(app)
+      .post('/transcription-workers/claims')
+      .send({ workerId: 'transcription-worker-summary-held' });
+
+    expect(transcriptionClaim.status).toBe(200);
+
     const transcriptStored = await request(app)
       .post(`/recording-jobs/${created.body.id}/events`)
       .send({
         type: 'transcript-artifact-stored',
+        leaseToken: transcriptionClaim.body.leaseToken,
         transcriptArtifact: {
           storageKey: `transcripts/${created.body.id}/transcript.json`,
           downloadUrl: `https://storage.example.test/transcripts/${created.body.id}/transcript.json`,
@@ -444,7 +471,9 @@ describe('cloud usage governance API', () => {
       .set('authorization', 'Bearer operator-token');
 
     expect(quota.status).toBe(200);
-    expect(quota.body.consumedUsd).toBeGreaterThan(0);
+    expect(quota.body.consumedUsd).toBeNull();
+    expect(quota.body.pricedConsumedUsd).toBe(0);
+    expect(quota.body.hasUnpricedUsage).toBe(true);
     expect(quota.body.reservedUsd).toBeGreaterThan(0);
   });
 
@@ -480,8 +509,15 @@ describe('cloud usage governance API', () => {
 
     expect(created.status).toBe(201);
 
+    const transcriptionClaim = await request(app)
+      .post('/transcription-workers/claims')
+      .send({ workerId: 'transcription-worker-duplicate' });
+
+    expect(transcriptionClaim.status).toBe(200);
+
     const transcriptPayload = {
       type: 'transcript-artifact-stored' as const,
+      leaseToken: transcriptionClaim.body.leaseToken,
       transcriptArtifact: {
         storageKey: `transcripts/${created.body.id}/transcript.json`,
         downloadUrl: `https://storage.example.test/transcripts/${created.body.id}/transcript.json`,
@@ -510,10 +546,19 @@ describe('cloud usage governance API', () => {
       .set('authorization', 'Bearer operator-token');
 
     expect(quotaAfterDuplicateTranscript.status).toBe(200);
-    expect(quotaAfterDuplicateTranscript.body.consumedUsd).toBe(0.03);
+    expect(quotaAfterDuplicateTranscript.body.consumedUsd).toBeNull();
+    expect(quotaAfterDuplicateTranscript.body.pricedConsumedUsd).toBe(0);
+    expect(quotaAfterDuplicateTranscript.body.hasUnpricedUsage).toBe(true);
+
+    const summaryClaim = await request(app)
+      .post('/summary-workers/claims')
+      .send({ workerId: 'summary-worker-duplicate' });
+
+    expect(summaryClaim.status).toBe(200);
 
     const summaryPayload = {
       type: 'summary-artifact-stored' as const,
+      leaseToken: summaryClaim.body.leaseToken,
       summaryArtifact: {
         model: 'gpt-5.4-nano',
         reasoningEffort: 'cloud-default',
@@ -529,7 +574,9 @@ describe('cloud usage governance API', () => {
       },
       usage: {
         promptTokens: 1000,
+        cachedPromptTokens: 0,
         completionTokens: 500,
+        reasoningCompletionTokens: 0,
         totalTokens: 1500
       }
     };
@@ -551,7 +598,9 @@ describe('cloud usage governance API', () => {
 
     expect(quotaAfterDuplicateSummary.status).toBe(200);
     expect(quotaAfterDuplicateSummary.body.reservedUsd).toBe(0);
-    expect(quotaAfterDuplicateSummary.body.consumedUsd).toBe(0.032);
+    expect(quotaAfterDuplicateSummary.body.consumedUsd).toBeNull();
+    expect(quotaAfterDuplicateSummary.body.pricedConsumedUsd).toBe(0);
+    expect(quotaAfterDuplicateSummary.body.hasUnpricedUsage).toBe(true);
   });
 
   it('records admin policy and override changes in the audit log', async () => {
@@ -778,10 +827,17 @@ describe('cloud usage governance API', () => {
 
     expect(created.status).toBe(201);
 
-    await request(app)
+    const transcriptionClaim = await request(app)
+      .post('/transcription-workers/claims')
+      .send({ workerId: 'transcription-worker-report' });
+
+    expect(transcriptionClaim.status).toBe(200);
+
+    const transcriptStored = await request(app)
       .post(`/recording-jobs/${created.body.id}/events`)
       .send({
         type: 'transcript-artifact-stored',
+        leaseToken: transcriptionClaim.body.leaseToken,
         transcriptArtifact: {
           storageKey: `transcripts/${created.body.id}/transcript.json`,
           downloadUrl: `https://storage.example.test/transcripts/${created.body.id}/transcript.json`,
@@ -794,10 +850,19 @@ describe('cloud usage governance API', () => {
         }
       });
 
-    await request(app)
+    expect(transcriptStored.status).toBe(202);
+
+    const summaryClaim = await request(app)
+      .post('/summary-workers/claims')
+      .send({ workerId: 'summary-worker-report' });
+
+    expect(summaryClaim.status).toBe(200);
+
+    const summaryStored = await request(app)
       .post(`/recording-jobs/${created.body.id}/events`)
       .send({
         type: 'summary-artifact-stored',
+        leaseToken: summaryClaim.body.leaseToken,
         summaryArtifact: {
           model: 'gpt-5.4-nano',
           reasoningEffort: 'cloud-default',
@@ -813,10 +878,14 @@ describe('cloud usage governance API', () => {
         },
         usage: {
           promptTokens: 1000,
+          cachedPromptTokens: 0,
           completionTokens: 500,
+          reasoningCompletionTokens: 0,
           totalTokens: 1500
         }
       });
+
+    expect(summaryStored.status).toBe(202);
 
     const quota = await request(app)
       .get('/api/operator/quota')
@@ -829,21 +898,30 @@ describe('cloud usage governance API', () => {
     expect(report.status).toBe(200);
     expect(report.body.quotaDayKey).toBe(quota.body.quotaDayKey);
     expect(report.body.totals.operatorCount).toBe(1);
-    expect(report.body.totals.consumedUsd).toBeGreaterThan(0);
+    expect(report.body.totals.consumedUsd).toBeNull();
+    expect(report.body.totals.pricedConsumedUsd).toBe(0);
+    expect(report.body.totals.hasUnpricedUsage).toBe(true);
+    expect(report.body.totals.unpricedEntryCount).toBe(2);
     expect(report.body.rows).toEqual([
       expect.objectContaining({
         submitterId: 'operator-user',
         email: 'operator@example.com',
         dailyQuotaUsd: 5,
         reservedUsd: 0,
-        consumedUsd: expect.any(Number),
+        consumedUsd: null,
+        pricedConsumedUsd: 0,
+        hasUnpricedUsage: true,
         remainingUsd: expect.any(Number),
         entries: [
           expect.objectContaining({
-            stage: 'transcription'
+            stage: 'transcription',
+            pricingStatus: 'unpriced',
+            costUsd: null
           }),
           expect.objectContaining({
-            stage: 'summary'
+            stage: 'summary',
+            pricingStatus: 'unpriced',
+            costUsd: null
           })
         ]
       })

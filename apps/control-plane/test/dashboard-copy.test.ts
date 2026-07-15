@@ -110,6 +110,70 @@ describe('dashboard copy helpers', () => {
     });
   });
 
+  it('shows priced subtotals and unpriced punctuation or summary usage without calling it zero', () => {
+    const model = getJobCardViewModel({
+      id: 'job_upload_unpriced',
+      inputSource: 'uploaded-audio',
+      state: 'completed',
+      actualTranscriptionCostUsd: 0.12,
+      actualPunctuationCostUsd: 0,
+      actualSummaryCostUsd: 0,
+      actualCloudCostUsd: null,
+      hasUnpricedTranscriptionUsage: false,
+      hasUnpricedPunctuationUsage: true,
+      hasUnpricedSummaryUsage: true,
+      hasUnpricedUsage: true,
+      uploadedFileName: 'unpriced.m4a',
+      createdAt: '2026-07-15T09:00:00.000Z',
+      updatedAt: '2026-07-15T09:08:00.000Z'
+    });
+
+    expect(model).toMatchObject({
+      transcriptionCostLabel: '轉文字',
+      transcriptionCostValue: '$0.120',
+      punctuationCostLabel: '標點',
+      punctuationCostValue: '未定價',
+      summaryCostLabel: '摘要',
+      summaryCostValue: '未定價',
+      totalCostLabel: '已知費用',
+      totalCostValue: '$0.120（含未定價用量）'
+    });
+    expect(model.costItems).toEqual([
+      { label: '轉文字', value: '$0.120' },
+      { label: '標點', value: '未定價' },
+      { label: '摘要', value: '未定價' },
+      { label: '已知費用', value: '$0.120（含未定價用量）' }
+    ]);
+  });
+
+  it('shows an entirely unpriced cloud total as unpriced instead of zero', () => {
+    const model = getJobCardViewModel({
+      id: 'job_upload_all_unpriced',
+      inputSource: 'uploaded-audio',
+      state: 'completed',
+      actualTranscriptionCostUsd: 0,
+      actualPunctuationCostUsd: 0,
+      actualSummaryCostUsd: 0,
+      actualCloudCostUsd: null,
+      hasUnpricedTranscriptionUsage: true,
+      hasUnpricedPunctuationUsage: true,
+      hasUnpricedSummaryUsage: true,
+      hasUnpricedUsage: true,
+      uploadedFileName: 'all-unpriced.m4a',
+      createdAt: '2026-07-15T09:00:00.000Z',
+      updatedAt: '2026-07-15T09:08:00.000Z'
+    });
+
+    expect(model.totalCostLabel).toBe('合計');
+    expect(model.totalCostValue).toBe('未定價');
+    expect([
+      model.transcriptionCostValue,
+      model.punctuationCostValue,
+      model.summaryCostValue,
+      model.totalCostValue
+    ]).not.toContain('$0.000');
+  });
+
   it('falls back to transcript segment length when total progress duration is unavailable', () => {
     const model = getJobCardViewModel({
       id: 'job_upload_2',

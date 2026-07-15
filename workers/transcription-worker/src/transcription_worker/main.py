@@ -41,6 +41,7 @@ def main() -> None:
         internal_service_token=str(config["internal_service_token"])
         if config.get("internal_service_token")
         else None,
+        timeout_seconds=int(config["control_plane_timeout_seconds"]),
     )
     downloader = RecordingArtifactDownloader(
         object_storage=build_object_storage_from_environment(os.environ),
@@ -69,6 +70,7 @@ def main() -> None:
                 endpoint=str(config["azure_openai_summary_endpoint"]),
                 api_key=str(config["azure_openai_summary_api_key"]),
                 model=str(config["transcript_punctuation_model"]),
+                timeout_seconds=int(config["azure_openai_punctuation_timeout_seconds"]),
             )
         transcriber_registry["azure-openai-gpt-4o-transcribe"] = AzureOpenAiTranscriber(
             endpoint=str(config["azure_openai_endpoint"]),
@@ -78,6 +80,7 @@ def main() -> None:
             language=str(config["azure_openai_transcribe_language"]),
             prompt=str(config["azure_openai_transcribe_prompt"]),
             punctuator=punctuator,
+            timeout_seconds=int(config["azure_openai_transcribe_timeout_seconds"]),
         )
     while True:
         try:

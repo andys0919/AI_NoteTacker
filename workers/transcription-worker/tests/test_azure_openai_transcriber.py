@@ -17,10 +17,41 @@ class _FakeResponse(io.BytesIO):
 
 
 class AzureOpenAiTranscriberTests(unittest.TestCase):
+    def test_applies_configured_socket_operation_timeout(self) -> None:
+        captured = {}
+
+        def fake_urlopen(_http_request, timeout=None):
+            captured["timeout"] = timeout
+            return _FakeResponse(
+                json.dumps({"language": "zh", "text": "逐字稿"}).encode("utf-8")
+            )
+
+        transcriber = AzureOpenAiTranscriber(
+            endpoint="https://azure.example.test",
+            deployment="gpt-4o-transcribe",
+            api_key="secret",
+            timeout_seconds=120,
+            urlopen=fake_urlopen,
+            upload_plan_builder=lambda path: [
+                {"path": path, "start_ms": 0, "end_ms": 1000, "cleanup": False}
+            ],
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as source:
+            source.write(b"source")
+            source_path = source.name
+
+        try:
+            transcriber.transcribe(source_path)
+        finally:
+            os.remove(source_path)
+
+        self.assertEqual(captured["timeout"], 120)
+
     def test_posts_multipart_audio_and_maps_verbose_json_segments(self) -> None:
         captured = {}
 
-        def fake_urlopen(http_request):
+        def fake_urlopen(http_request, timeout=None):
             captured["url"] = http_request.full_url
             captured["headers"] = dict(http_request.header_items())
             captured["body"] = http_request.data
@@ -55,14 +86,17 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
         self.assertIn(b"json", captured["body"])
         self.assertEqual(result["language"], "zh")
         self.assertEqual(
-            result["segments"],
+            [
+                {key: segment[key] for key in ("start_ms", "end_ms", "text")}
+                for segment in result["segments"]
+            ],
             [{"start_ms": 0, "end_ms": 1250, "text": "這是測試"}],
         )
 
     def test_sends_language_and_prompt_fields_when_configured(self) -> None:
         captured = {}
 
-        def fake_urlopen(http_request):
+        def fake_urlopen(http_request, timeout=None):
             captured["body"] = http_request.data
             return _FakeResponse(json.dumps({"language": "zh", "text": "你好"}).encode("utf-8"))
 
@@ -88,10 +122,76 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
         self.assertIn(b'name="prompt"', body)
         self.assertIn("請輸出繁體中文並保留標點。".encode("utf-8"), body)
 
-    def test_omits_language_and_prompt_fields_when_not_configured(self) -> None:
+    def test_adds_sales_workflow_context_without_translating_spoken_languages(self) -> None:
         captured = {}
 
-        def fake_urlopen(http_request):
+        def fake_urlopen(http_request, timeout=None):
+            captured["body"] = http_request.data
+            return _FakeResponse(json.dumps({"language": "zh", "text": "測試"}).encode("utf-8"))
+
+        transcriber = AzureOpenAiTranscriber(
+            endpoint="https://azure.example.test",
+            deployment="gpt-4o-transcribe",
+            api_key="secret",
+            prompt="base prompt",
+            urlopen=fake_urlopen,
+            duration_resolver=lambda _path: 1000,
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as source:
+            source.write(b"source")
+            source_path = source.name
+
+        try:
+            transcriber.transcribe(
+                source_path,
+                workflow_context={
+                    "template_id": "sales",
+                    "glossary": ["黑煙淨化器", "發電機"],
+                },
+            )
+        finally:
+            os.remove(source_path)
+
+        body = captured["body"].decode("utf-8")
+        self.assertIn("保留每段實際使用的語言", body)
+        self.assertIn("不要翻譯", body)
+        self.assertIn("黑煙淨化器", body)
+        self.assertIn("發電機", body)
+
+    def test_does_not_inject_sales_glossary_into_general_workflow(self) -> None:
+        captured = {}
+
+        def fake_urlopen(http_request, timeout=None):
+            captured["body"] = http_request.data
+            return _FakeResponse(json.dumps({"language": "en", "text": "hello"}).encode("utf-8"))
+
+        transcriber = AzureOpenAiTranscriber(
+            endpoint="https://azure.example.test",
+            deployment="gpt-4o-transcribe",
+            api_key="secret",
+            prompt="base prompt",
+            urlopen=fake_urlopen,
+            duration_resolver=lambda _path: 1000,
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as source:
+            source.write(b"source")
+            source_path = source.name
+
+        try:
+            transcriber.transcribe(source_path, workflow_context={"template_id": "general"})
+        finally:
+            os.remove(source_path)
+
+        body = captured["body"].decode("utf-8")
+        self.assertIn("不要翻譯", body)
+        self.assertNotIn("黑煙淨化器", body)
+
+    def test_omits_language_but_keeps_multilingual_policy_when_not_configured(self) -> None:
+        captured = {}
+
+        def fake_urlopen(http_request, timeout=None):
             captured["body"] = http_request.data
             return _FakeResponse(json.dumps({"language": "zh", "text": "你好"}).encode("utf-8"))
 
@@ -110,10 +210,11 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
 
         body = captured["body"]
         self.assertNotIn(b'name="language"', body)
-        self.assertNotIn(b'name="prompt"', body)
+        self.assertIn(b'name="prompt"', body)
+        self.assertIn("不要翻譯".encode("utf-8"), body)
 
     def test_splits_text_blob_into_sentence_segments_with_interpolated_timestamps(self) -> None:
-        def fake_urlopen(_http_request):
+        def fake_urlopen(_http_request, timeout=None):
             payload = {"language": "zh", "text": "你好。今天天氣很好！"}
             return _FakeResponse(json.dumps(payload).encode("utf-8"))
 
@@ -135,7 +236,10 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
         os.remove(source_path)
 
         self.assertEqual(
-            result["segments"],
+            [
+                {key: segment[key] for key in ("start_ms", "end_ms", "text")}
+                for segment in result["segments"]
+            ],
             [
                 {"start_ms": 0, "end_ms": 300, "text": "你好。"},
                 {"start_ms": 300, "end_ms": 1000, "text": "今天天氣很好！"},
@@ -148,7 +252,7 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
                 # Simulate the chat punctuator adding sentence boundaries.
                 return "你好。今天天氣很好！"
 
-        def fake_urlopen(_http_request):
+        def fake_urlopen(_http_request, timeout=None):
             return _FakeResponse(
                 json.dumps({"language": "zh", "text": "你好今天天氣很好"}).encode("utf-8")
             )
@@ -172,12 +276,67 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
         os.remove(source_path)
 
         self.assertEqual(
-            result["segments"],
+            [
+                {key: segment[key] for key in ("start_ms", "end_ms", "text")}
+                for segment in result["segments"]
+            ],
             [
                 {"start_ms": 0, "end_ms": 300, "text": "你好。"},
                 {"start_ms": 300, "end_ms": 1000, "text": "今天天氣很好！"},
             ],
         )
+
+    def test_reports_punctuation_usage_for_each_restored_blob(self) -> None:
+        punctuation_usage = {
+            "model": "gpt-5.6-luna",
+            "input_tokens": 10,
+            "cached_input_tokens": 2,
+            "output_tokens": 3,
+            "reasoning_output_tokens": 1,
+            "total_tokens": 13,
+            "request_count": 1,
+            "accepted_chunk_count": 1,
+            "fallback_chunk_count": 0,
+            "unmetered_request_count": 0,
+        }
+
+        class _UsagePunctuator:
+            def restore_with_usage(self, text):
+                return {"text": f"{text}。", "usage": punctuation_usage}
+
+        def fake_urlopen(_http_request, timeout=None):
+            return _FakeResponse(
+                json.dumps({"language": "zh", "text": "你好"}).encode("utf-8")
+            )
+
+        transcriber = AzureOpenAiTranscriber(
+            endpoint="https://azure.example.test",
+            deployment="gpt-4o-transcribe",
+            api_key="secret",
+            punctuator=_UsagePunctuator(),
+            urlopen=fake_urlopen,
+            upload_plan_builder=lambda path: [
+                {"path": path, "start_ms": 0, "end_ms": 1000, "cleanup": False}
+            ],
+        )
+        reported_usage = []
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as source:
+            source.write(b"source")
+            source_path = source.name
+
+        try:
+            try:
+                transcriber.transcribe(
+                    source_path,
+                    on_punctuation_usage=reported_usage.append,
+                )
+            except TypeError as error:
+                self.fail(str(error))
+        finally:
+            os.remove(source_path)
+
+        self.assertEqual(reported_usage, [punctuation_usage])
 
     def test_combines_chunked_upload_results_with_offsets_and_progress(self) -> None:
         responses = iter(
@@ -188,7 +347,7 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
         )
         progress_updates = []
 
-        def fake_urlopen(_http_request):
+        def fake_urlopen(_http_request, timeout=None):
             return _FakeResponse(json.dumps(next(responses)).encode("utf-8"))
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as source:
@@ -224,7 +383,10 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
 
         self.assertEqual(result["language"], "zh")
         self.assertEqual(
-            result["segments"],
+            [
+                {key: segment[key] for key in ("start_ms", "end_ms", "text")}
+                for segment in result["segments"]
+            ],
             [
                 {"start_ms": 0, "end_ms": 1000, "text": "第一段"},
                 {"start_ms": 1000, "end_ms": 2500, "text": "第二段"},
@@ -234,6 +396,45 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
         self.assertEqual(progress_updates[0]["percent"], 40)
         self.assertEqual(progress_updates[-1]["processed_ms"], 2500)
         self.assertEqual(progress_updates[-1]["percent"], 100)
+
+    def test_reports_successful_audio_usage_before_a_later_chunk_fails(self) -> None:
+        call_count = 0
+        reported_usage = []
+
+        def fake_urlopen(_http_request, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _FakeResponse(
+                    json.dumps({"language": "zh", "text": "第一段"}).encode("utf-8")
+                )
+            raise RuntimeError("second upload failed")
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as source:
+            source.write(b"source")
+            source_path = source.name
+
+        transcriber = AzureOpenAiTranscriber(
+            endpoint="https://azure.example.test",
+            deployment="gpt-4o-transcribe",
+            api_key="secret",
+            urlopen=fake_urlopen,
+            upload_plan_builder=lambda path: [
+                {"path": path, "start_ms": 0, "end_ms": 1_000, "cleanup": False},
+                {"path": path, "start_ms": 1_000, "end_ms": 2_500, "cleanup": False},
+            ],
+        )
+
+        try:
+            with self.assertRaisesRegex(RuntimeError, "second upload failed"):
+                transcriber.transcribe(
+                    source_path,
+                    on_transcription_usage=reported_usage.append,
+                )
+        finally:
+            os.remove(source_path)
+
+        self.assertEqual(reported_usage, [{"audio_ms": 1_000}])
 
     def test_retries_sparse_long_chunk_as_smaller_uploads(self) -> None:
         fallback_texts = [
@@ -252,8 +453,27 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
         created_paths = []
         transcode_calls = []
         removed_paths = []
+        punctuation_usage = []
 
-        def fake_urlopen(http_request):
+        class _UsagePunctuator:
+            def restore_with_usage(self, text):
+                return {
+                    "text": text,
+                    "usage": {
+                        "model": "gpt-5.6-luna",
+                        "input_tokens": 1,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 1,
+                        "reasoning_output_tokens": 0,
+                        "total_tokens": 2,
+                        "request_count": 1,
+                        "accepted_chunk_count": 1,
+                        "fallback_chunk_count": 0,
+                        "unmetered_request_count": 0,
+                    },
+                }
+
+        def fake_urlopen(http_request, timeout=None):
             marker = b'filename="'
             start = http_request.data.index(marker) + len(marker)
             end = http_request.data.index(b'"', start)
@@ -285,6 +505,7 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
             endpoint="https://azure.example.test",
             deployment="gpt-4o-transcribe",
             api_key="secret",
+            punctuator=_UsagePunctuator(),
             urlopen=fake_urlopen,
             upload_plan_builder=lambda _path: [
                 {"path": source_path, "start_ms": 0, "end_ms": 1_200_000, "cleanup": False}
@@ -296,7 +517,10 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
         transcriber._new_temp_audio_path = fake_new_temp_audio_path
         transcriber._transcode_for_upload = fake_transcode
 
-        result = transcriber.transcribe(source_path)
+        result = transcriber.transcribe(
+            source_path,
+            on_punctuation_usage=punctuation_usage.append,
+        )
 
         if os.path.exists(source_path):
             os.remove(source_path)
@@ -318,6 +542,7 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
         )
         self.assertEqual(result["segments"][0]["start_ms"], 0)
         self.assertEqual(result["segments"][-1]["end_ms"], 1_200_000)
+        self.assertEqual(len(punctuation_usage), 5)
 
     def test_rejects_audible_long_chunk_when_retry_stays_sparse(self) -> None:
         responses = iter(
@@ -331,7 +556,7 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
         )
         created_paths = []
 
-        def fake_urlopen(_http_request):
+        def fake_urlopen(_http_request, timeout=None):
             return _FakeResponse(json.dumps(next(responses)).encode("utf-8"))
 
         def fake_new_temp_audio_path(suffix):
@@ -377,7 +602,7 @@ class AzureOpenAiTranscriberTests(unittest.TestCase):
             source.write(b"source")
             source_path = source.name
 
-        def fake_urlopen(_http_request):
+        def fake_urlopen(_http_request, timeout=None):
             raise urllib.error.HTTPError(
                 url="https://azure.example.test",
                 code=400,

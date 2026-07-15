@@ -3,10 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   formatProviderLabel,
   formatSummaryModeLabel,
+  formatUsageStageLabel,
   formatUsd,
   getAdminGovernanceViewModel,
   getAuditEntryViewModels,
+  getCloudCostDisplayModel,
   getQuotaDisplayModel,
+  getUsageHistoryCostViewModel,
   getUsageReportRowViewModels
 } from '../public/governance-panel.js';
 
@@ -21,7 +24,104 @@ describe('governance panel helpers', () => {
   it('formats usd values with fixed precision', () => {
     expect(formatUsd(1.23456)).toBe('$1.235');
     expect(formatUsd(0)).toBe('$0.000');
-    expect(formatUsd(undefined)).toBe('$0.000');
+    expect(formatUsd(null)).toBe('未定價');
+    expect(formatUsd(undefined)).toBe('未定價');
+  });
+
+  it('formats known cost separately from unpriced usage', () => {
+    expect(
+      getCloudCostDisplayModel({
+        totalCostUsd: null,
+        pricedCostUsd: 1.25,
+        hasUnpricedUsage: true
+      })
+    ).toEqual({
+      label: '已知費用',
+      value: '$1.250（含未定價用量）'
+    });
+    expect(
+      getCloudCostDisplayModel({
+        totalCostUsd: null,
+        pricedCostUsd: 0,
+        hasUnpricedUsage: true
+      })
+    ).toEqual({
+      label: '費用',
+      value: '未定價'
+    });
+    expect(
+      getCloudCostDisplayModel({
+        totalCostUsd: 1.25,
+        pricedCostUsd: 1.25,
+        hasUnpricedUsage: false
+      })
+    ).toEqual({
+      label: '總費用',
+      value: '$1.250'
+    });
+  });
+
+  it('adds the punctuation stage label', () => {
+    expect(formatUsageStageLabel('transcription')).toBe('轉寫');
+    expect(formatUsageStageLabel('punctuation')).toBe('標點');
+    expect(formatUsageStageLabel('summary')).toBe('摘要');
+  });
+
+  it('builds history cost labels for nullable totals, models, and entries', () => {
+    expect(
+      getUsageHistoryCostViewModel({
+        totals: {
+          pricedCostUsd: 0.12,
+          totalCostUsd: null,
+          hasUnpricedUsage: true,
+          unpricedEntryCount: 2
+        },
+        byModel: [
+          {
+            model: 'gpt-5.6-luna',
+            stage: 'punctuation',
+            pricedCostUsd: 0,
+            totalCostUsd: null,
+            hasUnpricedUsage: true,
+            unpricedEntryCount: 1
+          }
+        ],
+        entries: [
+          {
+            id: 'usage-1',
+            stage: 'punctuation',
+            pricingStatus: 'unpriced',
+            costUsd: null
+          }
+        ]
+      })
+    ).toEqual({
+      totalCostLabel: '$0.120（含未定價用量）',
+      totalCostSummary: '已知費用 $0.120（含未定價用量） / 未定價 2 筆',
+      byModel: [
+        {
+          model: 'gpt-5.6-luna',
+          stage: 'punctuation',
+          pricedCostUsd: 0,
+          totalCostUsd: null,
+          hasUnpricedUsage: true,
+          unpricedEntryCount: 1,
+          stageLabel: '標點',
+          costLabel: '未定價',
+          unpricedCountLabel: '未定價 1 筆'
+        }
+      ],
+      entries: [
+        {
+          id: 'usage-1',
+          stage: 'punctuation',
+          pricingStatus: 'unpriced',
+          costUsd: null,
+          stageLabel: '標點',
+          costLabel: '未定價'
+        }
+      ]
+    });
   });
 
   it('builds an enabled admin governance view model when providers are ready', () => {
@@ -153,6 +253,23 @@ describe('governance panel helpers', () => {
     });
   });
 
+  it('shows quota consumption as known cost when usage also contains unpriced entries', () => {
+    expect(
+      getQuotaDisplayModel({
+        dailyQuotaUsd: 5,
+        consumedUsd: null,
+        pricedConsumedUsd: 1.25,
+        hasUnpricedUsage: true,
+        reservedUsd: 0.5,
+        remainingUsd: 3.25
+      })
+    ).toEqual({
+      hidden: false,
+      remainingLabel: '$3.250（依已知費用計算）',
+      breakdownText: '已知費用 $1.250（含未定價用量） / 保留 $0.500 / 總額 $5.000'
+    });
+  });
+
   it('builds an empty audit entry list and formatted entry view models', () => {
     expect(getAuditEntryViewModels([])).toEqual([]);
 
@@ -194,11 +311,33 @@ describe('governance panel helpers', () => {
         identityLabel: 'user@example.com',
         submitterId: 'user-1',
         reservedLabel: '$0.500',
+        consumedTitle: '已用',
         consumedLabel: '$1.250',
         remainingLabel: '$3.250',
         dailyQuotaLabel: '$5.000',
         entryCountLabel: '2 筆'
       }
     ]);
+  });
+
+  it('labels report rows with a known subtotal when their complete cost is unpriced', () => {
+    expect(
+      getUsageReportRowViewModels([
+        {
+          submitterId: 'user-1',
+          dailyQuotaUsd: 5,
+          reservedUsd: 0.5,
+          consumedUsd: null,
+          pricedConsumedUsd: 1.25,
+          hasUnpricedUsage: true,
+          remainingUsd: 3.25,
+          entries: [{ stage: 'summary', pricingStatus: 'unpriced', costUsd: null }]
+        }
+      ])[0]
+    ).toMatchObject({
+      consumedTitle: '已知費用',
+      consumedLabel: '$1.250（含未定價用量）',
+      remainingLabel: '$3.250（依已知費用計算）'
+    });
   });
 });

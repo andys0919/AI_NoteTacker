@@ -70,6 +70,8 @@ type RecordingJobRow = {
   summary_lease_acquired_at: Date | string | null;
   summary_lease_heartbeat_at: Date | string | null;
   summary_lease_expires_at: Date | string | null;
+  issued_transcription_lease_tokens: string[] | null;
+  issued_summary_lease_tokens: string[] | null;
   transcription_provider: TranscriptionProvider | null;
   transcription_model: string | null;
   summary_provider: SummaryProvider | null;
@@ -131,6 +133,8 @@ const recordingJobSchemaSql = `
     summary_lease_acquired_at TIMESTAMPTZ,
     summary_lease_heartbeat_at TIMESTAMPTZ,
     summary_lease_expires_at TIMESTAMPTZ,
+    issued_transcription_lease_tokens JSONB NOT NULL DEFAULT '[]'::jsonb,
+    issued_summary_lease_tokens JSONB NOT NULL DEFAULT '[]'::jsonb,
     transcription_provider TEXT,
     transcription_model TEXT,
     summary_provider TEXT,
@@ -246,6 +250,10 @@ const recordingJobSchemaSql = `
   ADD COLUMN IF NOT EXISTS summary_lease_heartbeat_at TIMESTAMPTZ;
   ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS summary_lease_expires_at TIMESTAMPTZ;
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS issued_transcription_lease_tokens JSONB NOT NULL DEFAULT '[]'::jsonb;
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS issued_summary_lease_tokens JSONB NOT NULL DEFAULT '[]'::jsonb;
 
   ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS operator_hidden_at TIMESTAMPTZ;
@@ -306,6 +314,10 @@ const recordingJobSchemaSql = `
 const toIsoString = (value: Date | string): string =>
   value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 
+const includeActiveLeaseToken = (tokens: string[] | null, activeToken: string | null): string[] => [
+  ...new Set([...(tokens ?? []), ...(activeToken ? [activeToken] : [])])
+];
+
 const mapRowToRecordingJob = (row: RecordingJobRow): RecordingJob => ({
   id: row.id,
   meetingUrl: row.meeting_url,
@@ -357,6 +369,14 @@ const mapRowToRecordingJob = (row: RecordingJobRow): RecordingJob => ({
   summaryLeaseExpiresAt: row.summary_lease_expires_at
     ? toIsoString(row.summary_lease_expires_at)
     : undefined,
+  issuedTranscriptionLeaseTokens: includeActiveLeaseToken(
+    row.issued_transcription_lease_tokens,
+    row.transcription_lease_token
+  ),
+  issuedSummaryLeaseTokens: includeActiveLeaseToken(
+    row.issued_summary_lease_tokens,
+    row.summary_lease_token
+  ),
   transcriptionProvider: row.transcription_provider ?? undefined,
   transcriptionModel: row.transcription_model ?? undefined,
   summaryProvider: row.summary_provider ?? undefined,
@@ -472,8 +492,29 @@ const mapRowToRecordingJobListItem = (row: RecordingJobRow): RecordingJobListIte
   summaryPreview: row.summary_preview ?? undefined
 });
 
+export const backfillActiveLeaseTokenHistory = async (database: Queryable): Promise<void> => {
+  await database.query(
+    `
+      UPDATE recording_jobs
+      SET issued_transcription_lease_tokens =
+        jsonb_build_array(transcription_lease_token)
+      WHERE transcription_lease_token IS NOT NULL
+        AND issued_transcription_lease_tokens = '[]'::jsonb
+    `
+  );
+  await database.query(
+    `
+      UPDATE recording_jobs
+      SET issued_summary_lease_tokens = jsonb_build_array(summary_lease_token)
+      WHERE summary_lease_token IS NOT NULL
+        AND issued_summary_lease_tokens = '[]'::jsonb
+    `
+  );
+};
+
 export const ensureRecordingJobSchema = async (database: Queryable): Promise<void> => {
   await database.query(recordingJobSchemaSql);
+  await backfillActiveLeaseTokenHistory(database);
   // Backfill the denormalized presence flags. The `AND ... = FALSE` guards keep this
   // idempotent so a restart only touches rows that still need it, instead of locking and
   // rewriting every already-backfilled row on every boot.
@@ -560,9 +601,11 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           terminal_notification_sent_at,
           terminal_notification_target,
           terminal_notification_state,
-          meeting_passcode
+          meeting_passcode,
+          issued_transcription_lease_tokens,
+          issued_summary_lease_tokens
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::timestamptz, $22::timestamptz, $23::timestamptz, $24, $25::timestamptz, $26::timestamptz, $27::timestamptz, $28, $29::timestamptz, $30::timestamptz, $31::timestamptz, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42::timestamptz, $43::timestamptz, $44, $45, $46::jsonb, $47::jsonb, $48::jsonb, $49, $50, $51, $52, $53::jsonb, $54::timestamptz, $55, $56, $57)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::timestamptz, $22::timestamptz, $23::timestamptz, $24, $25::timestamptz, $26::timestamptz, $27::timestamptz, $28, $29::timestamptz, $30::timestamptz, $31::timestamptz, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42::timestamptz, $43::timestamptz, $44, $45, $46::jsonb, $47::jsonb, $48::jsonb, $49, $50, $51, $52, $53::jsonb, $54::timestamptz, $55, $56, $57, $58::jsonb, $59::jsonb)
         ON CONFLICT (id) DO UPDATE SET
           meeting_url = EXCLUDED.meeting_url,
           platform = EXCLUDED.platform,
@@ -619,7 +662,25 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           terminal_notification_sent_at = EXCLUDED.terminal_notification_sent_at,
           terminal_notification_target = EXCLUDED.terminal_notification_target,
           terminal_notification_state = EXCLUDED.terminal_notification_state,
-          meeting_passcode = EXCLUDED.meeting_passcode
+          meeting_passcode = EXCLUDED.meeting_passcode,
+          issued_transcription_lease_tokens = CASE
+            WHEN recording_jobs.issued_transcription_lease_tokens
+              @> EXCLUDED.issued_transcription_lease_tokens
+            THEN recording_jobs.issued_transcription_lease_tokens
+            WHEN EXCLUDED.issued_transcription_lease_tokens
+              @> recording_jobs.issued_transcription_lease_tokens
+            THEN EXCLUDED.issued_transcription_lease_tokens
+            ELSE recording_jobs.issued_transcription_lease_tokens
+          END,
+          issued_summary_lease_tokens = CASE
+            WHEN recording_jobs.issued_summary_lease_tokens
+              @> EXCLUDED.issued_summary_lease_tokens
+            THEN recording_jobs.issued_summary_lease_tokens
+            WHEN EXCLUDED.issued_summary_lease_tokens
+              @> recording_jobs.issued_summary_lease_tokens
+            THEN EXCLUDED.issued_summary_lease_tokens
+            ELSE recording_jobs.issued_summary_lease_tokens
+          END
         RETURNING *
       `,
       [
@@ -679,11 +740,108 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
         job.terminalNotificationSentAt ?? null,
         job.terminalNotificationTarget ?? null,
         job.terminalNotificationState ?? null,
-        job.meetingPasscode ?? null
+        job.meetingPasscode ?? null,
+        JSON.stringify(job.issuedTranscriptionLeaseTokens ?? []),
+        JSON.stringify(job.issuedSummaryLeaseTokens ?? [])
       ]
     );
 
     return mapRowToRecordingJob(result.rows[0]);
+  }
+
+  async saveIfLeaseActive(
+    job: RecordingJob,
+    expectedLease: {
+      stage: 'transcription' | 'summary';
+      leaseToken: string;
+    }
+  ): Promise<RecordingJob | undefined> {
+    const leaseColumn =
+      expectedLease.stage === 'transcription'
+        ? 'transcription_lease_token'
+        : 'summary_lease_token';
+    const transcriptPreview = buildTranscriptPreview(job.transcriptArtifact);
+    const summaryPreview = buildSummaryPreview(job.summaryArtifact?.text);
+    const result = await this.database.query<RecordingJobRow>(
+      `
+        UPDATE recording_jobs
+        SET state = $3,
+            processing_stage = $4,
+            processing_message = $5,
+            progress_percent = $6,
+            progress_processed_ms = $7,
+            progress_total_ms = $8,
+            assigned_worker_id = $9,
+            assigned_transcription_worker_id = $10,
+            assigned_summary_worker_id = $11,
+            recording_lease_token = $12,
+            recording_lease_acquired_at = $13::timestamptz,
+            recording_lease_heartbeat_at = $14::timestamptz,
+            recording_lease_expires_at = $15::timestamptz,
+            transcription_lease_token = $16,
+            transcription_lease_acquired_at = $17::timestamptz,
+            transcription_lease_heartbeat_at = $18::timestamptz,
+            transcription_lease_expires_at = $19::timestamptz,
+            summary_lease_token = $20,
+            summary_lease_acquired_at = $21::timestamptz,
+            summary_lease_heartbeat_at = $22::timestamptz,
+            summary_lease_expires_at = $23::timestamptz,
+            transcription_attempt_count = $24,
+            updated_at = $25::timestamptz,
+            failure_code = $26,
+            failure_message = $27,
+            recording_artifact = $28::jsonb,
+            transcript_artifact = $29::jsonb,
+            summary_artifact = $30::jsonb,
+            transcript_preview = $31,
+            summary_preview = $32,
+            has_transcript_artifact = $33,
+            has_summary_artifact = $34,
+            job_history = $35::jsonb
+        WHERE id = $1
+          AND ${leaseColumn} = $2
+        RETURNING *
+      `,
+      [
+        job.id,
+        expectedLease.leaseToken,
+        job.state,
+        job.processingStage ?? null,
+        job.processingMessage ?? null,
+        job.progressPercent ?? null,
+        job.progressProcessedMs ?? null,
+        job.progressTotalMs ?? null,
+        job.assignedWorkerId ?? null,
+        job.assignedTranscriptionWorkerId ?? null,
+        job.assignedSummaryWorkerId ?? null,
+        job.recordingLeaseToken ?? null,
+        job.recordingLeaseAcquiredAt ?? null,
+        job.recordingLeaseHeartbeatAt ?? null,
+        job.recordingLeaseExpiresAt ?? null,
+        job.transcriptionLeaseToken ?? null,
+        job.transcriptionLeaseAcquiredAt ?? null,
+        job.transcriptionLeaseHeartbeatAt ?? null,
+        job.transcriptionLeaseExpiresAt ?? null,
+        job.summaryLeaseToken ?? null,
+        job.summaryLeaseAcquiredAt ?? null,
+        job.summaryLeaseHeartbeatAt ?? null,
+        job.summaryLeaseExpiresAt ?? null,
+        job.transcriptionAttemptCount ?? 0,
+        job.updatedAt,
+        job.failureCode ?? null,
+        job.failureMessage ?? null,
+        job.recordingArtifact ? JSON.stringify(job.recordingArtifact) : null,
+        job.transcriptArtifact ? JSON.stringify(job.transcriptArtifact) : null,
+        job.summaryArtifact ? JSON.stringify(job.summaryArtifact) : null,
+        transcriptPreview ?? null,
+        summaryPreview ?? null,
+        Boolean(job.transcriptArtifact),
+        Boolean(job.summaryArtifact),
+        job.jobHistory ? JSON.stringify(job.jobHistory) : null
+      ]
+    );
+
+    return result.rows.length > 0 ? mapRowToRecordingJob(result.rows[0]) : undefined;
   }
 
   async heartbeatLease(input: {
@@ -1110,7 +1268,8 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
             processing_message = $10,
             progress_percent = $11,
             updated_at = $12::timestamptz,
-            job_history = $13::jsonb
+            job_history = $13::jsonb,
+            issued_transcription_lease_tokens = $14::jsonb
         WHERE id = $1
           AND (
             state = 'transcribing'
@@ -1119,12 +1278,13 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           AND recording_artifact IS NOT NULL
           AND transcript_artifact IS NULL
           AND assigned_transcription_worker_id IS NULL
+          AND issued_transcription_lease_tokens = $16::jsonb
           AND (
             state = 'transcribing'
             OR NOT EXISTS (
               SELECT 1
               FROM recording_jobs active_submitter_job
-              WHERE active_submitter_job.submitter_id = $14
+              WHERE active_submitter_job.submitter_id = $15
                 AND active_submitter_job.id <> $1
                 AND active_submitter_job.state IN ('joining', 'recording', 'transcribing')
             )
@@ -1145,7 +1305,9 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
         patchedClaimedJob.progressPercent ?? null,
         patchedClaimedJob.updatedAt,
         JSON.stringify(patchedClaimedJob.jobHistory ?? []),
-        patchedClaimedJob.submitterId
+        JSON.stringify(patchedClaimedJob.issuedTranscriptionLeaseTokens ?? []),
+        patchedClaimedJob.submitterId,
+        JSON.stringify(candidate.issuedTranscriptionLeaseTokens ?? [])
       ]
     );
 
@@ -1169,7 +1331,8 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
             processing_message = $8,
             progress_percent = $9,
             updated_at = $10::timestamptz,
-            job_history = $11::jsonb
+            job_history = $11::jsonb,
+            issued_summary_lease_tokens = $12::jsonb
         WHERE id = $1
           AND state = 'transcribing'
           AND summary_requested = TRUE
@@ -1177,6 +1340,7 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           AND summary_artifact IS NULL
           AND assigned_summary_worker_id IS NULL
           AND processing_stage = 'summary-pending'
+          AND issued_summary_lease_tokens = $13::jsonb
         RETURNING *
       `,
       [
@@ -1190,7 +1354,9 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
         claimedJob.processingMessage ?? null,
         claimedJob.progressPercent ?? null,
         claimedJob.updatedAt,
-        JSON.stringify(claimedJob.jobHistory ?? [])
+        JSON.stringify(claimedJob.jobHistory ?? []),
+        JSON.stringify(claimedJob.issuedSummaryLeaseTokens ?? []),
+        JSON.stringify(candidate.issuedSummaryLeaseTokens ?? [])
       ]
     );
 

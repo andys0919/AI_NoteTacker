@@ -142,7 +142,7 @@
         <div class="admin-rail-points">
           <article class="hero-point">
             <strong>歷史使用紀錄</strong>
-            <span>每筆工作的 input/output token、使用的模型與費用一次看清楚。</span>
+            <span>每筆工作的 input/output token、使用的模型與費用狀態一次看清楚。</span>
           </article>
           <article class="hero-point">
             <strong>模型設定</strong>
@@ -182,8 +182,8 @@
               <strong id="admin-usage-history-total-tokens">0</strong>
             </div>
             <div class="meta-card">
-              <span class="meta-label">歷史總費用</span>
-              <strong id="admin-usage-history-total-cost">$0.000</strong>
+              <span class="meta-label">歷史費用</span>
+              <strong id="admin-usage-history-total-cost">—</strong>
             </div>
             <div class="meta-card">
               <span class="meta-label">目前路由</span>
@@ -211,7 +211,7 @@
               </div>
             </div>
             <p id="admin-usage-history-copy" class="hero-text admin-provider-copy">
-              這裡列出每一筆雲端處理的輸入 / 輸出 token、使用的模型與費用。
+              這裡列出每一筆雲端處理的輸入 / 輸出 token、使用的模型與已知費用；沒有官方費率的用量會標示「未定價」。
             </p>
             <form id="admin-usage-history-form" class="admin-usage-history-controls">
               <label class="field admin-summary-model-field">
@@ -240,7 +240,7 @@
                     <th class="usage-num">Input Tokens</th>
                     <th class="usage-num">Output Tokens</th>
                     <th class="usage-num">Total Tokens</th>
-                    <th class="usage-num">費用 (USD)</th>
+                    <th class="usage-num">費用狀態 (USD)</th>
                     <th>提交者</th>
                     <th>工作</th>
                   </tr>

@@ -2,8 +2,22 @@ import json
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest.mock import patch
 
 from transcription_worker.control_plane_client import ControlPlaneClient
+
+
+class _StubResponse:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return b"{}"
 
 
 class _TestHandler(BaseHTTPRequestHandler):
@@ -113,6 +127,28 @@ class ControlPlaneClientTests(unittest.TestCase):
                 "stage": "transcription",
                 "leaseToken": "lease_http",
             },
+        )
+
+    def test_applies_configured_timeout_to_get_post_and_heartbeat(self) -> None:
+        captured_timeouts = []
+
+        def capture_timeout(http_request, timeout=None):
+            captured_timeouts.append((http_request.get_method(), timeout))
+            return _StubResponse()
+
+        client = ControlPlaneClient(self.base_url, timeout_seconds=17)
+
+        with patch(
+            "transcription_worker.control_plane_client.request.urlopen",
+            side_effect=capture_timeout,
+        ):
+            client.get_job("job_http")
+            client.claim_next_job("transcriber-alpha")
+            client.post_lease_heartbeat("job_http", "transcription", "lease_http")
+
+        self.assertEqual(
+            captured_timeouts,
+            [("GET", 17), ("POST", 17), ("POST", 17)],
         )
 
 

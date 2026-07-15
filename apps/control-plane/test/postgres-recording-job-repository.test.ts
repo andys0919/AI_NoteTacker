@@ -1,22 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { newDb } from 'pg-mem';
+import { DataType, newDb } from 'pg-mem';
 
 import {
   assignRecordingJobToWorker,
+  assignSummaryJobToWorker,
+  assignTranscriptionJobToWorker,
   attachRecordingArtifact,
   attachSummaryArtifact,
   attachTranscriptArtifact,
   createRecordingJob,
   markRecordingJobFailed,
+  releaseTranscriptionJobForRetry,
   updateRecordingJobProgress
 } from '../src/domain/recording-job.js';
 import {
+  backfillActiveLeaseTokenHistory,
   PostgresRecordingJobRepository,
   ensureRecordingJobSchema
 } from '../src/infrastructure/postgres/postgres-recording-job-repository.js';
 
 describe('PostgresRecordingJobRepository', () => {
   let db: ReturnType<typeof newDb>;
+  let database: ConstructorParameters<typeof PostgresRecordingJobRepository>[0];
   let repository: PostgresRecordingJobRepository;
   let end: (() => Promise<void>) | undefined;
 
@@ -30,11 +35,18 @@ describe('PostgresRecordingJobRepository', () => {
 
   beforeEach(async () => {
     db = newDb();
+    db.public.registerFunction({
+      name: 'jsonb_build_array',
+      args: [DataType.text],
+      returns: DataType.jsonb,
+      implementation: (value: string) => [value]
+    });
     const adapter = db.adapters.createPg();
     const pool = new adapter.Pool();
 
     await ensureRecordingJobSchema(pool);
-    repository = new PostgresRecordingJobRepository(pool);
+    database = pool;
+    repository = new PostgresRecordingJobRepository(database);
     end = async () => {
       await pool.end();
     };
@@ -59,6 +71,7 @@ describe('PostgresRecordingJobRepository', () => {
     });
 
     const completed = attachTranscriptArtifact(withRecording, {
+      schemaVersion: 2,
       storageKey: 'transcripts/job_999/transcript.json',
       downloadUrl: 'https://storage.example.test/transcripts/job_999/transcript.json',
       contentType: 'application/json',
@@ -67,7 +80,13 @@ describe('PostgresRecordingJobRepository', () => {
         {
           startMs: 0,
           endMs: 1500,
-          text: 'hello team'
+          text: 'hello team',
+          rawText: 'hello team',
+          displayText: 'hello team',
+          language: 'en',
+          languageConfidence: 0.99,
+          timingSource: 'provider',
+          reviewFlags: []
         }
       ]
     });
@@ -87,6 +106,14 @@ describe('PostgresRecordingJobRepository', () => {
     expect(reloaded?.recordingArtifact?.storageKey).toBe('recordings/job_999/meeting.webm');
     expect(reloaded?.transcriptArtifact?.storageKey).toBe('transcripts/job_999/transcript.json');
     expect(reloaded?.transcriptArtifact?.segments[0]?.text).toBe('hello team');
+    expect(reloaded?.transcriptArtifact?.segments[0]).toMatchObject({
+      rawText: 'hello team',
+      displayText: 'hello team',
+      language: 'en',
+      languageConfidence: 0.99,
+      timingSource: 'provider',
+      reviewFlags: []
+    });
     expect(reloaded?.summaryArtifact?.model).toBe('gpt-5.3-codex-spark');
     expect(reloaded?.summaryArtifact?.text).toBe('hello team summary');
   });
@@ -159,6 +186,374 @@ describe('PostgresRecordingJobRepository', () => {
     expect(claimed?.assignedTranscriptionWorkerId).toBe('transcriber-alpha');
     expect(claimed?.transcriptionProvider).toBe('self-hosted-whisper');
     expect(claimed?.recordingArtifact?.storageKey).toBe('recordings/job_777/meeting.webm');
+  });
+
+  it('persists issued lease history across transcription retries and summary claims', async () => {
+    const transcriptionReady = attachRecordingArtifact(
+      createRecordingJob({
+        meetingUrl: 'uploaded://postgres-issued-leases.wav',
+        platform: 'uploaded-audio',
+        inputSource: 'uploaded-audio',
+        summaryRequested: true
+      }),
+      {
+        storageKey: 'recordings/job_pg_issued/meeting.wav',
+        downloadUrl: 'https://storage.example.test/recordings/job_pg_issued/meeting.wav',
+        contentType: 'audio/wav'
+      }
+    );
+    await repository.save(transcriptionReady);
+
+    const firstAttempt = (await repository.claimNextTranscriptionReady('transcriber-alpha'))!;
+    await repository.save(
+      releaseTranscriptionJobForRetry(
+        firstAttempt,
+        { code: 'transcription-failed', message: 'retry this attempt' },
+        3
+      )
+    );
+    const secondAttempt = (await repository.claimNextTranscriptionReady('transcriber-beta'))!;
+
+    expect(secondAttempt.issuedTranscriptionLeaseTokens).toEqual([
+      firstAttempt.transcriptionLeaseToken,
+      secondAttempt.transcriptionLeaseToken
+    ]);
+
+    await repository.save(
+      attachTranscriptArtifact(secondAttempt, {
+        storageKey: 'transcripts/job_pg_issued/transcript.json',
+        downloadUrl: 'https://storage.example.test/transcripts/job_pg_issued/transcript.json',
+        contentType: 'application/json',
+        language: 'en',
+        segments: [{ startMs: 0, endMs: 1_000, text: 'issued lease history' }]
+      })
+    );
+    const summaryAttempt = (await repository.claimNextSummaryReady('summary-alpha'))!;
+
+    expect(summaryAttempt.issuedSummaryLeaseTokens).toEqual([
+      summaryAttempt.summaryLeaseToken
+    ]);
+    expect((await repository.getById(summaryAttempt.id))?.issuedTranscriptionLeaseTokens).toEqual(
+      secondAttempt.issuedTranscriptionLeaseTokens
+    );
+  });
+
+  it('backfills active legacy leases before terminal CAS clears their active tokens', async () => {
+    const transcriptionAssigned = assignTranscriptionJobToWorker(
+      attachRecordingArtifact(
+        createRecordingJob({
+          meetingUrl: 'uploaded://postgres-legacy-transcription.wav',
+          platform: 'uploaded-audio',
+          inputSource: 'uploaded-audio'
+        }),
+        {
+          storageKey: 'recordings/job_pg_legacy_transcription/meeting.wav',
+          downloadUrl:
+            'https://storage.example.test/recordings/job_pg_legacy_transcription/meeting.wav',
+          contentType: 'audio/wav'
+        }
+      ),
+      'transcriber-legacy'
+    );
+    const summaryAssigned = assignSummaryJobToWorker(
+      attachTranscriptArtifact(
+        attachRecordingArtifact(
+          createRecordingJob({
+            meetingUrl: 'uploaded://postgres-legacy-summary.wav',
+            platform: 'uploaded-audio',
+            inputSource: 'uploaded-audio',
+            summaryRequested: true
+          }),
+          {
+            storageKey: 'recordings/job_pg_legacy_summary/meeting.wav',
+            downloadUrl:
+              'https://storage.example.test/recordings/job_pg_legacy_summary/meeting.wav',
+            contentType: 'audio/wav'
+          }
+        ),
+        {
+          storageKey: 'transcripts/job_pg_legacy_summary/transcript.json',
+          downloadUrl:
+            'https://storage.example.test/transcripts/job_pg_legacy_summary/transcript.json',
+          contentType: 'application/json',
+          language: 'en',
+          segments: [{ startMs: 0, endMs: 1_000, text: 'legacy summary lease' }]
+        }
+      ),
+      'summary-legacy'
+    );
+    await repository.save(transcriptionAssigned);
+    await repository.save(summaryAssigned);
+    await database.query(
+      `
+        UPDATE recording_jobs
+        SET issued_transcription_lease_tokens = '[]'::jsonb
+        WHERE id = $1;
+        UPDATE recording_jobs
+        SET issued_summary_lease_tokens = '[]'::jsonb
+        WHERE id = $2
+      `,
+      [transcriptionAssigned.id, summaryAssigned.id]
+    );
+
+    await backfillActiveLeaseTokenHistory(database);
+
+    const reloadedTranscription = (await repository.getById(transcriptionAssigned.id))!;
+    const reloadedSummary = (await repository.getById(summaryAssigned.id))!;
+    expect(reloadedTranscription.issuedTranscriptionLeaseTokens).toEqual([
+      transcriptionAssigned.transcriptionLeaseToken
+    ]);
+    expect(reloadedSummary.issuedSummaryLeaseTokens).toEqual([
+      summaryAssigned.summaryLeaseToken
+    ]);
+
+    const completed = attachTranscriptArtifact(reloadedTranscription, {
+      storageKey: 'transcripts/job_pg_legacy_transcription/transcript.json',
+      downloadUrl:
+        'https://storage.example.test/transcripts/job_pg_legacy_transcription/transcript.json',
+      contentType: 'application/json',
+      language: 'en',
+      segments: [{ startMs: 0, endMs: 1_000, text: 'legacy transcription lease' }]
+    });
+    const saved = await repository.saveIfLeaseActive(completed, {
+      stage: 'transcription',
+      leaseToken: transcriptionAssigned.transcriptionLeaseToken!
+    });
+
+    expect(saved?.issuedTranscriptionLeaseTokens).toEqual([
+      transcriptionAssigned.transcriptionLeaseToken
+    ]);
+  });
+
+  it('does not erase a newly issued lease token when saving an older cancellation snapshot', async () => {
+    const transcriptionReady = attachRecordingArtifact(
+      createRecordingJob({
+        meetingUrl: 'uploaded://postgres-append-only-leases.wav',
+        platform: 'uploaded-audio',
+        inputSource: 'uploaded-audio'
+      }),
+      {
+        storageKey: 'recordings/job_pg_append_only/meeting.wav',
+        downloadUrl: 'https://storage.example.test/recordings/job_pg_append_only/meeting.wav',
+        contentType: 'audio/wav'
+      }
+    );
+    await repository.save(transcriptionReady);
+    const staleSnapshot = (await repository.claimNextTranscriptionReady('transcriber-alpha'))!;
+    await repository.save(
+      releaseTranscriptionJobForRetry(
+        staleSnapshot,
+        { code: 'transcription-failed', message: 'retry this attempt' },
+        3
+      )
+    );
+    const latestClaim = (await repository.claimNextTranscriptionReady('transcriber-beta'))!;
+
+    await repository.save(
+      markRecordingJobFailed(staleSnapshot, {
+        code: 'operator-cancel-requested',
+        message: 'cancelled from an older snapshot'
+      })
+    );
+
+    expect((await repository.getById(latestClaim.id))?.issuedTranscriptionLeaseTokens).toEqual([
+      staleSnapshot.transcriptionLeaseToken,
+      latestClaim.transcriptionLeaseToken
+    ]);
+  });
+
+  it('does not claim transcription from a candidate whose issued history changed after selection', async () => {
+    const transcriptionReady = attachRecordingArtifact(
+      createRecordingJob({
+        meetingUrl: 'uploaded://postgres-transcription-claim-race.wav',
+        platform: 'uploaded-audio',
+        inputSource: 'uploaded-audio'
+      }),
+      {
+        storageKey: 'recordings/job_pg_transcription_claim_race/meeting.wav',
+        downloadUrl:
+          'https://storage.example.test/recordings/job_pg_transcription_claim_race/meeting.wav',
+        contentType: 'audio/wav'
+      }
+    );
+    await repository.save(transcriptionReady);
+    let injectedInterleaving = false;
+    const racingRepository = new PostgresRecordingJobRepository({
+      query: async <TRow extends Record<string, unknown>>(
+        text: string,
+        values?: unknown[]
+      ): Promise<{ rows: TRow[] }> => {
+        if (!injectedInterleaving && text.includes('SET assigned_transcription_worker_id')) {
+          injectedInterleaving = true;
+          await database.query(
+            `
+              UPDATE recording_jobs
+              SET issued_transcription_lease_tokens = $2::jsonb
+              WHERE id = $1
+            `,
+            [transcriptionReady.id, JSON.stringify(['lease_intervening_transcription'])]
+          );
+        }
+
+        return await database.query<TRow>(text, values);
+      }
+    });
+
+    const claimed = await racingRepository.claimNextTranscriptionReady('transcriber-stale');
+
+    expect(claimed).toBeUndefined();
+    expect(
+      (await repository.getById(transcriptionReady.id))?.issuedTranscriptionLeaseTokens
+    ).toEqual(['lease_intervening_transcription']);
+  });
+
+  it('does not claim summary from a candidate whose issued history changed after selection', async () => {
+    const summaryReady = attachTranscriptArtifact(
+      attachRecordingArtifact(
+        createRecordingJob({
+          meetingUrl: 'uploaded://postgres-summary-claim-race.wav',
+          platform: 'uploaded-audio',
+          inputSource: 'uploaded-audio',
+          summaryRequested: true
+        }),
+        {
+          storageKey: 'recordings/job_pg_summary_claim_race/meeting.wav',
+          downloadUrl:
+            'https://storage.example.test/recordings/job_pg_summary_claim_race/meeting.wav',
+          contentType: 'audio/wav'
+        }
+      ),
+      {
+        storageKey: 'transcripts/job_pg_summary_claim_race/transcript.json',
+        downloadUrl:
+          'https://storage.example.test/transcripts/job_pg_summary_claim_race/transcript.json',
+        contentType: 'application/json',
+        language: 'en',
+        segments: [{ startMs: 0, endMs: 1_000, text: 'summary claim race' }]
+      }
+    );
+    await repository.save(summaryReady);
+    let injectedInterleaving = false;
+    const racingRepository = new PostgresRecordingJobRepository({
+      query: async <TRow extends Record<string, unknown>>(
+        text: string,
+        values?: unknown[]
+      ): Promise<{ rows: TRow[] }> => {
+        if (!injectedInterleaving && text.includes('SET assigned_summary_worker_id')) {
+          injectedInterleaving = true;
+          await database.query(
+            `
+              UPDATE recording_jobs
+              SET issued_summary_lease_tokens = $2::jsonb
+              WHERE id = $1
+            `,
+            [summaryReady.id, JSON.stringify(['lease_intervening_summary'])]
+          );
+        }
+
+        return await database.query<TRow>(text, values);
+      }
+    });
+
+    const claimed = await racingRepository.claimNextSummaryReady('summary-stale');
+
+    expect(claimed).toBeUndefined();
+    expect((await repository.getById(summaryReady.id))?.issuedSummaryLeaseTokens).toEqual([
+      'lease_intervening_summary'
+    ]);
+  });
+
+  it('atomically refuses a lifecycle save when the expected transcription lease was superseded', async () => {
+    const transcriptionReady = attachRecordingArtifact(
+      createRecordingJob({
+        meetingUrl: 'uploaded://postgres-lease-cas.wav',
+        platform: 'uploaded-audio',
+        inputSource: 'uploaded-audio'
+      }),
+      {
+        storageKey: 'recordings/job_pg_cas/meeting.wav',
+        downloadUrl: 'https://storage.example.test/recordings/job_pg_cas/meeting.wav',
+        contentType: 'audio/wav'
+      }
+    );
+    await repository.save(transcriptionReady);
+    const staleAttempt = (await repository.claimNextTranscriptionReady('transcriber-alpha'))!;
+    await repository.save(
+      releaseTranscriptionJobForRetry(
+        staleAttempt,
+        { code: 'transcription-failed', message: 'retry this attempt' },
+        3
+      )
+    );
+    const activeAttempt = (await repository.claimNextTranscriptionReady('transcriber-beta'))!;
+    const staleCompletion = attachTranscriptArtifact(staleAttempt, {
+      storageKey: 'transcripts/job_pg_cas/stale.json',
+      downloadUrl: 'https://storage.example.test/transcripts/job_pg_cas/stale.json',
+      contentType: 'application/json',
+      language: 'en',
+      segments: [{ startMs: 0, endMs: 1_000, text: 'stale completion' }]
+    });
+
+    const saved = await repository.saveIfLeaseActive(staleCompletion, {
+      stage: 'transcription',
+      leaseToken: staleAttempt.transcriptionLeaseToken!
+    });
+
+    expect(saved).toBeUndefined();
+    expect(await repository.getById(activeAttempt.id)).toEqual(activeAttempt);
+  });
+
+  it('atomically saves lifecycle changes while the expected summary lease is active', async () => {
+    const summaryReady = attachTranscriptArtifact(
+      attachRecordingArtifact(
+        createRecordingJob({
+          meetingUrl: 'uploaded://postgres-summary-cas.wav',
+          platform: 'uploaded-audio',
+          inputSource: 'uploaded-audio',
+          summaryRequested: true
+        }),
+        {
+          storageKey: 'recordings/job_pg_summary_cas/meeting.wav',
+          downloadUrl: 'https://storage.example.test/recordings/job_pg_summary_cas/meeting.wav',
+          contentType: 'audio/wav'
+        }
+      ),
+      {
+        storageKey: 'transcripts/job_pg_summary_cas/transcript.json',
+        downloadUrl: 'https://storage.example.test/transcripts/job_pg_summary_cas/transcript.json',
+        contentType: 'application/json',
+        language: 'en',
+        segments: [{ startMs: 0, endMs: 1_000, text: 'summary CAS' }]
+      }
+    );
+    await repository.save(summaryReady);
+    const assigned = (await repository.claimNextSummaryReady('summary-alpha'))!;
+    const completed = attachSummaryArtifact(assigned, {
+      model: 'gpt-5.6-luna',
+      reasoningEffort: 'medium',
+      text: 'summary result'
+    });
+    const persistedIssuedHistory = [
+      'lease_prior_summary_attempt',
+      assigned.summaryLeaseToken!
+    ];
+    await database.query(
+      `
+        UPDATE recording_jobs
+        SET issued_summary_lease_tokens = $2::jsonb
+        WHERE id = $1
+      `,
+      [assigned.id, JSON.stringify(persistedIssuedHistory)]
+    );
+
+    const saved = await repository.saveIfLeaseActive(completed, {
+      stage: 'summary',
+      leaseToken: assigned.summaryLeaseToken!
+    });
+
+    expect(saved?.summaryArtifact).toEqual(completed.summaryArtifact);
+    expect(saved?.issuedSummaryLeaseTokens).toEqual(persistedIssuedHistory);
+    expect((await repository.getById(assigned.id))?.state).toBe('completed');
   });
 
   it('does not claim a transcription job that is already leased to another transcription worker', async () => {

@@ -7,7 +7,7 @@ This project lets an operator:
 - upload audio or video files for Whisper transcription
 - let an admin switch future transcription jobs between local Whisper and Azure OpenAI `gpt-4o-transcribe`
 - let an admin manage cloud quota, AI routing defaults, and per-user cloud quota overrides
-- read full transcripts and Codex summaries in the dashboard
+- read full transcripts and Codex or Azure OpenAI summaries in the dashboard
 - export completed jobs as Markdown, TXT, SRT, or JSON
 - stop a live meeting bot or interrupt an upload/transcription job
 
@@ -16,7 +16,7 @@ This project lets an operator:
 - Operator dashboard at `http://localhost:3000`
 - Meeting-link jobs for supported guest-access links
 - Uploaded audio and video transcription
-- GPU Whisper transcription with `large-v3` by default
+- GPU Whisper transcription; the canonical runtime template uses `tiny`
 - Admin-only global transcription provider switch:
   - `self-hosted-whisper`
   - `azure-openai-gpt-4o-transcribe`
@@ -26,7 +26,7 @@ This project lets an operator:
 - Submission-time AI policy snapshots for future jobs
 - Per-user daily cloud quota reservation and remaining-budget display
 - Cloud usage ledger and admin audit history for governance changes
-- Codex summary generation with structured sections:
+- Codex or Azure OpenAI summary generation with structured sections:
   - Action Items
   - Decisions
   - Risks
@@ -38,11 +38,11 @@ This project lets an operator:
 
 - Docker and Docker Compose
 - NVIDIA driver + `nvidia-smi` if you want GPU transcription
-- `CODEX_HOME` on the host if you want Codex summaries inside the transcription worker
+- `CODEX_HOME` on the host only if you want local Codex summaries inside the transcription worker
 - Optional:
   - Supabase project for email OTP auth
   - SMTP provider for notification emails
-  - Azure OpenAI deployment if you want hosted transcription
+  - Azure OpenAI deployments if you want hosted transcription, punctuation restoration, or summaries
 
 ## Configure
 
@@ -54,7 +54,9 @@ cp .env.example .env
 ```
 
 `docker-compose.yml` loads `.env` (gitignored) for every service. `.env.example`
-is the committed template with safe defaults — never put real secrets there.
+is the committed development template — never put real secrets there. Before
+exposing a production deployment, replace the sample admin, session, internal
+service, database, and object-storage credentials.
 
 ## Start
 
@@ -79,6 +81,8 @@ docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up -d --bui
 > / `scripts/deploy.sh` exist specifically to prevent this. The recording-worker
 > also logs its mode on startup — `executor=screenapp` is correct for production;
 > `executor=stub` prints a loud warning.
+> The production Compose regression test also verifies that this override does
+> not replace the `SUMMARY_MODEL` selected through `.env`.
 
 Upload-only (no live meeting bot) workflows can still use the base file alone:
 
@@ -139,7 +143,7 @@ Notes:
 - Meeting-link jobs are effectively single-slot because there is one shared meeting-bot runtime.
 - Additional meeting-link submissions wait in a bounded queue controlled by `MAX_MEETING_JOB_BACKLOG`.
 - `Exit Meeting` now asks the bot to finalize the current recording before transcription when possible.
-- For a platform-by-platform acceptance checklist that separates local self-verification from real host-admission proof, see [`docs/operations/meeting-platform-verification.md`](/home/solomon/Andy/AI_NoteTacker/docs/operations/meeting-platform-verification.md).
+- For a platform-by-platform acceptance checklist that separates local self-verification from real host-admission proof, see [`docs/operations/meeting-platform-verification.md`](docs/operations/meeting-platform-verification.md).
 
 ### Upload Recording
 
@@ -185,12 +189,21 @@ Important:
 - cloud quota applies only to cloud-routed stages
 - local execution does not consume cloud quota
 - jobs snapshot their AI routing policy at submission time, so later admin changes affect only later jobs
+- usage whose model/version has no authoritative pricing-catalog entry is shown as
+  `unpriced`, not `$0`; the known priced subtotal remains a lower bound until a rate is supplied
+
+As of 2026-07-15 Azure publishes no public `gpt-5.6-luna` meter. Azure also
+bills `gpt-4o-transcribe` through separate audio-input, text-input, and
+text-output token meters, while the current transcription callback retains only
+audio duration. Both stages therefore keep their usage but report actual USD as
+unpriced/null. Duration-based values are reservation estimates only; they are
+not Azure billing evidence.
 
 ### Read Results
 
 Completed jobs can show:
 - Full Transcript
-- Codex Summary
+- Codex or Azure OpenAI Summary
 - structured summary sections
 - Job Timeline
 - export buttons
@@ -205,14 +218,18 @@ Completed jobs support:
 
 ## Current Runtime Defaults
 
-Important defaults from [`.env.example`](/home/solomon/Andy/AI_NoteTacker/.env.example):
+Important defaults from [`.env.example`](.env.example):
 
-- `WHISPER_MODEL=large-v3`
+- `WHISPER_MODEL=tiny`
 - `WHISPER_DEVICE=cuda`
 - `WHISPER_COMPUTE_TYPE=float16`
-- `DEFAULT_TRANSCRIPTION_PROVIDER=self-hosted-whisper`
-- `DEFAULT_SUMMARY_PROVIDER=local-codex`
+- `DEFAULT_TRANSCRIPTION_PROVIDER=azure-openai-gpt-4o-transcribe`
+- `DEFAULT_SUMMARY_PROVIDER=azure-openai`
+- `SUMMARY_MODEL=gpt-5.6-luna`
 - `SUMMARY_ENABLED=true`
+- `TRANSCRIPT_PUNCTUATION_ENABLED=true`
+- `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS=300`
+- `AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS=30`
 - `MAX_CONCURRENT_TRANSCRIPTION_JOBS=1`
 - `MAX_MEETING_JOB_BACKLOG=2`
 - `MAX_TRANSCRIPTION_JOB_BACKLOG=10`
@@ -220,6 +237,10 @@ Important defaults from [`.env.example`](/home/solomon/Andy/AI_NoteTacker/.env.e
 - `LIVE_MEETING_RESERVATION_CAP_USD=1.5`
 - `AI_PRICING_VERSION=v1`
 - `MEETING_BOT_STOP_TIMEOUT_SECONDS=90`
+
+The template selects the cloud providers but leaves their endpoint/key values
+blank. Fill the required Azure values before using those routes, or switch the
+default policies to the local providers.
 
 ## Auth And Email
 
@@ -235,6 +256,29 @@ Azure hosted transcription becomes selectable only when all of these are configu
 - `AZURE_OPENAI_DEPLOYMENT`
 - `AZURE_OPENAI_API_KEY`
 - optional `AZURE_OPENAI_API_VERSION`
+- optional `AZURE_OPENAI_TRANSCRIBE_TIMEOUT_SECONDS` (default `300`)
+
+Azure hosted summary and punctuation restoration require explicit Responses API
+configuration on the control-plane and transcription/summary workers:
+
+- `AZURE_OPENAI_SUMMARY_ENDPOINT` — HTTPS URL whose normalized path is exactly `/openai/v1/responses`
+- `AZURE_OPENAI_SUMMARY_API_KEY`
+- `SUMMARY_MODEL`
+- optional `AZURE_OPENAI_PUNCTUATION_MODEL` (blank reuses `SUMMARY_MODEL`)
+- optional `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS` (default `300`)
+- optional `AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS` (default `30`)
+
+Python transcription/summary worker GET/POST/heartbeat calls use
+`CONTROL_PLANE_TIMEOUT_SECONDS` (default `30`).
+
+The summary endpoint/key are not inferred from the transcription endpoint/key.
+Both Responses callers send `store: false` to disable Responses
+application-state/message-history storage and require finite positive
+socket-operation timeouts. Azure transcription uploads and Python
+transcription/summary worker-to-control-plane calls have the same finite-timeout
+rule. These settings bound blocking socket
+operations rather than the entire workflow. `store: false` is not by itself a
+zero-data-retention guarantee.
 
 Notification email is enabled when:
 - `SMTP_HOST`
@@ -256,13 +300,10 @@ Build everything:
 npm run build
 ```
 
-Validate active OpenSpec changes:
+Validate every active OpenSpec change:
 
 ```bash
-openspec validate add-authenticated-media-archive --strict --no-interactive
-openspec validate add-codex-transcript-summaries --strict --no-interactive
-openspec validate add-operator-bot-stop-controls --strict --no-interactive
-openspec validate add-admin-transcription-provider-switch --strict --no-interactive
+openspec validate --all --strict --no-interactive
 ```
 
 Repair previously stored mojibake upload file names:
@@ -282,11 +323,18 @@ node scripts/run_runtime_smoke.mjs --base-url http://127.0.0.1:3000 --timeout-ms
 
 ## Troubleshooting
 
-### `Codex Summary` does not appear
+### Summary does not appear
 
-Check the transcription worker environment:
+For local Codex, check the transcription worker environment:
 - `SUMMARY_ENABLED=true`
 - `CODEX_HOME` is mounted into the container
+
+For Azure OpenAI, also check:
+
+- `AZURE_OPENAI_SUMMARY_ENDPOINT` ends at `/openai/v1/responses`
+- `AZURE_OPENAI_SUMMARY_API_KEY` is set independently of the transcription key
+- `SUMMARY_MODEL` names the Azure deployment
+- the control-plane, transcription-worker, and summary-worker were recreated after env changes
 
 ### Chinese upload file names look wrong
 
@@ -324,9 +372,9 @@ Check:
 
 ## Worker Docs
 
-- [Recording Worker README](/home/solomon/Andy/AI_NoteTacker/workers/recording-worker/README.md)
-- [Transcription Worker README](/home/solomon/Andy/AI_NoteTacker/workers/transcription-worker/README.md)
+- [Recording Worker README](workers/recording-worker/README.md)
+- [Transcription Worker README](workers/transcription-worker/README.md)
 
 ## Rollout Guidance
 
-- [100-User Rollout Profile](/home/solomon/Andy/AI_NoteTacker/docs/operations/100-user-rollout.md)
+- [100-User Rollout Profile](docs/operations/100-user-rollout.md)

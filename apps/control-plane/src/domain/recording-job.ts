@@ -37,9 +37,25 @@ export type TranscriptSegment = {
   startMs: number;
   endMs: number;
   text: string;
+  rawText?: string;
+  displayText?: string;
+  language?: string;
+  languageConfidence?: number;
+  timingSource?: 'provider' | 'estimated';
+  reviewFlags?: TranscriptReviewFlag[];
+};
+
+export type TranscriptReviewFlag = {
+  reason: string;
+  originalText: string;
+  candidates: string[];
+  startMs?: number;
+  endMs?: number;
+  evidence?: string;
 };
 
 export type TranscriptArtifact = RecordingArtifact & {
+  schemaVersion?: 2;
   language: string;
   segments: TranscriptSegment[];
 };
@@ -99,6 +115,8 @@ export type RecordingJob = {
   summaryLeaseAcquiredAt?: string;
   summaryLeaseHeartbeatAt?: string;
   summaryLeaseExpiresAt?: string;
+  issuedTranscriptionLeaseTokens?: string[];
+  issuedSummaryLeaseTokens?: string[];
   transcriptionProvider?: TranscriptionProvider;
   transcriptionModel?: string;
   summaryProvider?: SummaryProvider;
@@ -161,6 +179,8 @@ const addDurationToIso = (value: string, durationMs: number): string =>
 
 const nextJobId = (): string => `job_${crypto.randomUUID().replace(/-/g, '')}`;
 const nextLeaseToken = (): string => `lease_${crypto.randomUUID().replace(/-/g, '')}`;
+const appendIssuedLeaseToken = (tokens: string[] | undefined, token: string): string[] =>
+  tokens?.includes(token) ? tokens : [...(tokens ?? []), token];
 
 const clearRecordingLeaseState = {
   assignedWorkerId: undefined,
@@ -260,6 +280,8 @@ export const createRecordingJob = ({
   estimatedCloudReservationUsd,
   reservedCloudQuotaUsd,
   quotaDayKey,
+  issuedTranscriptionLeaseTokens: [],
+  issuedSummaryLeaseTokens: [],
   state: 'queued',
   processingStage: 'queued',
   processingMessage: stateHistoryMessage.queued,
@@ -470,12 +492,18 @@ export const markMeetingRecordingInProgress = (
 export const assignTranscriptionJobToWorker = (
   job: RecordingJob,
   workerId: string
-): RecordingJob =>
-  activateLeaseForStage(
+): RecordingJob => {
+  const leaseToken = nextLeaseToken();
+
+  return activateLeaseForStage(
     {
       ...job,
       assignedTranscriptionWorkerId: workerId,
-      transcriptionLeaseToken: nextLeaseToken(),
+      transcriptionLeaseToken: leaseToken,
+      issuedTranscriptionLeaseTokens: appendIssuedLeaseToken(
+        job.issuedTranscriptionLeaseTokens,
+        leaseToken
+      ),
       state: 'transcribing',
       processingStage: job.inputSource === 'uploaded-audio' ? 'preparing-media' : 'transcribing-audio',
       processingMessage:
@@ -497,6 +525,7 @@ export const assignTranscriptionJobToWorker = (
     'transcription',
     DEFAULT_WORKER_LEASE_DURATION_MS
   );
+};
 
 export const releaseTranscriptionJobForRetry = (
   job: RecordingJob,
@@ -570,12 +599,15 @@ export const releaseSummaryJobForRetry = (
 export const assignSummaryJobToWorker = (
   job: RecordingJob,
   workerId: string
-): RecordingJob =>
-  activateLeaseForStage(
+): RecordingJob => {
+  const leaseToken = nextLeaseToken();
+
+  return activateLeaseForStage(
     {
       ...job,
       assignedSummaryWorkerId: workerId,
-      summaryLeaseToken: nextLeaseToken(),
+      summaryLeaseToken: leaseToken,
+      issuedSummaryLeaseTokens: appendIssuedLeaseToken(job.issuedSummaryLeaseTokens, leaseToken),
       state: 'transcribing',
       processingStage: 'generating-summary',
       processingMessage: 'Generating meeting summary.',
@@ -591,6 +623,7 @@ export const assignSummaryJobToWorker = (
     'summary',
     DEFAULT_WORKER_LEASE_DURATION_MS
   );
+};
 
 export const updateRecordingJobProgress = (
   job: RecordingJob,

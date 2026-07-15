@@ -36,6 +36,18 @@ class FakeClient:
         return True
 
 
+class FailOnceTranscriptEventClient(FakeClient):
+    def __init__(self, claimed_job):
+        super().__init__(claimed_job)
+        self.failed = False
+
+    def post_job_event(self, job_id, payload, lease_token=None):
+        super().post_job_event(job_id, payload, lease_token=lease_token)
+        if payload["type"] == "transcript-artifact-stored" and not self.failed:
+            self.failed = True
+            raise RuntimeError("control-plane callback failed")
+
+
 class FakeDownloader:
     def __init__(self, local_path):
         self.local_path = local_path
@@ -52,9 +64,18 @@ class FakeTranscriber:
         self.error = error
         self.progress_updates = progress_updates or []
         self.inputs = []
+        self.workflow_contexts = []
 
-    def transcribe(self, local_audio_path, on_progress=None):
+    def transcribe(
+        self,
+        local_audio_path,
+        on_progress=None,
+        on_punctuation_usage=None,
+        on_transcription_usage=None,
+        workflow_context=None,
+    ):
         self.inputs.append(local_audio_path)
+        self.workflow_contexts.append(workflow_context)
         if self.error:
             raise self.error
         if on_progress:
@@ -68,10 +89,33 @@ class SlowTranscriber(FakeTranscriber):
         super().__init__(transcript_result=transcript_result or {"language": "en", "segments": []})
         self.delay_seconds = delay_seconds
 
-    def transcribe(self, local_audio_path, on_progress=None):
+    def transcribe(
+        self,
+        local_audio_path,
+        on_progress=None,
+        on_punctuation_usage=None,
+        on_transcription_usage=None,
+        workflow_context=None,
+    ):
         self.inputs.append(local_audio_path)
+        self.workflow_contexts.append(workflow_context)
         time.sleep(self.delay_seconds)
         return self.transcript_result
+
+
+class PartiallyMeteredFailingTranscriber(FakeTranscriber):
+    def transcribe(
+        self,
+        local_audio_path,
+        on_progress=None,
+        on_punctuation_usage=None,
+        on_transcription_usage=None,
+        workflow_context=None,
+    ):
+        self.inputs.append(local_audio_path)
+        self.workflow_contexts.append(workflow_context)
+        on_transcription_usage({"audio_ms": 60_000})
+        raise RuntimeError("later Azure upload failed")
 
 
 class FakeTranscriberRegistry:
@@ -237,6 +281,71 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         self.assertEqual(client.events[3][1]["type"], "transcription-failed")
         self.assertEqual(client.events[3][1]["failure"]["code"], "transcription-failed")
 
+    def test_retries_the_exact_transcript_callback_instead_of_sending_failure(self) -> None:
+        client = FailOnceTranscriptEventClient(
+            {
+                "id": "job_transcript_callback_fail",
+                "leaseToken": "lease_transcript_callback_fail",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_transcript_callback_fail/meeting.webm",
+                    "downloadUrl": "https://storage.example.test/recordings/job_transcript_callback_fail/meeting.webm",
+                    "contentType": "video/webm",
+                },
+            }
+        )
+        transcriber = FakeTranscriber(
+            {
+                "language": "en",
+                "segments": [{"start_ms": 0, "end_ms": 1_000, "text": "hello"}],
+            }
+        )
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_transcript_callback_fail.wav"),
+            media_preparer=FakeMediaPreparer("/tmp/job_transcript_callback_fail.wav"),
+            transcriber=transcriber,
+        )
+
+        self.assertEqual(
+            result,
+            {"kind": "processed", "job_id": "job_transcript_callback_fail"},
+        )
+        terminal_events = [event for event in client.events if event[1]["type"].endswith("stored")]
+        self.assertEqual(len(terminal_events), 2)
+        self.assertEqual(terminal_events[1], terminal_events[0])
+
+    def test_reports_successful_partial_azure_audio_usage_on_failure(self) -> None:
+        client = FakeClient(
+            {
+                "id": "job_partial_azure_fail",
+                "leaseToken": "lease_partial_azure_fail",
+                "transcriptionProvider": "azure-openai-gpt-4o-transcribe",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_partial_azure_fail/meeting.webm",
+                    "downloadUrl": "https://storage.example.test/recordings/job_partial_azure_fail/meeting.webm",
+                    "contentType": "video/webm",
+                },
+            }
+        )
+        transcriber = PartiallyMeteredFailingTranscriber()
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_partial_azure_fail.wav"),
+            media_preparer=FakeMediaPreparer("/tmp/job_partial_azure_fail.wav"),
+            transcriber=transcriber,
+            transcriber_registry=FakeTranscriberRegistry(
+                {"azure-openai-gpt-4o-transcribe": transcriber}
+            ),
+        )
+
+        self.assertEqual(result, {"kind": "failed", "job_id": "job_partial_azure_fail"})
+        self.assertEqual(client.events[-1][1]["type"], "transcription-failed")
+        self.assertEqual(client.events[-1][1]["usage"], {"audioMs": 60_000})
+
     def test_stops_posting_artifacts_when_the_job_is_cancelled_mid_transcription(self) -> None:
         client = FakeClient(
             {
@@ -340,6 +449,7 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
             {
                 "id": "job_azure",
                 "transcriptionProvider": "azure-openai-gpt-4o-transcribe",
+                "submissionTemplateId": "sales",
                 "recordingArtifact": {
                     "storageKey": "recordings/job_azure/meeting.webm",
                     "downloadUrl": "https://storage.example.test/recordings/job_azure/meeting.webm",
@@ -362,8 +472,326 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         self.assertEqual(registry.selected, ["azure-openai-gpt-4o-transcribe"])
         self.assertEqual(azure_transcriber.inputs, ["/tmp/job_azure.wav"])
         self.assertEqual(whisper_transcriber.inputs, [])
+        self.assertEqual(azure_transcriber.workflow_contexts, [{"template_id": "sales"}])
         self.assertEqual(client.events[2][1]["processingMessage"], "Running Azure OpenAI transcription.")
         self.assertEqual(client.events[3][1]["transcriptArtifact"]["language"], "zh")
+
+    def test_posts_extended_transcript_segment_evidence_without_replacing_raw_text(self) -> None:
+        transcriber = FakeTranscriber(
+            {
+                "language": "zh-Hant",
+                "segments": [
+                    {
+                        "start_ms": 0,
+                        "end_ms": 900,
+                        "text": "需要黑電淨化器",
+                        "raw_text": "需要黑電淨化器",
+                        "display_text": "需要黑電淨化器",
+                        "language": "zh-Hant",
+                        "timing_source": "estimated",
+                        "review_flags": [
+                            {
+                                "reason": "domain-term",
+                                "original_text": "黑電淨化器",
+                                "candidates": ["黑煙淨化器"],
+                                "start_ms": 0,
+                                "end_ms": 900,
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        client = FakeClient(
+            {
+                "id": "job_evidence",
+                "transcriptionProvider": "azure-openai-gpt-4o-transcribe",
+                "submissionTemplateId": "sales",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_evidence/meeting.webm",
+                    "downloadUrl": "https://storage.example.test/recordings/job_evidence/meeting.webm",
+                    "contentType": "video/webm",
+                },
+            }
+        )
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_evidence.wav"),
+            media_preparer=FakeMediaPreparer(local_audio_path="/tmp/job_evidence.wav"),
+            transcriber=transcriber,
+            transcriber_registry=FakeTranscriberRegistry(
+                {"azure-openai-gpt-4o-transcribe": transcriber}
+            ),
+        )
+
+        self.assertEqual(result, {"kind": "processed", "job_id": "job_evidence"})
+        artifact = client.events[3][1]["transcriptArtifact"]
+        self.assertEqual(artifact["schemaVersion"], 2)
+        self.assertEqual(
+            artifact["segments"][0],
+            {
+                "startMs": 0,
+                "endMs": 900,
+                "text": "需要黑電淨化器",
+                "rawText": "需要黑電淨化器",
+                "displayText": "需要黑電淨化器",
+                "language": "zh-Hant",
+                "timingSource": "estimated",
+                "reviewFlags": [
+                    {
+                        "reason": "domain-term",
+                        "originalText": "黑電淨化器",
+                        "candidates": ["黑煙淨化器"],
+                        "startMs": 0,
+                        "endMs": 900,
+                    }
+                ],
+            },
+        )
+
+    def test_posts_aggregated_punctuation_usage_with_transcript(self) -> None:
+        class _PunctuationUsageTranscriber(FakeTranscriber):
+            def transcribe(
+                self,
+                local_audio_path,
+                on_progress=None,
+                on_punctuation_usage=None,
+                on_transcription_usage=None,
+                workflow_context=None,
+            ):
+                self.inputs.append(local_audio_path)
+                self.workflow_contexts.append(workflow_context)
+                for usage in (
+                    {
+                        "model": "gpt-5.6-luna",
+                        "input_tokens": 10,
+                        "cached_input_tokens": 2,
+                        "output_tokens": 3,
+                        "reasoning_output_tokens": 1,
+                        "total_tokens": 13,
+                        "request_count": 1,
+                        "accepted_chunk_count": 1,
+                        "fallback_chunk_count": 0,
+                        "unmetered_request_count": 0,
+                    },
+                    {
+                        "model": "gpt-5.6-luna",
+                        "input_tokens": 8,
+                        "cached_input_tokens": 1,
+                        "output_tokens": 2,
+                        "reasoning_output_tokens": 1,
+                        "total_tokens": 10,
+                        "request_count": 1,
+                        "accepted_chunk_count": 0,
+                        "fallback_chunk_count": 1,
+                        "unmetered_request_count": 0,
+                    },
+                ):
+                    on_punctuation_usage(usage)
+                return self.transcript_result
+
+        azure_transcriber = _PunctuationUsageTranscriber(
+            {
+                "language": "zh",
+                "segments": [{"start_ms": 0, "end_ms": 900, "text": "逐字稿。"}],
+                "usage": {"audio_ms": 900},
+            }
+        )
+        client = FakeClient(
+            {
+                "id": "job_punctuation_usage",
+                "leaseToken": "lease_punctuation_usage",
+                "transcriptionProvider": "azure-openai-gpt-4o-transcribe",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_punctuation_usage/meeting.webm",
+                    "downloadUrl": "https://storage.example.test/meeting.webm",
+                    "contentType": "video/webm",
+                },
+            }
+        )
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_punctuation_usage.wav"),
+            media_preparer=FakeMediaPreparer("/tmp/job_punctuation_usage.wav"),
+            transcriber=azure_transcriber,
+            transcriber_registry=FakeTranscriberRegistry(
+                {"azure-openai-gpt-4o-transcribe": azure_transcriber}
+            ),
+        )
+
+        self.assertEqual(result, {"kind": "processed", "job_id": "job_punctuation_usage"})
+        self.assertEqual(
+            client.events[-1][1]["usage"],
+            {
+                "audioMs": 900,
+                "punctuation": {
+                    "provider": "azure-openai",
+                    "model": "gpt-5.6-luna",
+                    "inputTokens": 18,
+                    "cachedInputTokens": 3,
+                    "outputTokens": 5,
+                    "reasoningOutputTokens": 2,
+                    "totalTokens": 23,
+                    "requestCount": 2,
+                    "acceptedChunkCount": 1,
+                    "fallbackChunkCount": 1,
+                    "unmeteredRequestCount": 0,
+                },
+            },
+        )
+
+    def test_posts_spent_punctuation_usage_when_transcription_fails(self) -> None:
+        class _FailingUsageTranscriber(FakeTranscriber):
+            def transcribe(
+                self,
+                local_audio_path,
+                on_progress=None,
+                on_punctuation_usage=None,
+                on_transcription_usage=None,
+                workflow_context=None,
+            ):
+                self.inputs.append(local_audio_path)
+                self.workflow_contexts.append(workflow_context)
+                on_punctuation_usage(
+                    {
+                        "model": "gpt-5.6-luna",
+                        "input_tokens": 10,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 2,
+                        "reasoning_output_tokens": 1,
+                        "total_tokens": 12,
+                        "request_count": 1,
+                        "accepted_chunk_count": 0,
+                        "fallback_chunk_count": 1,
+                        "unmetered_request_count": 0,
+                    }
+                )
+                raise RuntimeError("sparse retry failed")
+
+        azure_transcriber = _FailingUsageTranscriber()
+        client = FakeClient(
+            {
+                "id": "job_punctuation_failure",
+                "leaseToken": "lease_punctuation_failure",
+                "transcriptionProvider": "azure-openai-gpt-4o-transcribe",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_punctuation_failure/meeting.webm",
+                    "downloadUrl": "https://storage.example.test/meeting.webm",
+                    "contentType": "video/webm",
+                },
+            }
+        )
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_punctuation_failure.wav"),
+            media_preparer=FakeMediaPreparer("/tmp/job_punctuation_failure.wav"),
+            transcriber=azure_transcriber,
+            transcriber_registry=FakeTranscriberRegistry(
+                {"azure-openai-gpt-4o-transcribe": azure_transcriber}
+            ),
+        )
+
+        self.assertEqual(result, {"kind": "failed", "job_id": "job_punctuation_failure"})
+        self.assertEqual(client.events[-1][1]["type"], "transcription-failed")
+        self.assertEqual(
+            client.events[-1][1].get("usage", {}).get("punctuation"),
+            {
+                "provider": "azure-openai",
+                "model": "gpt-5.6-luna",
+                "inputTokens": 10,
+                "cachedInputTokens": 0,
+                "outputTokens": 2,
+                "reasoningOutputTokens": 1,
+                "totalTokens": 12,
+                "requestCount": 1,
+                "acceptedChunkCount": 0,
+                "fallbackChunkCount": 1,
+                "unmeteredRequestCount": 0,
+            },
+        )
+
+    def test_posts_spent_punctuation_usage_without_overwriting_cancellation(self) -> None:
+        class _CancelledUsageTranscriber(FakeTranscriber):
+            def transcribe(
+                self,
+                local_audio_path,
+                on_progress=None,
+                on_punctuation_usage=None,
+                on_transcription_usage=None,
+                workflow_context=None,
+            ):
+                self.inputs.append(local_audio_path)
+                self.workflow_contexts.append(workflow_context)
+                on_punctuation_usage(
+                    {
+                        "model": "gpt-5.6-luna",
+                        "input_tokens": 6,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 1,
+                        "reasoning_output_tokens": 0,
+                        "total_tokens": 7,
+                        "request_count": 1,
+                        "accepted_chunk_count": 1,
+                        "fallback_chunk_count": 0,
+                        "unmetered_request_count": 0,
+                    }
+                )
+                on_progress(
+                    {
+                        "processed_ms": 1000,
+                        "total_ms": 1000,
+                        "percent": 100,
+                    }
+                )
+
+        azure_transcriber = _CancelledUsageTranscriber()
+        client = FakeClient(
+            {
+                "id": "job_punctuation_cancelled",
+                "leaseToken": "lease_punctuation_cancelled",
+                "transcriptionProvider": "azure-openai-gpt-4o-transcribe",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_punctuation_cancelled/meeting.webm",
+                    "downloadUrl": "https://storage.example.test/meeting.webm",
+                    "contentType": "video/webm",
+                },
+            },
+            job_statuses=[
+                {
+                    "id": "job_punctuation_cancelled",
+                    "state": "failed",
+                    "failureCode": "operator-cancel-requested",
+                }
+            ],
+        )
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_punctuation_cancelled.wav"),
+            media_preparer=FakeMediaPreparer("/tmp/job_punctuation_cancelled.wav"),
+            transcriber=azure_transcriber,
+            transcriber_registry=FakeTranscriberRegistry(
+                {"azure-openai-gpt-4o-transcribe": azure_transcriber}
+            ),
+        )
+
+        self.assertEqual(result, {"kind": "cancelled", "job_id": "job_punctuation_cancelled"})
+        self.assertEqual(client.events[-1][1]["type"], "transcription-failed")
+        self.assertEqual(
+            client.events[-1][1].get("usage", {}).get("punctuation", {}).get("totalTokens"),
+            7,
+        )
+        self.assertEqual(
+            client.events[-1][1]["failure"]["code"],
+            "operator-cancel-requested",
+        )
 
     def test_forwards_the_job_summary_profile_to_the_summarizer(self) -> None:
         summarizer = FakeSummarizer(

@@ -1,6 +1,76 @@
 from transcription_worker.heartbeat import start_lease_heartbeat
 
 
+def _summary_usage_event(usage):
+    return {
+        "promptTokens": usage["prompt_tokens"],
+        "cachedPromptTokens": usage.get("cached_prompt_tokens", 0),
+        "completionTokens": usage["completion_tokens"],
+        "reasoningCompletionTokens": usage.get("reasoning_completion_tokens", 0),
+        "totalTokens": usage["total_tokens"],
+    }
+
+
+def _failed_summary_usage_event(error):
+    usage = getattr(error, "usage", None)
+    if not isinstance(usage, dict):
+        return None
+
+    return {
+        "promptTokens": usage["input_tokens"],
+        "cachedPromptTokens": usage["cached_input_tokens"],
+        "completionTokens": usage["output_tokens"],
+        "reasoningCompletionTokens": usage["reasoning_output_tokens"],
+        "totalTokens": usage["total_tokens"],
+    }
+
+
+def _post_terminal_event(client, job_id, payload, lease_token):
+    try:
+        client.post_job_event(job_id, payload, lease_token=lease_token)
+    except Exception:
+        client.post_job_event(job_id, payload, lease_token=lease_token)
+
+
+def _summary_review_flag(review_flag):
+    result = {
+        "reason": review_flag["reason"],
+        "original_text": review_flag["originalText"],
+        "candidates": review_flag.get("candidates", []),
+    }
+    for source_key, target_key in (
+        ("startMs", "start_ms"),
+        ("endMs", "end_ms"),
+        ("evidence", "evidence"),
+    ):
+        if source_key in review_flag:
+            result[target_key] = review_flag[source_key]
+    return result
+
+
+def _summary_segment(segment):
+    result = {
+        "start_ms": segment["startMs"],
+        "end_ms": segment["endMs"],
+        "text": segment.get("displayText") or segment["text"],
+    }
+    for source_key, target_key in (
+        ("rawText", "raw_text"),
+        ("displayText", "display_text"),
+        ("language", "language"),
+        ("languageConfidence", "language_confidence"),
+        ("timingSource", "timing_source"),
+    ):
+        if source_key in segment:
+            result[target_key] = segment[source_key]
+    if segment.get("reviewFlags"):
+        result["review_flags"] = [
+            _summary_review_flag(review_flag)
+            for review_flag in segment["reviewFlags"]
+        ]
+    return result
+
+
 def run_summary_worker_iteration(
     worker_id,
     client,
@@ -21,16 +91,14 @@ def run_summary_worker_iteration(
         heartbeat_interval_ms,
     )
 
+    summary_generated = False
+
     try:
         transcript_artifact = claimed_job["transcriptArtifact"]
         transcript_result = {
             "language": transcript_artifact.get("language", "unknown"),
             "segments": [
-                {
-                    "start_ms": segment["startMs"],
-                    "end_ms": segment["endMs"],
-                    "text": segment["text"],
-                }
+                _summary_segment(segment)
                 for segment in transcript_artifact.get("segments", [])
             ],
         }
@@ -48,6 +116,7 @@ def run_summary_worker_iteration(
             if claimed_job.get("summaryProvider") == "azure-openai"
             else None,
         )
+        summary_generated = True
 
         summary_event = {
             "type": "summary-artifact-stored",
@@ -68,29 +137,34 @@ def run_summary_worker_iteration(
             },
         }
         if summary_result.get("usage"):
-            summary_event["usage"] = {
-                "promptTokens": summary_result["usage"]["prompt_tokens"],
-                "completionTokens": summary_result["usage"]["completion_tokens"],
-                "totalTokens": summary_result["usage"]["total_tokens"],
-            }
-        client.post_job_event(
+            summary_event["usage"] = _summary_usage_event(summary_result["usage"])
+        _post_terminal_event(
+            client,
             claimed_job["id"],
             summary_event,
-            lease_token=claimed_job.get("leaseToken"),
+            claimed_job.get("leaseToken"),
         )
 
         return {"kind": "processed", "job_id": claimed_job["id"]}
     except Exception as error:
-        client.post_job_event(
-            claimed_job["id"],
-            {
-                "type": "summary-failed",
-                "failure": {
-                    "code": "summary-failed",
-                    "message": str(error),
-                },
+        if summary_generated:
+            raise
+
+        failure_event = {
+            "type": "summary-failed",
+            "failure": {
+                "code": "summary-failed",
+                "message": str(error),
             },
-            lease_token=claimed_job.get("leaseToken"),
+        }
+        failed_usage = _failed_summary_usage_event(error)
+        if failed_usage:
+            failure_event["usage"] = failed_usage
+        _post_terminal_event(
+            client,
+            claimed_job["id"],
+            failure_event,
+            claimed_job.get("leaseToken"),
         )
         return {"kind": "failed", "job_id": claimed_job["id"]}
     finally:

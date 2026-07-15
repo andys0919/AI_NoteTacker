@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-notetacker.local/schemas/multilingual-transcription-manifest-v1.json",
+  "title": "AI NoteTacker multilingual transcription corpus manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "corpusVersion", "cases"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "corpusVersion": { "type": "string", "minLength": 1 },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "audioPath", "scoringUnit", "reference"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "audioPath": { "type": "string", "minLength": 1 },
+          "scoringUnit": { "enum": ["character", "word"] },
+          "reference": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["rawText", "displayText", "languageSpans", "traditionalSpans", "domainEntities", "numerics", "summaryClaims", "actionItems", "decisions"],
+            "properties": {
+              "rawText": { "type": "string" },
+              "displayText": { "type": "string" },
+              "languageSpans": { "$ref": "#/$defs/stringList" },
+              "traditionalSpans": { "$ref": "#/$defs/stringList" },
+              "domainEntities": { "$ref": "#/$defs/stringList" },
+              "numerics": { "$ref": "#/$defs/stringList" },
+              "summaryClaims": { "$ref": "#/$defs/stringList" },
+              "actionItems": { "$ref": "#/$defs/stringList" },
+              "decisions": { "$ref": "#/$defs/stringList" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "stringList": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

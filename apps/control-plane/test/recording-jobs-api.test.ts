@@ -206,6 +206,8 @@ describe('recording jobs API', () => {
     expect(fetched.body.id).toBe(created.body.id);
     expect(fetched.body.state).toBe('queued');
     expect(fetched.body.platform).toBe('microsoft-teams');
+    expect(fetched.body).not.toHaveProperty('issuedTranscriptionLeaseTokens');
+    expect(fetched.body).not.toHaveProperty('issuedSummaryLeaseTokens');
   });
 
   it('allows a recording worker to claim the next queued job', async () => {
@@ -231,6 +233,8 @@ describe('recording jobs API', () => {
     expect(claim.body.leaseAcquiredAt).toBeTruthy();
     expect(claim.body.leaseHeartbeatAt).toBeTruthy();
     expect(claim.body.leaseExpiresAt).toBeTruthy();
+    expect(claim.body).not.toHaveProperty('issuedTranscriptionLeaseTokens');
+    expect(claim.body).not.toHaveProperty('issuedSummaryLeaseTokens');
   });
 
   it('returns 204 when no queued job is available for workers to claim', async () => {
@@ -279,6 +283,8 @@ describe('recording jobs API', () => {
     expect(claim.body.leaseAcquiredAt).toBeTruthy();
     expect(claim.body.leaseHeartbeatAt).toBeTruthy();
     expect(claim.body.leaseExpiresAt).toBeTruthy();
+    expect(claim.body).not.toHaveProperty('issuedTranscriptionLeaseTokens');
+    expect(claim.body).not.toHaveProperty('issuedSummaryLeaseTokens');
   });
 
   it('gates transcription claims when the shared gpu transcription slot is full', async () => {
@@ -664,15 +670,31 @@ describe('recording jobs API', () => {
       .send({
         type: 'transcript-artifact-stored',
         transcriptArtifact: {
+          schemaVersion: 2,
           storageKey: 'transcripts/job_456/transcript.json',
           downloadUrl: 'https://storage.example.test/transcripts/job_456/transcript.json',
           contentType: 'application/json',
-          language: 'en',
+          language: 'zh-Hant',
           segments: [
             {
               startMs: 0,
               endMs: 1200,
-              text: 'hello everyone'
+              text: '台塑 HQ review',
+              rawText: '台塑 HQ review',
+              displayText: '台塑 HQ review',
+              language: 'zh-Hant',
+              languageConfidence: 0.98,
+              timingSource: 'provider',
+              reviewFlags: [
+                {
+                  reason: 'domain-term',
+                  originalText: '黑電淨化器',
+                  candidates: ['黑煙淨化器'],
+                  startMs: 600,
+                  endMs: 1100,
+                  evidence: 'sales glossary'
+                }
+              ]
             }
           ]
         }
@@ -704,6 +726,25 @@ describe('recording jobs API', () => {
     expect(fetched.body.recordingArtifact.storageKey).toBe('recordings/job_456/meeting.webm');
     expect(fetched.body.transcriptArtifact.storageKey).toBe('transcripts/job_456/transcript.json');
     expect(fetched.body.transcriptArtifact.segments).toHaveLength(1);
+    expect(fetched.body.transcriptArtifact.schemaVersion).toBe(2);
+    expect(fetched.body.transcriptArtifact.segments[0]).toMatchObject({
+      text: '台塑 HQ review',
+      rawText: '台塑 HQ review',
+      displayText: '台塑 HQ review',
+      language: 'zh-Hant',
+      languageConfidence: 0.98,
+      timingSource: 'provider',
+      reviewFlags: [
+        {
+          reason: 'domain-term',
+          originalText: '黑電淨化器',
+          candidates: ['黑煙淨化器'],
+          startMs: 600,
+          endMs: 1100,
+          evidence: 'sales glossary'
+        }
+      ]
+    });
     expect(fetched.body.summaryArtifact.model).toBe('gpt-5.3-codex-spark');
     expect(fetched.body.summaryArtifact.text).toBe('Short summary');
     expect(fetched.body.summaryArtifact.structured.actionItems).toEqual(['send recap']);
@@ -2144,11 +2185,25 @@ describe('recording jobs API', () => {
           downloadUrl: 'https://storage.example.test/transcripts/job_export/transcript.json',
           contentType: 'application/json',
           language: 'en',
+          schemaVersion: 2,
           segments: [
             {
               startMs: 0,
               endMs: 1200,
-              text: 'hello export world'
+              text: 'hello export world',
+              rawText: 'hello export world',
+              displayText: 'hello export world',
+              language: 'en',
+              timingSource: 'provider',
+              reviewFlags: [
+                {
+                  reason: 'proper-name',
+                  originalText: 'Solomon',
+                  candidates: ['Solomon'],
+                  startMs: 0,
+                  endMs: 500
+                }
+              ]
             },
             {
               startMs: 1200,
@@ -2218,6 +2273,25 @@ describe('recording jobs API', () => {
     expect(json.body.job.id).toBe(exportedJob.id);
     expect(json.body.summary.text).toBe('## Summary\n\nExport summary');
     expect(json.body.transcript.segments).toHaveLength(2);
+    expect(json.body.transcript.segments[0]).toMatchObject({
+      rawText: 'hello export world',
+      displayText: 'hello export world',
+      language: 'en',
+      timingSource: 'provider',
+      reviewFlags: [
+        {
+          reason: 'proper-name',
+          originalText: 'Solomon',
+          candidates: ['Solomon']
+        }
+      ]
+    });
+    expect(json.body.transcript.segments[1]).not.toHaveProperty('rawText');
+    expect(json.body.transcript.segments[1]).not.toHaveProperty('languageConfidence');
+    expect(json.body.transcript.segments[1]).not.toHaveProperty('reviewFlags');
+    expect(markdown.text).not.toContain('proper-name');
+    expect(txt.text).not.toContain('proper-name');
+    expect(srt.text).not.toContain('proper-name');
   });
 
   it('rejects exporting another operator job and rejects unsupported formats', async () => {

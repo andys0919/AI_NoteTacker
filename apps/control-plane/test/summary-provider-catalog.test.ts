@@ -23,7 +23,7 @@ describe('summary provider catalog', () => {
     const catalog = createSummaryProviderCatalog({
       defaultProvider: 'azure-openai',
       summaryEnabled: true,
-      azureOpenAiSummaryEndpoint: 'https://azure.example.test/openai/v1/chat/completions',
+      azureOpenAiSummaryEndpoint: 'https://azure.example.test/openai/v1/responses',
       azureOpenAiSummaryApiKey: 'secret'
     });
 
@@ -32,7 +32,31 @@ describe('summary provider catalog', () => {
     expect(catalog.readinessReason('azure-openai')).toBeUndefined();
   });
 
-  it('derives azure summary readiness from shared azure env when summary-specific env is absent', () => {
+  it('rejects a chat completions endpoint for the responses provider', () => {
+    const catalog = createSummaryProviderCatalog({
+      defaultProvider: 'azure-openai',
+      summaryEnabled: true,
+      azureOpenAiSummaryEndpoint: 'https://azure.example.test/openai/v1/chat/completions',
+      azureOpenAiSummaryApiKey: 'secret'
+    });
+
+    expect(catalog.defaultProvider).toBe('local-codex');
+    expect(catalog.isReady('azure-openai')).toBe(false);
+    expect(catalog.readinessReason('azure-openai')).toContain('/openai/v1/responses');
+  });
+
+  it('rejects a non-https responses endpoint', () => {
+    const catalog = createSummaryProviderCatalog({
+      defaultProvider: 'azure-openai',
+      summaryEnabled: true,
+      azureOpenAiSummaryEndpoint: 'http://azure.example.test/openai/v1/responses',
+      azureOpenAiSummaryApiKey: 'secret'
+    });
+
+    expect(catalog.isReady('azure-openai')).toBe(false);
+  });
+
+  it('does not reuse azure transcription credentials for summary readiness', () => {
     const catalog = createSummaryProviderCatalogFromEnvironment({
       SUMMARY_ENABLED: 'true',
       DEFAULT_SUMMARY_PROVIDER: 'azure-openai',
@@ -40,7 +64,7 @@ describe('summary provider catalog', () => {
       AZURE_OPENAI_API_KEY: 'secret'
     });
 
-    expect(catalog.defaultProvider).toBe('azure-openai');
-    expect(catalog.isReady('azure-openai')).toBe(true);
+    expect(catalog.defaultProvider).toBe('local-codex');
+    expect(catalog.isReady('azure-openai')).toBe(false);
   });
 });

@@ -15,6 +15,7 @@ def main() -> None:
         internal_service_token=str(config["internal_service_token"])
         if config.get("internal_service_token")
         else None,
+        timeout_seconds=int(config["control_plane_timeout_seconds"]),
     )
     local_summarizer = CodexTranscriptSummarizer(
         model=str(config["summary_model"]),
@@ -29,6 +30,7 @@ def main() -> None:
             endpoint=str(config["azure_openai_summary_endpoint"]),
             api_key=str(config["azure_openai_summary_api_key"]),
             model=str(config["summary_model"]),
+            timeout_seconds=int(config["azure_openai_summary_timeout_seconds"]),
         )
 
     while True:

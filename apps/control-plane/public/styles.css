@@ -931,6 +931,31 @@ summary {
   line-height: 1.7;
 }
 
+.transcript-segment-text,
+.transcript-review-item p {
+  margin: 0;
+}
+
+.transcript-segment + .transcript-segment,
+.transcript-preview > .transcript-segment-text + .transcript-segment-text {
+  margin-top: 0.75rem;
+}
+
+.transcript-evidence {
+  margin-top: 0.35rem;
+  padding: 0.55rem 0.7rem;
+  background: rgba(255, 193, 92, 0.05);
+  border-color: rgba(255, 193, 92, 0.2);
+}
+
+.transcript-evidence summary {
+  color: #ffcf7c;
+}
+
+.transcript-review-item + .transcript-review-item {
+  margin-top: 0.65rem;
+}
+
 .history-timeline {
   list-style: none;
   margin: 0.85rem 0 0;

@@ -97,6 +97,40 @@ export const formatJobTimestamp = (value) =>
 
 const formatUsd = (value) => `$${Number(value || 0).toFixed(3)}`;
 
+const hasCostValue = (value, hasUnpricedUsage) =>
+  typeof value === 'number' || hasUnpricedUsage === true;
+
+const formatStageCost = (value, hasUnpricedUsage) => {
+  if (!hasUnpricedUsage) {
+    return typeof value === 'number' ? formatUsd(value) : null;
+  }
+
+  return typeof value === 'number' && value > 0
+    ? `${formatUsd(value)}（含未定價用量）`
+    : '未定價';
+};
+
+const getKnownCloudCostUsd = (job) =>
+  [
+    job.actualTranscriptionCostUsd,
+    job.actualPunctuationCostUsd,
+    job.actualSummaryCostUsd
+  ].reduce((total, value) => total + (typeof value === 'number' ? value : 0), 0);
+
+const getTotalCostDisplay = (job) => {
+  if (!job.hasUnpricedUsage) {
+    return typeof job.actualCloudCostUsd === 'number'
+      ? { label: '合計', value: formatUsd(job.actualCloudCostUsd) }
+      : { label: null, value: null };
+  }
+
+  const knownCostUsd = getKnownCloudCostUsd(job);
+
+  return knownCostUsd > 0
+    ? { label: '已知費用', value: `${formatUsd(knownCostUsd)}（含未定價用量）` }
+    : { label: '合計', value: '未定價' };
+};
+
 const formatDuration = (milliseconds) => {
   if (typeof milliseconds !== 'number' || milliseconds <= 0) {
     return null;
@@ -149,6 +183,29 @@ export const getJobCardViewModel = (job) => {
     progressTotalMs: job.progressTotalMs
   });
   const durationText = getJobDurationText(job);
+  const totalCostDisplay = getTotalCostDisplay(job);
+  const transcriptionCostDisplay = {
+    label: hasCostValue(job.actualTranscriptionCostUsd, job.hasUnpricedTranscriptionUsage)
+      ? '轉文字'
+      : null,
+    value: formatStageCost(job.actualTranscriptionCostUsd, job.hasUnpricedTranscriptionUsage)
+  };
+  const punctuationCostDisplay = {
+    label: hasCostValue(job.actualPunctuationCostUsd, job.hasUnpricedPunctuationUsage)
+      ? '標點'
+      : null,
+    value: formatStageCost(job.actualPunctuationCostUsd, job.hasUnpricedPunctuationUsage)
+  };
+  const summaryCostDisplay = {
+    label: hasCostValue(job.actualSummaryCostUsd, job.hasUnpricedSummaryUsage) ? '摘要' : null,
+    value: formatStageCost(job.actualSummaryCostUsd, job.hasUnpricedSummaryUsage)
+  };
+  const costItems = [
+    transcriptionCostDisplay,
+    punctuationCostDisplay,
+    summaryCostDisplay,
+    totalCostDisplay
+  ].filter((item) => item.label && item.value);
 
   return {
     title: job.inputSource === 'uploaded-audio' ? '錄音整理' : '會議摘要',
@@ -174,17 +231,15 @@ export const getJobCardViewModel = (job) => {
     updatedLabel: '最近更新',
     durationLabel: durationText ? '時長' : null,
     durationValue: durationText,
-    transcriptionCostLabel: typeof job.actualTranscriptionCostUsd === 'number' ? '轉文字' : null,
-    transcriptionCostValue:
-      typeof job.actualTranscriptionCostUsd === 'number'
-        ? formatUsd(job.actualTranscriptionCostUsd)
-        : null,
-    summaryCostLabel: typeof job.actualSummaryCostUsd === 'number' ? '摘要' : null,
-    summaryCostValue:
-      typeof job.actualSummaryCostUsd === 'number' ? formatUsd(job.actualSummaryCostUsd) : null,
-    totalCostLabel: typeof job.actualCloudCostUsd === 'number' ? '合計' : null,
-    totalCostValue:
-      typeof job.actualCloudCostUsd === 'number' ? formatUsd(job.actualCloudCostUsd) : null,
+    transcriptionCostLabel: transcriptionCostDisplay.label,
+    transcriptionCostValue: transcriptionCostDisplay.value,
+    punctuationCostLabel: punctuationCostDisplay.label,
+    punctuationCostValue: punctuationCostDisplay.value,
+    summaryCostLabel: summaryCostDisplay.label,
+    summaryCostValue: summaryCostDisplay.value,
+    totalCostLabel: totalCostDisplay.label,
+    totalCostValue: totalCostDisplay.value,
+    costItems,
     createdAtText: formatJobTimestamp(job.createdAt),
     updatedAtText: formatJobTimestamp(job.updatedAt)
   };

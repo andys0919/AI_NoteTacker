@@ -13,7 +13,86 @@ export const formatProviderLabel = (value) => {
 export const formatSummaryModeLabel = (value) =>
   value === 'azure-openai' ? '雲端' : '地端 Codex';
 
-export const formatUsd = (value) => `$${Number(value || 0).toFixed(3)}`;
+export const formatUsd = (value) =>
+  typeof value === 'number' && Number.isFinite(value) ? `$${value.toFixed(3)}` : '未定價';
+
+export const getCloudCostDisplayModel = ({
+  totalCostUsd,
+  pricedCostUsd,
+  hasUnpricedUsage
+}) => {
+  if (!hasUnpricedUsage) {
+    return {
+      label: '總費用',
+      value: formatUsd(totalCostUsd)
+    };
+  }
+
+  if (typeof pricedCostUsd === 'number' && Number.isFinite(pricedCostUsd) && pricedCostUsd > 0) {
+    return {
+      label: '已知費用',
+      value: `${formatUsd(pricedCostUsd)}（含未定價用量）`
+    };
+  }
+
+  return {
+    label: '費用',
+    value: '未定價'
+  };
+};
+
+export const formatUsageStageLabel = (stage) => {
+  if (stage === 'transcription') {
+    return '轉寫';
+  }
+
+  if (stage === 'punctuation') {
+    return '標點';
+  }
+
+  return stage === 'summary' ? '摘要' : stage;
+};
+
+export const getUsageHistoryCostViewModel = (payload = {}) => {
+  const totals = payload.totals ?? {};
+  const totalCost = getCloudCostDisplayModel({
+    totalCostUsd: totals.totalCostUsd,
+    pricedCostUsd: totals.pricedCostUsd ?? totals.totalCostUsd,
+    hasUnpricedUsage: totals.hasUnpricedUsage === true
+  });
+  const unpricedEntryCount = Number(totals.unpricedEntryCount) || 0;
+
+  return {
+    totalCostLabel: totalCost.value,
+    totalCostSummary: `${totalCost.label} ${totalCost.value}${
+      unpricedEntryCount > 0 ? ` / 未定價 ${unpricedEntryCount} 筆` : ''
+    }`,
+    byModel: (payload.byModel ?? []).map((row) => {
+      const cost = getCloudCostDisplayModel({
+        totalCostUsd: row.totalCostUsd ?? row.costUsd,
+        pricedCostUsd: row.pricedCostUsd ?? row.costUsd,
+        hasUnpricedUsage: row.hasUnpricedUsage === true
+      });
+      const rowUnpricedEntryCount = Number(row.unpricedEntryCount) || 0;
+
+      return {
+        ...row,
+        stageLabel: formatUsageStageLabel(row.stage),
+        costLabel: cost.value,
+        unpricedCountLabel:
+          rowUnpricedEntryCount > 0 ? `未定價 ${rowUnpricedEntryCount} 筆` : null
+      };
+    }),
+    entries: (payload.entries ?? []).map((entry) => ({
+      ...entry,
+      stageLabel: formatUsageStageLabel(entry.stage),
+      costLabel:
+        entry.pricingStatus === 'unpriced'
+          ? '未定價'
+          : formatUsd(entry.costUsd)
+    }))
+  };
+};
 
 export const getAdminGovernanceViewModel = ({
   state,
@@ -83,10 +162,18 @@ export const getQuotaDisplayModel = (payload) => {
     };
   }
 
+  const consumed = getCloudCostDisplayModel({
+    totalCostUsd: payload.consumedUsd,
+    pricedCostUsd: payload.pricedConsumedUsd ?? payload.consumedUsd,
+    hasUnpricedUsage: payload.hasUnpricedUsage === true
+  });
+
   return {
     hidden: false,
-    remainingLabel: formatUsd(payload.remainingUsd),
-    breakdownText: `已用 ${formatUsd(payload.consumedUsd)} / 保留 ${formatUsd(payload.reservedUsd)} / 總額 ${formatUsd(payload.dailyQuotaUsd)}`
+    remainingLabel: `${formatUsd(payload.remainingUsd)}${
+      payload.hasUnpricedUsage ? '（依已知費用計算）' : ''
+    }`,
+    breakdownText: `${payload.hasUnpricedUsage ? consumed.label : '已用'} ${consumed.value} / 保留 ${formatUsd(payload.reservedUsd)} / 總額 ${formatUsd(payload.dailyQuotaUsd)}`
   };
 };
 
@@ -98,12 +185,23 @@ export const getAuditEntryViewModels = (entries = [], formatTimestamp = (value) 
   }));
 
 export const getUsageReportRowViewModels = (rows = []) =>
-  rows.map((row) => ({
-    identityLabel: row.email || row.submitterId,
-    submitterId: row.submitterId,
-    reservedLabel: formatUsd(row.reservedUsd),
-    consumedLabel: formatUsd(row.consumedUsd),
-    remainingLabel: formatUsd(row.remainingUsd),
-    dailyQuotaLabel: formatUsd(row.dailyQuotaUsd),
-    entryCountLabel: `${row.entries?.length ?? 0} 筆`
-  }));
+  rows.map((row) => {
+    const consumed = getCloudCostDisplayModel({
+      totalCostUsd: row.consumedUsd,
+      pricedCostUsd: row.pricedConsumedUsd ?? row.consumedUsd,
+      hasUnpricedUsage: row.hasUnpricedUsage === true
+    });
+
+    return {
+      identityLabel: row.email || row.submitterId,
+      submitterId: row.submitterId,
+      reservedLabel: formatUsd(row.reservedUsd),
+      consumedTitle: row.hasUnpricedUsage ? consumed.label : '已用',
+      consumedLabel: consumed.value,
+      remainingLabel: `${formatUsd(row.remainingUsd)}${
+        row.hasUnpricedUsage ? '（依已知費用計算）' : ''
+      }`,
+      dailyQuotaLabel: formatUsd(row.dailyQuotaUsd),
+      entryCountLabel: `${row.entries?.length ?? 0} 筆`
+    };
+  });

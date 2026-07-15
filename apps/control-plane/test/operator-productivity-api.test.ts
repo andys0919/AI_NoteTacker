@@ -102,4 +102,32 @@ describe('operator productivity workflows API', () => {
     expect(created.body.summaryProfile).toBe('product');
     expect(created.body.preferredExportFormat).toBe('json');
   });
+
+  it('routes report portal uploads to sales while unrelated uploads remain general', async () => {
+    const app = createApp(undefined, {
+      uploadedAudioStorage: new FakeUploadedAudioStorage()
+    });
+
+    const report = await request(app)
+      .post('/api/operator/jobs/uploads')
+      .field('submitterId', 'report-portal:line:user-123')
+      .attach('audio', Buffer.from('report-audio'), {
+        filename: 'sales-report.m4a',
+        contentType: 'audio/mp4'
+      });
+    const general = await request(app)
+      .post('/api/operator/jobs/uploads')
+      .field('submitterId', 'ordinary-operator')
+      .attach('audio', Buffer.from('meeting-audio'), {
+        filename: 'meeting.m4a',
+        contentType: 'audio/mp4'
+      });
+
+    expect(report.status).toBe(201);
+    expect(report.body.submissionTemplateId).toBe('sales');
+    expect(report.body.summaryProfile).toBe('sales');
+    expect(general.status).toBe(201);
+    expect(general.body.submissionTemplateId).toBe('general');
+    expect(general.body.summaryProfile).toBe('general');
+  });
 });

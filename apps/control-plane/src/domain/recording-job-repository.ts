@@ -23,6 +23,13 @@ export type RecordingJobStats = {
 
 export interface RecordingJobRepository {
   save(job: RecordingJob): Promise<RecordingJob>;
+  saveIfLeaseActive(
+    job: RecordingJob,
+    expectedLease: {
+      stage: Extract<RecordingJobLeaseStage, 'transcription' | 'summary'>;
+      leaseToken: string;
+    }
+  ): Promise<RecordingJob | undefined>;
   heartbeatLease(input: {
     jobId: string;
     stage: RecordingJobLeaseStage;

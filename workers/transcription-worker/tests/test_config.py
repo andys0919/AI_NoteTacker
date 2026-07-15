@@ -20,6 +20,7 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
             config,
             {
                 "control_plane_base_url": "http://127.0.0.1:3000",
+                "control_plane_timeout_seconds": 30,
                 "internal_service_token": None,
                 "worker_id": "transcriber-alpha",
                 "deployment_mode": "default",
@@ -32,15 +33,18 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
                 "codex_cli_path": "codex",
                 "azure_openai_summary_endpoint": None,
                 "azure_openai_summary_api_key": None,
+                "azure_openai_summary_timeout_seconds": 300,
                 "poll_interval_ms": 1000,
                 "azure_openai_endpoint": None,
                 "azure_openai_deployment": None,
                 "azure_openai_api_key": None,
                 "azure_openai_api_version": "2025-03-01-preview",
+                "azure_openai_transcribe_timeout_seconds": 300,
                 "azure_openai_transcribe_language": "",
                 "azure_openai_transcribe_prompt": DEFAULT_AZURE_TRANSCRIBE_PROMPT,
                 "transcript_punctuation_enabled": True,
                 "transcript_punctuation_model": "gpt-5.4-mini",
+                "azure_openai_punctuation_timeout_seconds": 30,
             },
         )
 
@@ -62,7 +66,7 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
         self.assertEqual(config["azure_openai_api_key"], "secret")
         self.assertEqual(config["azure_openai_api_version"], "2025-04-01-preview")
 
-    def test_defaults_transcribe_prompt_to_traditional_chinese_hint(self) -> None:
+    def test_defaults_transcribe_prompt_to_multilingual_preservation_policy(self) -> None:
         config = read_transcription_worker_config(
             {
                 "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
@@ -75,7 +79,10 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
         self.assertEqual(
             config["azure_openai_transcribe_prompt"], DEFAULT_AZURE_TRANSCRIBE_PROMPT
         )
-        self.assertIn("繁體中文", str(config["azure_openai_transcribe_prompt"]))
+        prompt = str(config["azure_openai_transcribe_prompt"])
+        self.assertIn("保留原本語言", prompt)
+        self.assertIn("不要翻譯", prompt)
+        self.assertIn("正體中文", prompt)
 
     def test_enables_transcript_punctuation_by_default_with_summary_model(self) -> None:
         config = read_transcription_worker_config(
@@ -88,6 +95,86 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
 
         self.assertIs(config["transcript_punctuation_enabled"], True)
         self.assertEqual(config["transcript_punctuation_model"], "gpt-5.4-mini")
+
+    def test_defaults_responses_timeouts_per_caller(self) -> None:
+        config = read_transcription_worker_config(
+            {
+                "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                "WORKER_ID": "transcriber-alpha",
+                "WHISPER_MODEL": "large-v3",
+            }
+        )
+
+        self.assertEqual(config.get("azure_openai_summary_timeout_seconds"), 300)
+        self.assertEqual(config.get("azure_openai_punctuation_timeout_seconds"), 30)
+
+    def test_overrides_responses_timeouts_per_caller(self) -> None:
+        config = read_transcription_worker_config(
+            {
+                "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                "WORKER_ID": "transcriber-alpha",
+                "WHISPER_MODEL": "large-v3",
+                "AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS": "240",
+                "AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS": "20",
+            }
+        )
+
+        self.assertEqual(config["azure_openai_summary_timeout_seconds"], 240)
+        self.assertEqual(config["azure_openai_punctuation_timeout_seconds"], 20)
+
+    def test_overrides_transcription_and_control_plane_timeouts(self) -> None:
+        config = read_transcription_worker_config(
+            {
+                "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                "CONTROL_PLANE_TIMEOUT_SECONDS": "11",
+                "WORKER_ID": "transcriber-alpha",
+                "WHISPER_MODEL": "large-v3",
+                "AZURE_OPENAI_TRANSCRIBE_TIMEOUT_SECONDS": "180",
+            }
+        )
+
+        self.assertEqual(config["control_plane_timeout_seconds"], 11)
+        self.assertEqual(config["azure_openai_transcribe_timeout_seconds"], 180)
+
+    def test_rejects_invalid_transcription_and_control_plane_timeouts(self) -> None:
+        invalid_values = {
+            "CONTROL_PLANE_TIMEOUT_SECONDS": "0",
+            "AZURE_OPENAI_TRANSCRIBE_TIMEOUT_SECONDS": "slow",
+        }
+
+        for name, value in invalid_values.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    read_transcription_worker_config(
+                        {
+                            "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                            "WORKER_ID": "transcriber-alpha",
+                            "WHISPER_MODEL": "large-v3",
+                            name: value,
+                        }
+                    )
+
+    def test_rejects_non_positive_responses_timeout(self) -> None:
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            read_transcription_worker_config(
+                {
+                    "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                    "WORKER_ID": "transcriber-alpha",
+                    "WHISPER_MODEL": "large-v3",
+                    "AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS": "0",
+                }
+            )
+
+    def test_rejects_non_numeric_responses_timeout(self) -> None:
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            read_transcription_worker_config(
+                {
+                    "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                    "WORKER_ID": "transcriber-alpha",
+                    "WHISPER_MODEL": "large-v3",
+                    "AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS": "slow",
+                }
+            )
 
     def test_allows_disabling_and_overriding_punctuation_model(self) -> None:
         config = read_transcription_worker_config(
@@ -131,9 +218,7 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
         self.assertEqual(config["whisper_device"], "cuda")
         self.assertEqual(config["summary_model"], "gpt-5.4-mini")
 
-    def test_uses_cloud_deployment_defaults_for_azure_transcription_and_gpt_5_4_mini_summary(
-        self,
-    ) -> None:
+    def test_does_not_reuse_azure_transcription_credentials_for_summary(self) -> None:
         config = read_transcription_worker_config(
             {
                 "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
@@ -146,12 +231,48 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config["deployment_mode"], "cloud")
-        self.assertEqual(
-            config["azure_openai_summary_endpoint"],
-            "https://azure.example.test/openai/v1/chat/completions",
-        )
-        self.assertEqual(config["summary_model"], "gpt-5.4-mini")
+        self.assertIsNone(config["azure_openai_summary_endpoint"])
+        self.assertIsNone(config["azure_openai_summary_api_key"])
+
+    def test_rejects_non_responses_summary_endpoint(self) -> None:
+        with self.assertRaisesRegex(ValueError, "/openai/v1/responses"):
+            read_transcription_worker_config(
+                {
+                    "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                    "WORKER_ID": "transcriber-alpha",
+                    "WHISPER_MODEL": "large-v3",
+                    "AZURE_OPENAI_SUMMARY_ENDPOINT": (
+                        "https://azure.example.test/openai/v1/chat/completions"
+                    ),
+                    "AZURE_OPENAI_SUMMARY_API_KEY": "secret",
+                }
+            )
+
+    def test_rejects_non_https_summary_endpoint(self) -> None:
+        with self.assertRaisesRegex(ValueError, "https"):
+            read_transcription_worker_config(
+                {
+                    "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                    "WORKER_ID": "transcriber-alpha",
+                    "WHISPER_MODEL": "large-v3",
+                    "AZURE_OPENAI_SUMMARY_ENDPOINT": (
+                        "http://azure.example.test/openai/v1/responses"
+                    ),
+                    "AZURE_OPENAI_SUMMARY_API_KEY": "secret",
+                }
+            )
+
+    def test_rejects_responses_endpoint_without_a_hostname(self) -> None:
+        with self.assertRaisesRegex(ValueError, "/openai/v1/responses"):
+            read_transcription_worker_config(
+                {
+                    "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                    "WORKER_ID": "transcriber-alpha",
+                    "WHISPER_MODEL": "large-v3",
+                    "AZURE_OPENAI_SUMMARY_ENDPOINT": "https:///openai/v1/responses",
+                    "AZURE_OPENAI_SUMMARY_API_KEY": "secret",
+                }
+            )
 
 
 if __name__ == "__main__":

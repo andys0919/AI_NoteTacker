@@ -3,9 +3,12 @@ import { escapeHtml } from '/escape-html.js';
 import {
   formatProviderLabel,
   formatSummaryModeLabel,
+  formatUsageStageLabel,
   formatUsd,
   getAdminGovernanceViewModel,
   getAuditEntryViewModels,
+  getCloudCostDisplayModel,
+  getUsageHistoryCostViewModel,
   getUsageReportRowViewModels
 } from '/governance-panel.js';
 import { getRuntimeHealthViewModel } from '/runtime-health-panel.js';
@@ -151,7 +154,17 @@ const renderUsageReport = (payload) => {
     return;
   }
 
-  elements.adminUsageReportSummary.textContent = `${payload.quotaDayKey} / 已用 ${formatUsd(payload.totals.consumedUsd)} / 保留 ${formatUsd(payload.totals.reservedUsd)}`;
+  const consumed = getCloudCostDisplayModel({
+    totalCostUsd: payload.totals.consumedUsd,
+    pricedCostUsd: payload.totals.pricedConsumedUsd ?? payload.totals.consumedUsd,
+    hasUnpricedUsage: payload.totals.hasUnpricedUsage === true
+  });
+  const unpricedCountText = payload.totals.unpricedEntryCount
+    ? ` / 未定價 ${formatTokens(payload.totals.unpricedEntryCount)} 筆`
+    : '';
+  elements.adminUsageReportSummary.textContent = `${payload.quotaDayKey} / ${
+    payload.totals.hasUnpricedUsage ? consumed.label : '已用'
+  } ${consumed.value}${unpricedCountText} / 保留 ${formatUsd(payload.totals.reservedUsd)}`;
   elements.adminUsageReportList.replaceChildren(
     ...getUsageReportRowViewModels(payload.rows).map((row) => {
       const node = document.createElement('article');
@@ -159,22 +172,21 @@ const renderUsageReport = (payload) => {
       node.innerHTML = `
         <strong>${escapeHtml(row.identityLabel)}</strong>
         <span>${escapeHtml(row.submitterId)}</span>
-        <small>已用 ${row.consumedLabel} / 保留 ${row.reservedLabel} / 剩餘 ${row.remainingLabel} / 總額 ${row.dailyQuotaLabel} / ${row.entryCountLabel}</small>
+        <small>${row.consumedTitle} ${row.consumedLabel} / 保留 ${row.reservedLabel} / 剩餘 ${row.remainingLabel} / 總額 ${row.dailyQuotaLabel} / ${row.entryCountLabel}</small>
       `;
       return node;
     })
   );
 };
 
-const stageLabel = (stage) => (stage === 'transcription' ? '轉寫' : stage === 'summary' ? '摘要' : stage);
-
 const renderUsageHistory = (payload) => {
   const totals = payload?.totals ?? {};
-  const entries = payload?.entries ?? [];
+  const costViewModel = getUsageHistoryCostViewModel(payload);
+  const entries = costViewModel.entries;
   const submitterEmails = payload?.submitterEmails ?? {};
 
   elements.usageHistoryTotalTokens.textContent = formatTokens(totals.totalTokens);
-  elements.usageHistoryTotalCost.textContent = formatUsd(totals.totalCostUsd);
+  elements.usageHistoryTotalCost.textContent = costViewModel.totalCostLabel;
 
   if (!entries.length) {
     elements.usageHistorySummary.textContent = '尚無使用紀錄。';
@@ -187,17 +199,19 @@ const renderUsageHistory = (payload) => {
   elements.usageHistorySummary.textContent =
     `共 ${formatTokens(totals.entryCount)} 筆紀錄 / 輸入 ${formatTokens(totals.inputTokens)} tokens / ` +
     `輸出 ${formatTokens(totals.outputTokens)} tokens / 合計 ${formatTokens(totals.totalTokens)} tokens / ` +
-    `總費用 ${formatUsd(totals.totalCostUsd)}`;
+    costViewModel.totalCostSummary;
 
-  const byModel = payload?.byModel ?? [];
+  const byModel = costViewModel.byModel;
   elements.usageHistoryByModel.replaceChildren(
     ...byModel.map((row) => {
       const node = document.createElement('article');
       node.className = 'runtime-health-card runtime-health-card-info';
       node.innerHTML = `
-        <span class="meta-label">${escapeHtml(row.model)}（${escapeHtml(stageLabel(row.stage))}）</span>
-        <strong>${escapeHtml(formatUsd(row.costUsd))}</strong>
-        <small>輸入 ${escapeHtml(formatTokens(row.inputTokens))} / 輸出 ${escapeHtml(formatTokens(row.outputTokens))} / ${escapeHtml(formatTokens(row.entryCount))} 筆</small>
+        <span class="meta-label">${escapeHtml(row.model)}（${escapeHtml(row.stageLabel)}）</span>
+        <strong>${escapeHtml(row.costLabel)}</strong>
+        <small>輸入 ${escapeHtml(formatTokens(row.inputTokens))} / 輸出 ${escapeHtml(formatTokens(row.outputTokens))} / ${escapeHtml(formatTokens(row.entryCount))} 筆${
+          row.unpricedCountLabel ? ` / ${escapeHtml(row.unpricedCountLabel)}` : ''
+        }</small>
       `;
       return node;
     })
@@ -209,11 +223,11 @@ const renderUsageHistory = (payload) => {
       const identity = submitterEmails[entry.submitterId] || entry.submitterId;
       const cells = [
         { text: formatJobTimestamp(entry.createdAt) },
-        { text: stageLabel(entry.stage) },
+        { text: entry.stageLabel },
         { text: formatProviderLabel(entry.provider) },
         { text: entry.model || '-' },
-        { text: entry.stage === 'summary' ? formatTokens(entry.inputTokens) : '—', cls: 'usage-num' },
-        { text: entry.stage === 'summary' ? formatTokens(entry.outputTokens) : '—', cls: 'usage-num' },
+        { text: entry.stage !== 'transcription' ? formatTokens(entry.inputTokens) : '—', cls: 'usage-num' },
+        { text: entry.stage !== 'transcription' ? formatTokens(entry.outputTokens) : '—', cls: 'usage-num' },
         {
           text:
             entry.stage === 'transcription'
@@ -221,7 +235,7 @@ const renderUsageHistory = (payload) => {
               : formatTokens(entry.totalTokens),
           cls: 'usage-num'
         },
-        { text: formatUsd(entry.costUsd), cls: 'usage-num' },
+        { text: entry.costLabel, cls: 'usage-num' },
         { text: identity, title: entry.submitterId },
         { text: entry.jobId, title: entry.jobId, jobId: entry.jobId }
       ];
@@ -304,10 +318,12 @@ const renderJobModal = (job) => {
     for (const entry of job.ledgerEntries) {
       const item = document.createElement('li');
       const tokenPart =
-        entry.stage === 'summary'
+        entry.stage !== 'transcription'
           ? `輸入 ${formatTokens(entry.inputTokens)} / 輸出 ${formatTokens(entry.outputTokens)} tokens`
-          : `${formatTokens(entry.totalTokens)} tokens`;
-      item.textContent = `${stageLabel(entry.stage)}（${entry.model}）：${tokenPart}，費用 ${formatUsd(entry.costUsd)}`;
+          : `${formatTokens(Math.round((entry.audioMs || 0) / 1000))} 秒音訊`;
+      const costLabel =
+        entry.pricingStatus === 'unpriced' ? '未定價' : formatUsd(entry.costUsd);
+      item.textContent = `${formatUsageStageLabel(entry.stage)}（${entry.model}）：${tokenPart}，費用 ${costLabel}`;
       list.append(item);
     }
     children.push(buildModalSection('Token / 費用明細', list));

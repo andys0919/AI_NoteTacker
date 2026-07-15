@@ -29,8 +29,44 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
   private readonly operatorHiddenJobIds = new Set<string>();
 
   async save(job: RecordingJob): Promise<RecordingJob> {
-    this.jobs.set(job.id, job);
-    return job;
+    const current = this.jobs.get(job.id);
+    const storedJob = {
+      ...job,
+      issuedTranscriptionLeaseTokens: [
+        ...new Set([
+          ...(current?.issuedTranscriptionLeaseTokens ?? []),
+          ...(job.issuedTranscriptionLeaseTokens ?? [])
+        ])
+      ],
+      issuedSummaryLeaseTokens: [
+        ...new Set([
+          ...(current?.issuedSummaryLeaseTokens ?? []),
+          ...(job.issuedSummaryLeaseTokens ?? [])
+        ])
+      ]
+    };
+    this.jobs.set(job.id, storedJob);
+    return storedJob;
+  }
+
+  async saveIfLeaseActive(
+    job: RecordingJob,
+    expectedLease: {
+      stage: 'transcription' | 'summary';
+      leaseToken: string;
+    }
+  ): Promise<RecordingJob | undefined> {
+    const current = this.jobs.get(job.id);
+    const activeLeaseToken =
+      expectedLease.stage === 'transcription'
+        ? current?.transcriptionLeaseToken
+        : current?.summaryLeaseToken;
+
+    if (activeLeaseToken !== expectedLease.leaseToken) {
+      return undefined;
+    }
+
+    return await this.save(job);
   }
 
   async heartbeatLease(input: {

@@ -42,7 +42,7 @@ describe('admin console (username/password) API', () => {
       }),
       summaryProviderCatalog: createSummaryProviderCatalog({
         summaryEnabled: true,
-        azureOpenAiSummaryEndpoint: 'https://azure-summary.example.test/openai/v1/chat/completions',
+        azureOpenAiSummaryEndpoint: 'https://azure-summary.example.test/openai/v1/responses',
         azureOpenAiSummaryApiKey: 'secret'
       })
     });
@@ -153,8 +153,15 @@ describe('admin console (username/password) API', () => {
       pricingVersion: 'v1',
       usageQuantity: 1500,
       usageUnit: 'tokens',
+      pricingStatus: 'priced',
       costUsd: 0.0021,
-      detail: { promptTokens: 1000, completionTokens: 500, totalTokens: 1500 }
+      detail: {
+        promptTokens: 1000,
+        cachedPromptTokens: 200,
+        completionTokens: 500,
+        reasoningCompletionTokens: 100,
+        totalTokens: 1500
+      }
     });
     await ledger.append({
       entryKey: 'actual:job-1:transcription',
@@ -168,8 +175,31 @@ describe('admin console (username/password) API', () => {
       pricingVersion: 'v1',
       usageQuantity: 60000,
       usageUnit: 'audio-ms',
-      costUsd: 0.003,
+      pricingStatus: 'unpriced',
+      costUsd: null,
       detail: { audioMs: 60000 }
+    });
+    await ledger.append({
+      entryKey: 'actual:job-1:punctuation:lease-1',
+      jobId: 'job-1',
+      submitterId: 'operator-user',
+      quotaDayKey: '2026-06-01',
+      entryType: 'actual',
+      stage: 'punctuation',
+      provider: 'azure-openai',
+      model: 'gpt-5.6-luna',
+      pricingVersion: '2026-07-09',
+      usageQuantity: 130,
+      usageUnit: 'tokens',
+      pricingStatus: 'unpriced',
+      costUsd: null,
+      detail: {
+        inputTokens: 100,
+        cachedInputTokens: 20,
+        outputTokens: 30,
+        reasoningOutputTokens: 10,
+        totalTokens: 130
+      }
     });
 
     const app = buildApp(ledger);
@@ -180,29 +210,58 @@ describe('admin console (username/password) API', () => {
       .set('authorization', `Bearer ${body.token}`);
 
     expect(response.status).toBe(200);
-    expect(response.body.totals.entryCount).toBe(2);
-    expect(response.body.totals.inputTokens).toBe(1000);
-    expect(response.body.totals.outputTokens).toBe(500);
-    expect(response.body.totals.totalTokens).toBe(1500);
+    expect(response.body.totals.entryCount).toBe(3);
+    expect(response.body.totals.inputTokens).toBe(1100);
+    expect(response.body.totals.cachedInputTokens).toBe(220);
+    expect(response.body.totals.outputTokens).toBe(530);
+    expect(response.body.totals.reasoningOutputTokens).toBe(110);
+    expect(response.body.totals.totalTokens).toBe(1630);
+    expect(response.body.totals.pricedCostUsd).toBe(0.0021);
+    expect(response.body.totals.totalCostUsd).toBeNull();
+    expect(response.body.totals.hasUnpricedUsage).toBe(true);
+    expect(response.body.totals.unpricedEntryCount).toBe(2);
 
     const summaryEntry = response.body.entries.find(
       (entry: { stage: string }) => entry.stage === 'summary'
     );
     expect(summaryEntry.model).toBe('gpt-5.4-mini');
     expect(summaryEntry.inputTokens).toBe(1000);
+    expect(summaryEntry.cachedInputTokens).toBe(200);
     expect(summaryEntry.outputTokens).toBe(500);
+    expect(summaryEntry.reasoningOutputTokens).toBe(100);
 
     const transcriptionEntry = response.body.entries.find(
       (entry: { stage: string }) => entry.stage === 'transcription'
     );
     expect(transcriptionEntry.model).toBe('gpt-4o-transcribe');
     expect(transcriptionEntry.audioMs).toBe(60000);
+    expect(transcriptionEntry.pricingStatus).toBe('unpriced');
+    expect(transcriptionEntry.costUsd).toBeNull();
+
+    const punctuationEntry = response.body.entries.find(
+      (entry: { stage: string }) => entry.stage === 'punctuation'
+    );
+    expect(punctuationEntry.inputTokens).toBe(100);
+    expect(punctuationEntry.cachedInputTokens).toBe(20);
+    expect(punctuationEntry.outputTokens).toBe(30);
+    expect(punctuationEntry.reasoningOutputTokens).toBe(10);
 
     const summaryModelBreakdown = response.body.byModel.find(
       (row: { model: string }) => row.model === 'gpt-5.4-mini'
     );
     expect(summaryModelBreakdown.inputTokens).toBe(1000);
     expect(summaryModelBreakdown.outputTokens).toBe(500);
+    expect(summaryModelBreakdown.pricedCostUsd).toBe(0.0021);
+    expect(summaryModelBreakdown.totalCostUsd).toBe(0.0021);
+    expect(summaryModelBreakdown.hasUnpricedUsage).toBe(false);
+
+    const punctuationModelBreakdown = response.body.byModel.find(
+      (row: { stage: string }) => row.stage === 'punctuation'
+    );
+    expect(punctuationModelBreakdown.pricedCostUsd).toBe(0);
+    expect(punctuationModelBreakdown.totalCostUsd).toBeNull();
+    expect(punctuationModelBreakdown.hasUnpricedUsage).toBe(true);
+    expect(punctuationModelBreakdown.unpricedEntryCount).toBe(1);
   });
 
   it('rejects the usage history endpoint without a token', async () => {
@@ -230,6 +289,93 @@ describe('admin console (username/password) API', () => {
       .set('authorization', `Bearer ${body.token}`);
 
     expect(response.status).toBe(404);
+  });
+
+  it('returns transcription duration and punctuation details in the admin job ledger', async () => {
+    const recordingJobRepository = new InMemoryRecordingJobRepository();
+    const job = createRecordingJob({
+      meetingUrl: 'uploaded://punctuation.wav',
+      platform: 'uploaded-audio',
+      inputSource: 'uploaded-audio',
+      submitterId: 'operator-a'
+    });
+    await recordingJobRepository.save(job);
+    const ledger = seedLedger();
+    await ledger.append({
+      entryKey: `actual:${job.id}:transcription:lease-1`,
+      jobId: job.id,
+      submitterId: job.submitterId,
+      quotaDayKey: '2026-07-15',
+      entryType: 'actual',
+      stage: 'transcription',
+      provider: 'azure-openai-gpt-4o-transcribe',
+      model: 'gpt-4o-transcribe',
+      pricingVersion: '2026-07-09',
+      usageQuantity: 60_000,
+      usageUnit: 'audio-ms',
+      pricingStatus: 'unpriced',
+      costUsd: null,
+      detail: { audioMs: 60_000 }
+    });
+    await ledger.append({
+      entryKey: `actual:${job.id}:punctuation:lease-1`,
+      jobId: job.id,
+      submitterId: job.submitterId,
+      quotaDayKey: '2026-07-15',
+      entryType: 'actual',
+      stage: 'punctuation',
+      provider: 'azure-openai',
+      model: 'gpt-5.6-luna',
+      pricingVersion: '2026-07-09',
+      usageQuantity: 130,
+      usageUnit: 'tokens',
+      pricingStatus: 'unpriced',
+      costUsd: null,
+      detail: {
+        inputTokens: 100,
+        cachedInputTokens: 20,
+        outputTokens: 30,
+        reasoningOutputTokens: 10,
+        totalTokens: 130,
+        requestCount: 2,
+        acceptedChunkCount: 1,
+        fallbackChunkCount: 1,
+        unmeteredRequestCount: 1
+      }
+    });
+    const app = createApp(recordingJobRepository, {
+      adminConsoleAuth: buildAuth(),
+      cloudUsageLedgerRepository: ledger
+    });
+    const { body } = await login(app);
+
+    const response = await request(app)
+      .get(`/api/admin/jobs/${job.id}`)
+      .set('authorization', `Bearer ${body.token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.ledgerEntries).toEqual([
+      expect.objectContaining({
+        stage: 'transcription',
+        pricingStatus: 'unpriced',
+        costUsd: null,
+        audioMs: 60_000
+      }),
+      expect.objectContaining({
+        stage: 'punctuation',
+        pricingStatus: 'unpriced',
+        costUsd: null,
+        inputTokens: 100,
+        cachedInputTokens: 20,
+        outputTokens: 30,
+        reasoningOutputTokens: 10,
+        totalTokens: 130,
+        requestCount: 2,
+        acceptedChunkCount: 1,
+        fallbackChunkCount: 1,
+        unmeteredRequestCount: 1
+      })
+    ]);
   });
 
   it('keeps soft-deleted job content visible to the admin after an operator clears it', async () => {
