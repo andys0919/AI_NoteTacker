@@ -69,6 +69,8 @@ describe('PostgresTranscriptionProviderSettingsRepository', () => {
       transcriptionProvider: 'self-hosted-whisper',
       transcriptionModel: 'large-v3',
       localTranscriptionModel: 'large-v3',
+      qwenTranscriptionModel: 'qwen3-asr-1.7b',
+      maiTranscriptionModel: 'mai-transcribe-1.5',
       cloudTranscriptionModel: 'gpt-4o-transcribe',
       summaryProvider: 'local-codex',
       summaryModel: 'gpt-5.4-mini',
@@ -89,6 +91,28 @@ describe('PostgresTranscriptionProviderSettingsRepository', () => {
     });
 
     expect(switched.transcriptionModel).toBe('gpt-4o-transcribe');
+
+    const qwen = await repository.setCurrent({
+      provider: 'qwen3-asr-1.7b',
+      updatedBy: 'admin-user'
+    });
+
+    expect(qwen.transcriptionModel).toBe('qwen3-asr-1.7b');
+
+    const mai = await repository.setCurrent({
+      provider: 'azure-speech-mai-transcribe-1.5',
+      updatedBy: 'admin-user'
+    });
+
+    expect(mai.transcriptionModel).toBe('mai-transcribe-1.5');
+
+    const normalizedMai = await repository.updatePolicy({
+      transcriptionProvider: 'azure-speech-mai-transcribe-1.5',
+      transcriptionModel: 'wrong-model',
+      updatedBy: 'admin-user'
+    });
+
+    expect(normalizedMai.transcriptionModel).toBe('mai-transcribe-1.5');
   });
 
   it('normalizes a persisted azure policy row that still carries the local whisper model', async () => {
@@ -101,6 +125,8 @@ describe('PostgresTranscriptionProviderSettingsRepository', () => {
       transcriptionProvider: 'self-hosted-whisper',
       transcriptionModel: 'large-v3',
       localTranscriptionModel: 'large-v3',
+      qwenTranscriptionModel: 'qwen3-asr-1.7b',
+      maiTranscriptionModel: 'mai-transcribe-1.5',
       cloudTranscriptionModel: 'gpt-4o-transcribe',
       summaryProvider: 'local-codex',
       summaryModel: 'gpt-5.4-mini',

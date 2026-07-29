@@ -1,8 +1,10 @@
 import io
 import json
 import unittest
+import urllib.error
 
 from transcription_worker.azure_openai_responses import (
+    AzureOpenAiResponsesHttpError,
     extract_output_text,
     extract_token_usage,
     request_response,
@@ -52,6 +54,24 @@ class AzureOpenAiResponsesTests(unittest.TestCase):
 
         self.assertEqual(captured["timeout"], 300)
 
+    def test_serializes_explicit_reasoning_effort(self) -> None:
+        captured = {}
+
+        def fake_urlopen(http_request, timeout=None):
+            captured["body"] = json.loads(http_request.data.decode("utf-8"))
+            return _FakeResponse(b"{}")
+
+        request_response(
+            endpoint="https://azure.example.test/openai/v1/responses",
+            api_key="secret",
+            model="gpt-5.6-luna",
+            user_input="meeting transcript",
+            reasoning_effort="max",
+            urlopen=fake_urlopen,
+        )
+
+        self.assertEqual(captured["body"]["reasoning"], {"effort": "max"})
+
     def test_does_not_retry_a_transport_failure(self) -> None:
         calls = 0
 
@@ -70,6 +90,39 @@ class AzureOpenAiResponsesTests(unittest.TestCase):
             )
 
         self.assertEqual(calls, 1)
+
+    def test_preserves_http_status_and_provider_error_body_without_retrying(self) -> None:
+        calls = 0
+
+        def fake_urlopen(_http_request, timeout=None):
+            nonlocal calls
+            calls += 1
+            raise urllib.error.HTTPError(
+                url="https://azure.example.test/openai/v1/responses",
+                code=400,
+                msg="Bad Request",
+                hdrs=None,
+                fp=io.BytesIO(
+                    b'{"error":{"message":"temporary provider failure for secret"}}'
+                ),
+            )
+
+        with self.assertRaises(AzureOpenAiResponsesHttpError) as raised:
+            request_response(
+                endpoint="https://azure.example.test/openai/v1/responses",
+                api_key="secret",
+                model="gpt-5.6-luna",
+                user_input="meeting transcript",
+                urlopen=fake_urlopen,
+            )
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(
+            raised.exception.response_body,
+            '{"error":{"message":"temporary provider failure for [REDACTED]"}}',
+        )
+        self.assertNotIn("secret", str(raised.exception))
 
     def test_concatenates_output_text_blocks_without_inserting_characters(self) -> None:
         payload = {

@@ -65,11 +65,6 @@ const withRetry = async <T>(operation: () => Promise<T>, attempts: number, delay
   throw lastError;
 };
 
-export const createRecordingJobRepositoryFromEnvironment = async (): Promise<RecordingJobRepository> => {
-  const context = await createPersistenceContextFromEnvironment();
-  return context.recordingJobRepository;
-};
-
 export type PersistenceContext = {
   recordingJobRepository: RecordingJobRepository;
   authenticatedUserRepository: AuthenticatedUserRepository;
@@ -84,13 +79,20 @@ export const createPersistenceContextFromEnvironment = async (): Promise<Persist
   const summaryCatalog = createSummaryProviderCatalogFromEnvironment();
   const defaultProvider = transcriptionCatalog.defaultProvider;
   const defaultLocalTranscriptionModel = process.env.WHISPER_MODEL ?? 'large-v3';
+  const defaultQwenTranscriptionModel = process.env.QWEN_ASR_MODEL ?? 'qwen3-asr-1.7b';
+  const defaultMaiTranscriptionModel =
+    process.env.AZURE_SPEECH_MAI_MODEL ?? 'mai-transcribe-1.5';
   const defaultCloudTranscriptionModel =
     process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-4o-transcribe';
   const defaultTranscriptionModel =
     defaultProvider === 'azure-openai-gpt-4o-transcribe'
       ? defaultCloudTranscriptionModel
-      : defaultLocalTranscriptionModel;
-  const defaultSummaryModel = process.env.SUMMARY_MODEL ?? 'gpt-5.4-mini';
+      : defaultProvider === 'azure-speech-mai-transcribe-1.5'
+        ? defaultMaiTranscriptionModel
+      : defaultProvider === 'qwen3-asr-1.7b'
+        ? defaultQwenTranscriptionModel
+        : defaultLocalTranscriptionModel;
+  const defaultSummaryModel = process.env.SUMMARY_MODEL ?? 'gpt-5.6-luna';
   const defaultSummaryProvider = summaryCatalog.defaultProvider;
   const defaultDailyCloudQuotaUsd = Number(process.env.DEFAULT_DAILY_CLOUD_QUOTA_USD ?? '5');
   const defaultLiveMeetingReservationCapUsd = Number(
@@ -111,6 +113,8 @@ export const createPersistenceContextFromEnvironment = async (): Promise<Persist
           defaultTranscriptionProvider: defaultProvider,
           defaultTranscriptionModel,
           defaultLocalTranscriptionModel,
+          defaultQwenTranscriptionModel,
+          defaultMaiTranscriptionModel,
           defaultCloudTranscriptionModel,
           defaultSummaryProvider,
           defaultSummaryModel,
@@ -171,6 +175,8 @@ export const createPersistenceContextFromEnvironment = async (): Promise<Persist
         transcriptionProvider: defaultProvider,
         transcriptionModel: defaultTranscriptionModel,
         localTranscriptionModel: defaultLocalTranscriptionModel,
+        qwenTranscriptionModel: defaultQwenTranscriptionModel,
+        maiTranscriptionModel: defaultMaiTranscriptionModel,
         cloudTranscriptionModel: defaultCloudTranscriptionModel,
         summaryProvider: defaultSummaryProvider,
         summaryModel: defaultSummaryModel,

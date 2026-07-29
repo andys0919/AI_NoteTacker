@@ -4,9 +4,6 @@ export type SummaryProvider = (typeof summaryProviders)[number];
 
 export const defaultSummaryProvider: SummaryProvider = 'local-codex';
 
-export const isSummaryProvider = (value: string): value is SummaryProvider =>
-  summaryProviders.includes(value as SummaryProvider);
-
 export const isCloudSummaryProvider = (provider: SummaryProvider): boolean =>
   provider === 'azure-openai';
 

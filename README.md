@@ -5,7 +5,8 @@ Self-hosted meeting recorder and transcription console.
 This project lets an operator:
 - submit a direct meeting link so an AI bot joins and records inside a container
 - upload audio or video files for Whisper transcription
-- let an admin switch future transcription jobs between local Whisper and Azure OpenAI `gpt-4o-transcribe`
+- let an admin switch future transcription jobs among MAI-Transcribe 1.5, Qwen,
+  local Whisper, and Azure OpenAI `gpt-4o-transcribe`
 - let an admin manage cloud quota, AI routing defaults, and per-user cloud quota overrides
 - read full transcripts and Codex or Azure OpenAI summaries in the dashboard
 - export completed jobs as Markdown, TXT, SRT, or JSON
@@ -19,6 +20,8 @@ This project lets an operator:
 - GPU Whisper transcription; the canonical runtime template uses `tiny`
 - Admin-only global transcription provider switch:
   - `self-hosted-whisper`
+  - `qwen3-asr-1.7b`
+  - `azure-speech-mai-transcribe-1.5`
   - `azure-openai-gpt-4o-transcribe`
 - Independent summary routing defaults:
   - `local-codex`
@@ -38,9 +41,9 @@ This project lets an operator:
 
 - Docker and Docker Compose
 - NVIDIA driver + `nvidia-smi` if you want GPU transcription
-- `CODEX_HOME` on the host only if you want local Codex summaries inside the transcription worker
+- `CODEX_HOME` on the host only if you want local Codex summaries inside the summary worker
 - Optional:
-  - Supabase project for email OTP auth
+  - Supabase project for backend operator bearer-token verification
   - SMTP provider for notification emails
   - Azure OpenAI deployments if you want hosted transcription, punctuation restoration, or summaries
 
@@ -53,17 +56,19 @@ OpenAI keys, admin emails, etc.):
 cp .env.example .env
 ```
 
-`docker-compose.yml` loads `.env` (gitignored) for every service. `.env.example`
-is the committed development template — never put real secrets there. Before
-exposing a production deployment, replace the sample admin, session, internal
-service, database, and object-storage credentials.
+Docker Compose uses `.env` (gitignored) for interpolation. The transcription and
+summary services receive explicit stage-specific values; other services load
+the file directly. `.env.example` is the committed development template — never
+put real secrets there. Before exposing a production deployment, replace the
+sample admin, session, internal service, database, and object-storage
+credentials.
 
 ## Start
 
 Use the deploy helper — it always brings up the correct file set:
 
 ```bash
-make deploy           # or: ./scripts/deploy.sh up
+./scripts/deploy.sh up
 ```
 
 This is equivalent to:
@@ -77,8 +82,8 @@ docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up -d --bui
 > The real meeting recorder lives in `docker-compose.screenapp.yml`. If you omit
 > that override, the `recording-worker` falls back to the `stub` executor and
 > **never records real Zoom/Google/Teams meetings** (it only emits a placeholder
-> artifact), and the control-plane loses its meeting-bot monitoring. `make deploy`
-> / `scripts/deploy.sh` exist specifically to prevent this. The recording-worker
+> artifact), and the control-plane loses its meeting-bot monitoring.
+> `scripts/deploy.sh` exists specifically to prevent this. The recording-worker
 > also logs its mode on startup — `executor=screenapp` is correct for production;
 > `executor=stub` prints a loud warning.
 > The production Compose regression test also verifies that this override does
@@ -120,14 +125,14 @@ sudo systemctl enable --now docker
 Then start the stack once (full meeting-bot workflow):
 
 ```bash
-make deploy
+./scripts/deploy.sh up
 ```
 
 Notes:
 - A later reboot should bring the same containers back automatically.
-- If you run `make down` (or `docker compose ... down`), Docker removes the
-  containers, so you must run `make deploy` again afterward.
-- Always re-deploy with `make deploy` / `scripts/deploy.sh`, never a bare
+- If you run `./scripts/deploy.sh down` (or `docker compose ... down`), Docker
+  removes the containers, so you must run `./scripts/deploy.sh up` again afterward.
+- Always re-deploy with `scripts/deploy.sh`, never a bare
   `docker compose up`, so the recording-worker keeps `RECORDING_EXECUTOR=screenapp`.
 
 ## Use The Dashboard
@@ -223,13 +228,15 @@ Important defaults from [`.env.example`](.env.example):
 - `WHISPER_MODEL=tiny`
 - `WHISPER_DEVICE=cuda`
 - `WHISPER_COMPUTE_TYPE=float16`
-- `DEFAULT_TRANSCRIPTION_PROVIDER=azure-openai-gpt-4o-transcribe`
+- `DEFAULT_TRANSCRIPTION_PROVIDER=azure-speech-mai-transcribe-1.5`
 - `DEFAULT_SUMMARY_PROVIDER=azure-openai`
 - `SUMMARY_MODEL=gpt-5.6-luna`
-- `SUMMARY_ENABLED=true`
+- `SUMMARY_REASONING_EFFORT=max`
+- `SUMMARY_ENABLED=true` (control-plane summary-provider readiness)
 - `TRANSCRIPT_PUNCTUATION_ENABLED=true`
 - `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS=300`
-- `AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS=30`
+- `TRANSCRIPT_POLISHING_REASONING_EFFORT=max`
+- `AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS=300`
 - `MAX_CONCURRENT_TRANSCRIPTION_JOBS=1`
 - `MAX_MEETING_JOB_BACKLOG=2`
 - `MAX_TRANSCRIPTION_JOB_BACKLOG=10`
@@ -242,9 +249,9 @@ The template selects the cloud providers but leaves their endpoint/key values
 blank. Fill the required Azure values before using those routes, or switch the
 default policies to the local providers.
 
-## Auth And Email
+## Backend Operator Auth And Email
 
-Auth is enabled when:
+Backend operator token verification is enabled when:
 - `SUPABASE_URL`
 - `SUPABASE_PUBLISHABLE_KEY`
 
@@ -258,15 +265,42 @@ Azure hosted transcription becomes selectable only when all of these are configu
 - optional `AZURE_OPENAI_API_VERSION`
 - optional `AZURE_OPENAI_TRANSCRIBE_TIMEOUT_SECONDS` (default `300`)
 
+Azure Speech MAI becomes selectable only when all of these are configured:
+
+- `AZURE_SPEECH_MAI_ENDPOINT`
+- `AZURE_SPEECH_MAI_MODEL=mai-transcribe-1.5`
+- `AZURE_SPEECH_MAI_API_KEY`
+- optional `AZURE_SPEECH_MAI_API_VERSION` (default `2025-10-15`)
+- optional `AZURE_SPEECH_MAI_TIMEOUT_SECONDS` (default `300`)
+
+MAI processes up to three independent 30-second `verbatim` chunks concurrently,
+restores timestamp order, and sends no phrase list, forced locale, PLAUD text,
+or stored comparison transcript. HTTP 400 receives one identical retry;
+transient DNS, timeout, reset, or broken-connection failures use bounded
+2/10/30-second identical-request retries.
+
+The bundled Qwen service is an optional Compose profile and does not start or
+block the MAI production path. To use it explicitly, start with
+`--profile qwen` and configure `QWEN_ASR_ENDPOINT=http://qwen3-asr:8000`.
+
+Optional `gpt-4o-transcribe-diarize` speaker evidence never replaces primary
+text. Its HTTP 400 requests receive one identical retry; transient DNS, timeout,
+reset, or broken-connection failures use the same bounded 2/10/30-second
+identical-request retries. A final failure leaves only that speaker chunk
+unattributed.
+
 Azure hosted summary and punctuation restoration require explicit Responses API
-configuration on the control-plane and transcription/summary workers:
+configuration on the control-plane, transcription worker (punctuation), and
+summary worker (summaries):
 
 - `AZURE_OPENAI_SUMMARY_ENDPOINT` — HTTPS URL whose normalized path is exactly `/openai/v1/responses`
 - `AZURE_OPENAI_SUMMARY_API_KEY`
 - `SUMMARY_MODEL`
+- `SUMMARY_REASONING_EFFORT=max`
 - optional `AZURE_OPENAI_PUNCTUATION_MODEL` (blank reuses `SUMMARY_MODEL`)
+- `TRANSCRIPT_POLISHING_REASONING_EFFORT=max`
 - optional `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS` (default `300`)
-- optional `AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS` (default `30`)
+- optional `AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS` (default `300`)
 
 Python transcription/summary worker GET/POST/heartbeat calls use
 `CONTROL_PLANE_TIMEOUT_SECONDS` (default `30`).
@@ -325,9 +359,13 @@ node scripts/run_runtime_smoke.mjs --base-url http://127.0.0.1:3000 --timeout-ms
 
 ### Summary does not appear
 
-For local Codex, check the transcription worker environment:
-- `SUMMARY_ENABLED=true`
+For local Codex, check the summary worker environment:
+
 - `CODEX_HOME` is mounted into the container
+- `CODEX_CLI_PATH` resolves to the Codex executable
+
+Also verify `SUMMARY_ENABLED=true` on the control-plane so the local summary
+provider is advertised as ready.
 
 For Azure OpenAI, also check:
 

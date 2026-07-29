@@ -1,6 +1,7 @@
 import io
 import json
 import unittest
+import urllib.error
 
 from transcription_worker.azure_openai_punctuation_restorer import (
     AzureOpenAiPunctuationRestorer,
@@ -73,6 +74,7 @@ class AzureOpenAiPunctuationRestorerTests(unittest.TestCase):
         self.assertEqual(captured["headers"]["Api-key"], "secret")
         self.assertEqual(captured["body"]["model"], "gpt-5.6-luna")
         self.assertEqual(captured["body"]["input"], "你好今天天氣很好")
+        self.assertEqual(captured["body"]["reasoning"], {"effort": "max"})
         self.assertIn("標點", captured["body"]["instructions"])
 
     def test_keeps_raw_text_when_model_alters_words(self) -> None:
@@ -198,6 +200,7 @@ class AzureOpenAiPunctuationRestorerTests(unittest.TestCase):
             result["usage"],
             {
                 "model": "gpt-5.6-luna",
+                "reasoning_effort": "max",
                 "input_tokens": 12,
                 "cached_input_tokens": 5,
                 "output_tokens": 3,
@@ -269,6 +272,117 @@ class AzureOpenAiPunctuationRestorerTests(unittest.TestCase):
         self.assertEqual(result["usage"]["request_count"], 1)
         self.assertEqual(result["usage"]["fallback_chunk_count"], 1)
         self.assertEqual(result["usage"]["unmetered_request_count"], 1)
+
+    def test_http_400_retry_counts_provider_attempts_separately_from_chunk_outcome(
+        self,
+    ) -> None:
+        calls = 0
+
+        def fake_urlopen(http_request, timeout=None):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise urllib.error.HTTPError(
+                    url=http_request.full_url,
+                    code=400,
+                    msg="Bad Request",
+                    hdrs=None,
+                    fp=io.BytesIO(b'{"error":{"message":"temporary"}}'),
+                )
+            return _responses_response("你好。")
+
+        result = AzureOpenAiPunctuationRestorer(
+            endpoint="https://azure.example.test/openai/v1/responses",
+            api_key="secret",
+            model="gpt-5.6-luna",
+            urlopen=fake_urlopen,
+        ).restore_with_usage("你好")
+
+        self.assertEqual(result["text"], "你好。")
+        self.assertEqual(result["usage"]["request_count"], 2)
+        self.assertEqual(result["usage"]["accepted_chunk_count"], 1)
+        self.assertEqual(result["usage"]["fallback_chunk_count"], 0)
+        self.assertEqual(result["usage"]["unmetered_request_count"], 1)
+
+    def test_http_400_retry_preserves_attempt_count_when_response_usage_is_invalid(
+        self,
+    ) -> None:
+        calls = 0
+
+        def fake_urlopen(http_request, timeout=None):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise urllib.error.HTTPError(
+                    url=http_request.full_url,
+                    code=400,
+                    msg="Bad Request",
+                    hdrs=None,
+                    fp=io.BytesIO(b'{"error":{"message":"temporary"}}'),
+                )
+            return _FakeResponse(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "message",
+                                "content": [{"type": "output_text", "text": "你好。"}],
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+            )
+
+        result = AzureOpenAiPunctuationRestorer(
+            endpoint="https://azure.example.test/openai/v1/responses",
+            api_key="secret",
+            model="gpt-5.6-luna",
+            urlopen=fake_urlopen,
+        ).restore_with_usage("你好")
+
+        self.assertEqual(result["text"], "你好")
+        self.assertEqual(result["usage"]["request_count"], 2)
+        self.assertEqual(result["usage"]["fallback_chunk_count"], 1)
+        self.assertEqual(result["usage"]["unmetered_request_count"], 2)
+
+    def test_accepts_small_asr_term_correction_but_rejects_number_changes(self) -> None:
+        responses = iter(
+            [
+                _responses_response("MES 是英業達的製造系統。"),
+                _responses_response("機箱有 43 顆硬碟。"),
+            ]
+        )
+
+        restorer = AzureOpenAiPunctuationRestorer(
+            endpoint="https://azure.example.test/openai/v1/responses",
+            api_key="secret",
+            model="gpt-5.6-luna",
+            urlopen=lambda _request, timeout=None: next(responses),
+        )
+
+        corrected = restorer.restore_with_usage("MES 是音樂達的製造系統。")
+        rejected = restorer.restore_with_usage("機箱有 44 顆硬碟。")
+
+        self.assertEqual(corrected["text"], "MES 是英業達的製造系統。")
+        self.assertIs(corrected["lexical_changed"], True)
+        self.assertEqual(rejected["text"], "機箱有 44 顆硬碟。")
+        self.assertIs(rejected["lexical_changed"], False)
+
+    def test_rejects_reordered_words(self) -> None:
+        restorer = AzureOpenAiPunctuationRestorer(
+            endpoint="https://azure.example.test/openai/v1/responses",
+            api_key="secret",
+            model="gpt-5.6-luna",
+            urlopen=lambda _request, timeout=None: _responses_response(
+                "今天上午討論硬碟流程測試。"
+            ),
+        )
+
+        result = restorer.restore_with_usage("今天上午討論硬碟測試流程。")
+
+        self.assertEqual(result["text"], "今天上午討論硬碟測試流程。")
+        self.assertIs(result["lexical_changed"], False)
 
 
 if __name__ == "__main__":

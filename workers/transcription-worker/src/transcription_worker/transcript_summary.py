@@ -43,12 +43,15 @@ def build_summary_prompt(
     for segment in transcript_result.get("segments", []):
         display_text = str(segment.get("display_text") or segment.get("text", "")).strip()
         if display_text:
-            transcript_lines.append(display_text)
+            speaker = str(segment.get("speaker", "")).strip()
+            transcript_lines.append(f"{speaker}: {display_text}" if speaker else display_text)
 
         for review_flag in segment.get("review_flags", []):
             original_text = str(review_flag.get("original_text", "")).strip()
             candidates = _normalize_string_list(review_flag.get("candidates"))
             reason = str(review_flag.get("reason", "")).strip()
+            if reason == "operator-verified-alias":
+                continue
             transcript_lines.append(
                 "UNCONFIRMED review flag: "
                 f'original="{original_text}", '
@@ -65,9 +68,14 @@ def build_summary_prompt(
         "- Stay faithful to the transcript.\n"
         "- Do not invent facts, decisions, risks, questions, owners, dates, or commitments.\n"
         "- Only include an action item when the transcript explicitly assigns or commits the action.\n"
+        "- Only include a decision when the transcript explicitly reaches an agreement or final choice.\n"
+        "- Keep tentative, contested, or later-to-be-confirmed points out of decisions and state them as open questions.\n"
+        "- Do not treat questions as facts or turn workload/deadline discussion into a predicted schedule risk unless explicitly stated.\n"
+        "- If a technical identifier is ambiguous or questioned, describe only the supported function without guessing the identifier.\n"
         "- Do not invent generic follow-up work, even when it would normally be useful.\n"
         "- Do not resolve or accept a review candidate. Treat every UNCONFIRMED candidate as non-authoritative evidence.\n"
-        "- Preserve names, numbers, dates, units, and model identifiers verbatim.\n"
+        "- Preserve explicitly established names, numbers, dates, units, and model identifiers verbatim.\n"
+        "- Treat Speaker labels as anonymous evidence; do not infer a person's real identity from them.\n"
         "- Preserve foreign-language text and proper nouns; do not translate foreign-language literals.\n"
         "- Do not repeat the same fact across sections unless the transcript gives it distinct roles.\n"
         "- Keep it scannable and practical.\n"

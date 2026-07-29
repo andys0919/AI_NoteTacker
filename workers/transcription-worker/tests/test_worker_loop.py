@@ -5,13 +5,11 @@ from transcription_worker.worker_loop import run_transcription_worker_iteration
 
 
 class FakeClient:
-    def __init__(self, claimed_job, job_statuses=None, summary_slot_results=None):
+    def __init__(self, claimed_job, job_statuses=None):
         self.claimed_job = claimed_job
         self.events = []
         self.heartbeats = []
         self.job_statuses = job_statuses or []
-        self.summary_slot_results = summary_slot_results or [True]
-        self.summary_slot_requests = []
 
     def claim_next_job(self, worker_id):
         return self.claimed_job
@@ -28,13 +26,6 @@ class FakeClient:
         if self.job_statuses:
             return self.job_statuses.pop(0)
         return {"id": job_id, "state": "transcribing"}
-
-    def claim_summary_slot(self, job_id, worker_id):
-        self.summary_slot_requests.append((job_id, worker_id))
-        if self.summary_slot_results:
-            return self.summary_slot_results.pop(0)
-        return True
-
 
 class FailOnceTranscriptEventClient(FakeClient):
     def __init__(self, claimed_job):
@@ -115,20 +106,22 @@ class PartiallyMeteredFailingTranscriber(FakeTranscriber):
         self.inputs.append(local_audio_path)
         self.workflow_contexts.append(workflow_context)
         on_transcription_usage({"audio_ms": 60_000})
+        on_transcription_usage(
+            {
+                "diarization": {
+                    "provider": "azure-openai",
+                    "model": "gpt-4o-transcribe-diarize",
+                    "audio_ms": 60_000,
+                    "request_count": 1,
+                    "unmetered_request_count": 0,
+                    "failed_chunk_count": 0,
+                }
+            }
+        )
         raise RuntimeError("later Azure upload failed")
 
 
 class FakeTranscriberRegistry:
-    def __init__(self, providers):
-        self.providers = providers
-        self.selected = []
-
-    def get(self, provider):
-        self.selected.append(provider)
-        return self.providers[provider]
-
-
-class FakeSummarizerRegistry:
     def __init__(self, providers):
         self.providers = providers
         self.selected = []
@@ -148,23 +141,6 @@ class FakeMediaPreparer:
         return {"local_audio_path": self.local_audio_path, "prepared": True}
 
 
-class FakeSummarizer:
-    def __init__(self, summary_result=None, error=None):
-        self.summary_result = summary_result
-        self.error = error
-        self.inputs = []
-        self.summary_profiles = []
-        self.model_overrides = []
-
-    def summarize(self, transcript_result, summary_profile="general", model_override=None):
-        self.inputs.append(transcript_result)
-        self.summary_profiles.append(summary_profile)
-        self.model_overrides.append(model_override)
-        if self.error:
-            raise self.error
-        return self.summary_result
-
-
 class RunTranscriptionWorkerIterationTests(unittest.TestCase):
     def test_returns_idle_when_no_job_is_available(self) -> None:
         result = run_transcription_worker_iteration(
@@ -173,7 +149,6 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
             downloader=FakeDownloader("ignored.wav"),
             media_preparer=FakeMediaPreparer("ignored.wav"),
             transcriber=FakeTranscriber({"language": "en", "segments": []}),
-            summarizer=None,
         )
 
         self.assertEqual(result, {"kind": "idle"})
@@ -202,21 +177,6 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
                 {"processed_ms": 600000, "total_ms": 900000, "percent": 66},
             ],
         )
-        summarizer = FakeSummarizer(
-            {
-                "model": "gpt-5.3-codex-spark",
-                "reasoning_effort": "medium",
-                "text": "Short summary",
-                "structured": {
-                    "summary": "Short summary",
-                    "key_points": ["hello team"],
-                    "action_items": ["send recap"],
-                    "decisions": ["ship beta"],
-                    "risks": ["deadline risk"],
-                    "open_questions": ["who owns rollout"],
-                },
-            }
-        )
         media_preparer = FakeMediaPreparer()
 
         result = run_transcription_worker_iteration(
@@ -225,14 +185,12 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
             downloader=downloader,
             media_preparer=media_preparer,
             transcriber=transcriber,
-            summarizer=summarizer,
         )
 
         self.assertEqual(result, {"kind": "processed", "job_id": "job_abc"})
         self.assertEqual(downloader.downloaded[0]["storageKey"], "recordings/job_abc/meeting.webm")
         self.assertEqual(media_preparer.inputs, [("/tmp/job_abc.wav", "video/webm")])
         self.assertEqual(transcriber.inputs, ["/tmp/prepared.wav"])
-        self.assertEqual(summarizer.inputs, [])
         self.assertEqual(client.events[0][0], "job_abc")
         self.assertEqual(client.events[0][1]["type"], "progress-updated")
         self.assertEqual(client.events[0][1]["processingStage"], "preparing-media")
@@ -246,8 +204,6 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         self.assertEqual(client.events[4][1]["progressProcessedMs"], 600000)
         self.assertEqual(client.events[5][1]["type"], "transcript-artifact-stored")
         self.assertEqual(len(client.events), 6)
-        self.assertEqual(summarizer.summary_profiles, [])
-        self.assertEqual(summarizer.model_overrides, [])
 
     def test_reports_transcription_failure_instead_of_crashing(self) -> None:
         client = FakeClient(
@@ -270,7 +226,6 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
             downloader=downloader,
             media_preparer=media_preparer,
             transcriber=transcriber,
-            summarizer=None,
         )
 
         self.assertEqual(result, {"kind": "failed", "job_id": "job_fail"})
@@ -316,7 +271,7 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         self.assertEqual(len(terminal_events), 2)
         self.assertEqual(terminal_events[1], terminal_events[0])
 
-    def test_reports_successful_partial_azure_audio_usage_on_failure(self) -> None:
+    def test_reports_spent_azure_audio_and_diarization_usage_on_failure(self) -> None:
         client = FakeClient(
             {
                 "id": "job_partial_azure_fail",
@@ -344,7 +299,20 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
 
         self.assertEqual(result, {"kind": "failed", "job_id": "job_partial_azure_fail"})
         self.assertEqual(client.events[-1][1]["type"], "transcription-failed")
-        self.assertEqual(client.events[-1][1]["usage"], {"audioMs": 60_000})
+        self.assertEqual(
+            client.events[-1][1]["usage"],
+            {
+                "audioMs": 60_000,
+                "diarization": {
+                    "provider": "azure-openai",
+                    "model": "gpt-4o-transcribe-diarize",
+                    "audioMs": 60_000,
+                    "requestCount": 1,
+                    "unmeteredRequestCount": 0,
+                    "failedChunkCount": 0,
+                },
+            },
+        )
 
     def test_stops_posting_artifacts_when_the_job_is_cancelled_mid_transcription(self) -> None:
         client = FakeClient(
@@ -357,6 +325,7 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
                 },
             },
             job_statuses=[
+                {"id": "job_cancel", "state": "transcribing"},
                 {
                     "id": "job_cancel",
                     "state": "failed",
@@ -373,7 +342,10 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
                     {"start_ms": 0, "end_ms": 900, "text": "hello team"},
                 ],
             },
-            progress_updates=[{"processed_ms": 300000, "total_ms": 900000, "percent": 33}],
+            progress_updates=[
+                {"processed_ms": 300000, "total_ms": 900000, "percent": 33},
+                {"processed_ms": 300000, "total_ms": 900000, "percent": 33},
+            ],
         )
 
         result = run_transcription_worker_iteration(
@@ -382,7 +354,6 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
             downloader=downloader,
             media_preparer=media_preparer,
             transcriber=transcriber,
-            summarizer=None,
         )
 
         self.assertEqual(result, {"kind": "cancelled", "job_id": "job_cancel"})
@@ -411,7 +382,6 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
             downloader=FakeDownloader("/tmp/job_heartbeat.wav"),
             media_preparer=FakeMediaPreparer(local_audio_path="/tmp/job_heartbeat.wav"),
             transcriber=SlowTranscriber(delay_seconds=0.05),
-            summarizer=None,
             heartbeat_interval_ms=10,
         )
 
@@ -450,6 +420,7 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
                 "id": "job_azure",
                 "transcriptionProvider": "azure-openai-gpt-4o-transcribe",
                 "submissionTemplateId": "sales",
+                "transcriptionGlossary": ["舌片 = 蛇片", "條碼 = 調碼"],
                 "recordingArtifact": {
                     "storageKey": "recordings/job_azure/meeting.webm",
                     "downloadUrl": "https://storage.example.test/recordings/job_azure/meeting.webm",
@@ -465,16 +436,143 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
             media_preparer=FakeMediaPreparer(local_audio_path="/tmp/job_azure.wav"),
             transcriber=whisper_transcriber,
             transcriber_registry=registry,
-            summarizer=None,
         )
 
         self.assertEqual(result, {"kind": "processed", "job_id": "job_azure"})
         self.assertEqual(registry.selected, ["azure-openai-gpt-4o-transcribe"])
         self.assertEqual(azure_transcriber.inputs, ["/tmp/job_azure.wav"])
         self.assertEqual(whisper_transcriber.inputs, [])
-        self.assertEqual(azure_transcriber.workflow_contexts, [{"template_id": "sales"}])
+        self.assertEqual(
+            azure_transcriber.workflow_contexts,
+            [
+                {
+                    "template_id": "sales",
+                    "glossary": ["舌片 = 蛇片", "條碼 = 調碼"],
+                }
+            ],
+        )
         self.assertEqual(client.events[2][1]["processingMessage"], "Running Azure OpenAI transcription.")
         self.assertEqual(client.events[3][1]["transcriptArtifact"]["language"], "zh")
+
+    def test_uses_qwen_with_full_evidence_callbacks(self) -> None:
+        qwen_transcriber = FakeTranscriber(
+            {
+                "language": "zh",
+                "segments": [{"start_ms": 0, "end_ms": 900, "text": "qwen transcript"}],
+            }
+        )
+        registry = FakeTranscriberRegistry({"qwen3-asr-1.7b": qwen_transcriber})
+        client = FakeClient(
+            {
+                "id": "job_qwen",
+                "transcriptionProvider": "qwen3-asr-1.7b",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_qwen/meeting.wav",
+                    "downloadUrl": "https://storage.example.test/recordings/job_qwen/meeting.wav",
+                    "contentType": "audio/wav",
+                },
+            }
+        )
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_qwen.wav"),
+            media_preparer=FakeMediaPreparer(local_audio_path="/tmp/job_qwen.wav"),
+            transcriber=qwen_transcriber,
+            transcriber_registry=registry,
+        )
+
+        self.assertEqual(result, {"kind": "processed", "job_id": "job_qwen"})
+        self.assertEqual(registry.selected, ["qwen3-asr-1.7b"])
+        self.assertEqual(
+            client.events[2][1]["processingMessage"],
+            "Running Qwen3-ASR transcription.",
+        )
+        self.assertEqual(
+            qwen_transcriber.workflow_contexts,
+            [{"template_id": "general", "glossary": []}],
+        )
+
+    def test_uses_mai_with_full_evidence_callbacks(self) -> None:
+        mai_transcriber = FakeTranscriber(
+            {
+                "language": "zh",
+                "segments": [{"start_ms": 0, "end_ms": 900, "text": "MAI transcript"}],
+            }
+        )
+        registry = FakeTranscriberRegistry(
+            {"azure-speech-mai-transcribe-1.5": mai_transcriber}
+        )
+        client = FakeClient(
+            {
+                "id": "job_mai",
+                "transcriptionProvider": "azure-speech-mai-transcribe-1.5",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_mai/meeting.wav",
+                    "downloadUrl": "https://storage.example.test/recordings/job_mai/meeting.wav",
+                    "contentType": "audio/wav",
+                },
+            }
+        )
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_mai.wav"),
+            media_preparer=FakeMediaPreparer(local_audio_path="/tmp/job_mai.wav"),
+            transcriber=mai_transcriber,
+            transcriber_registry=registry,
+        )
+
+        self.assertEqual(result, {"kind": "processed", "job_id": "job_mai"})
+        self.assertEqual(registry.selected, ["azure-speech-mai-transcribe-1.5"])
+        self.assertEqual(
+            client.events[2][1]["processingMessage"],
+            "Running Azure Speech MAI-Transcribe 1.5.",
+        )
+        self.assertEqual(
+            mai_transcriber.workflow_contexts,
+            [{"template_id": "general", "glossary": []}],
+        )
+
+    def test_rejects_a_latched_mai_model_that_differs_from_the_worker_model(self) -> None:
+        mai_transcriber = FakeTranscriber(
+            {
+                "language": "zh",
+                "segments": [{"start_ms": 0, "end_ms": 900, "text": "must not run"}],
+            }
+        )
+        mai_transcriber.deployment = "mai-transcribe-1.5"
+        client = FakeClient(
+            {
+                "id": "job_mai_model_mismatch",
+                "transcriptionProvider": "azure-speech-mai-transcribe-1.5",
+                "transcriptionModel": "wrong-model",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_mai_model_mismatch/meeting.wav",
+                    "downloadUrl": "https://storage.example.test/meeting.wav",
+                    "contentType": "audio/wav",
+                },
+            }
+        )
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_mai_model_mismatch.wav"),
+            media_preparer=FakeMediaPreparer(
+                local_audio_path="/tmp/job_mai_model_mismatch.wav"
+            ),
+            transcriber=mai_transcriber,
+            transcriber_registry=FakeTranscriberRegistry(
+                {"azure-speech-mai-transcribe-1.5": mai_transcriber}
+            ),
+        )
+
+        self.assertEqual(result, {"kind": "failed", "job_id": "job_mai_model_mismatch"})
+        self.assertEqual(mai_transcriber.inputs, [])
+        self.assertIn("does not match", client.events[-1][1]["failure"]["message"])
 
     def test_posts_extended_transcript_segment_evidence_without_replacing_raw_text(self) -> None:
         transcriber = FakeTranscriber(
@@ -489,6 +587,9 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
                         "display_text": "需要黑電淨化器",
                         "language": "zh-Hant",
                         "timing_source": "estimated",
+                        "speaker": "Speaker A",
+                        "speaker_source": "gpt-4o-transcribe-diarize",
+                        "speaker_alignment_score": 0.91,
                         "review_flags": [
                             {
                                 "reason": "domain-term",
@@ -500,6 +601,18 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
                         ],
                     }
                 ],
+                "diarization": {
+                    "provider": "azure-openai",
+                    "model": "gpt-4o-transcribe-diarize",
+                    "status": "complete",
+                    "audio_ms": 900,
+                    "request_count": 1,
+                    "unmetered_request_count": 0,
+                    "failed_chunk_count": 0,
+                    "reference_count": 1,
+                    "attributed_segment_count": 1,
+                    "total_segment_count": 1,
+                },
             }
         )
         client = FakeClient(
@@ -539,6 +652,9 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
                 "displayText": "需要黑電淨化器",
                 "language": "zh-Hant",
                 "timingSource": "estimated",
+                "speaker": "Speaker A",
+                "speakerSource": "gpt-4o-transcribe-diarize",
+                "speakerAlignmentScore": 0.91,
                 "reviewFlags": [
                     {
                         "reason": "domain-term",
@@ -548,6 +664,29 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
                         "endMs": 900,
                     }
                 ],
+            },
+        )
+        self.assertEqual(
+            artifact["speakerAttribution"],
+            {
+                "provider": "azure-openai",
+                "model": "gpt-4o-transcribe-diarize",
+                "status": "complete",
+                "referenceCount": 1,
+                "attributedSegmentCount": 1,
+                "totalSegmentCount": 1,
+                "failedChunkCount": 0,
+            },
+        )
+        self.assertEqual(
+            client.events[3][1]["usage"]["diarization"],
+            {
+                "provider": "azure-openai",
+                "model": "gpt-4o-transcribe-diarize",
+                "audioMs": 900,
+                "requestCount": 1,
+                "unmeteredRequestCount": 0,
+                "failedChunkCount": 0,
             },
         )
 
@@ -793,273 +932,6 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
             "operator-cancel-requested",
         )
 
-    def test_forwards_the_job_summary_profile_to_the_summarizer(self) -> None:
-        summarizer = FakeSummarizer(
-            {
-                "model": "gpt-5.3-codex-spark",
-                "reasoning_effort": "medium",
-                "text": "Sales summary",
-                "structured": {
-                    "summary": "Sales summary",
-                    "key_points": [],
-                    "action_items": [],
-                    "decisions": [],
-                    "risks": [],
-                    "open_questions": [],
-                },
-            }
-        )
-        client = FakeClient(
-            {
-                "id": "job_sales",
-                "summaryProfile": "sales",
-                "recordingArtifact": {
-                    "storageKey": "recordings/job_sales/meeting.webm",
-                    "downloadUrl": "https://storage.example.test/recordings/job_sales/meeting.webm",
-                    "contentType": "video/webm",
-                },
-            }
-        )
-
-        result = run_transcription_worker_iteration(
-            worker_id="transcriber-alpha",
-            client=client,
-            downloader=FakeDownloader("/tmp/job_sales.wav"),
-            media_preparer=FakeMediaPreparer(local_audio_path="/tmp/job_sales.wav"),
-            transcriber=FakeTranscriber(
-                {
-                    "language": "zh",
-                    "segments": [{"start_ms": 0, "end_ms": 900, "text": "客戶希望四月上線"}],
-                }
-            ),
-            summarizer=summarizer,
-        )
-
-        self.assertEqual(result, {"kind": "processed", "job_id": "job_sales"})
-        self.assertEqual(summarizer.summary_profiles, [])
-
-    def test_forwards_the_claimed_cloud_summary_model_to_the_summarizer(self) -> None:
-        summarizer = FakeSummarizer(
-            {
-                "model": "gpt-5.4-nano",
-                "reasoning_effort": "cloud-default",
-                "text": "Nano summary",
-                "structured": {
-                    "summary": "Nano summary",
-                    "key_points": [],
-                    "action_items": [],
-                    "decisions": [],
-                    "risks": [],
-                    "open_questions": [],
-                },
-            }
-        )
-        client = FakeClient(
-            {
-                "id": "job_model_override",
-                "summaryProvider": "azure-openai",
-                "summaryModel": "gpt-5.4-nano",
-                "recordingArtifact": {
-                    "storageKey": "recordings/job_model_override/meeting.webm",
-                    "downloadUrl": "https://storage.example.test/recordings/job_model_override/meeting.webm",
-                    "contentType": "video/webm",
-                },
-            }
-        )
-
-        result = run_transcription_worker_iteration(
-            worker_id="transcriber-alpha",
-            client=client,
-            downloader=FakeDownloader("/tmp/job_model_override.wav"),
-            media_preparer=FakeMediaPreparer(local_audio_path="/tmp/job_model_override.wav"),
-            transcriber=FakeTranscriber(
-                {
-                    "language": "zh",
-                    "segments": [{"start_ms": 0, "end_ms": 900, "text": "模型切換測試"}],
-                }
-            ),
-            summarizer=summarizer,
-        )
-
-        self.assertEqual(result, {"kind": "processed", "job_id": "job_model_override"})
-        self.assertEqual(summarizer.model_overrides, [])
-
-    def test_ignores_the_claimed_summary_model_when_using_local_codex(self) -> None:
-        summarizer = FakeSummarizer(
-            {
-                "model": "gpt-5.3-codex-spark",
-                "reasoning_effort": "medium",
-                "text": "Local summary",
-                "structured": {
-                    "summary": "Local summary",
-                    "key_points": [],
-                    "action_items": [],
-                    "decisions": [],
-                    "risks": [],
-                    "open_questions": [],
-                },
-            }
-        )
-        client = FakeClient(
-            {
-                "id": "job_local_summary_mode",
-                "summaryProvider": "local-codex",
-                "summaryModel": "gpt-5.4-nano",
-                "recordingArtifact": {
-                    "storageKey": "recordings/job_local_summary_mode/meeting.webm",
-                    "downloadUrl": "https://storage.example.test/recordings/job_local_summary_mode/meeting.webm",
-                    "contentType": "video/webm",
-                },
-            }
-        )
-
-        result = run_transcription_worker_iteration(
-            worker_id="transcriber-alpha",
-            client=client,
-            downloader=FakeDownloader("/tmp/job_local_summary_mode.wav"),
-            media_preparer=FakeMediaPreparer(local_audio_path="/tmp/job_local_summary_mode.wav"),
-            transcriber=FakeTranscriber(
-                {
-                    "language": "zh",
-                    "segments": [{"start_ms": 0, "end_ms": 900, "text": "local codex"}],
-                }
-            ),
-            summarizer=summarizer,
-        )
-
-        self.assertEqual(result, {"kind": "processed", "job_id": "job_local_summary_mode"})
-        self.assertEqual(summarizer.model_overrides, [])
-
-    def test_uses_the_claimed_summary_provider_and_posts_stage_usage(self) -> None:
-        azure_summarizer = FakeSummarizer(
-            {
-                "model": "gpt-5.4-nano",
-                "reasoning_effort": "cloud-default",
-                "text": "Cloud summary",
-                "structured": {
-                    "summary": "Cloud summary",
-                    "key_points": [],
-                    "action_items": [],
-                    "decisions": [],
-                    "risks": [],
-                    "open_questions": [],
-                },
-                "usage": {
-                    "prompt_tokens": 120,
-                    "completion_tokens": 80,
-                    "total_tokens": 200,
-                },
-            }
-        )
-        local_summarizer = FakeSummarizer(
-            {
-                "model": "gpt-5.3-codex-spark",
-                "reasoning_effort": "medium",
-                "text": "Local summary",
-                "structured": {
-                    "summary": "Local summary",
-                    "key_points": [],
-                    "action_items": [],
-                    "decisions": [],
-                    "risks": [],
-                    "open_questions": [],
-                },
-            }
-        )
-        summarizer_registry = FakeSummarizerRegistry(
-            {
-                "local-codex": local_summarizer,
-                "azure-openai": azure_summarizer,
-            }
-        )
-        client = FakeClient(
-            {
-                "id": "job_summary_provider",
-                "transcriptionProvider": "azure-openai-gpt-4o-transcribe",
-                "summaryProvider": "azure-openai",
-                "summaryModel": "gpt-5.4-nano",
-                "recordingArtifact": {
-                    "storageKey": "recordings/job_summary_provider/meeting.webm",
-                    "downloadUrl": "https://storage.example.test/recordings/job_summary_provider/meeting.webm",
-                    "contentType": "video/webm",
-                },
-            }
-        )
-        transcriber = FakeTranscriber(
-            {
-                "language": "zh",
-                "segments": [{"start_ms": 0, "end_ms": 900, "text": "雲端摘要與用量測試"}],
-                "usage": {"audio_ms": 900000},
-            }
-        )
-
-        result = run_transcription_worker_iteration(
-            worker_id="transcriber-alpha",
-            client=client,
-            downloader=FakeDownloader("/tmp/job_summary_provider.wav"),
-            media_preparer=FakeMediaPreparer(local_audio_path="/tmp/job_summary_provider.wav"),
-            transcriber=transcriber,
-            summarizer=local_summarizer,
-            summarizer_registry=summarizer_registry,
-            sleep_fn=lambda _seconds: None,
-        )
-
-        self.assertEqual(result, {"kind": "processed", "job_id": "job_summary_provider"})
-        self.assertEqual(summarizer_registry.selected, [])
-        self.assertEqual(local_summarizer.inputs, [])
-        self.assertEqual(azure_summarizer.model_overrides, [])
-        self.assertEqual(client.summary_slot_requests, [])
-        self.assertEqual(client.events[3][1]["transcriptArtifact"]["language"], "zh")
-        self.assertEqual(client.events[3][1]["usage"], {"audioMs": 900000})
-
-    def test_waits_until_a_summary_slot_is_available(self) -> None:
-        summarizer = FakeSummarizer(
-            {
-                "model": "gpt-5.3-codex-spark",
-                "reasoning_effort": "medium",
-                "text": "Waited summary",
-                "structured": {
-                    "summary": "Waited summary",
-                    "key_points": [],
-                    "action_items": [],
-                    "decisions": [],
-                    "risks": [],
-                    "open_questions": [],
-                },
-            }
-        )
-        client = FakeClient(
-            {
-                "id": "job_wait_summary_slot",
-                "summaryProvider": "local-codex",
-                "recordingArtifact": {
-                    "storageKey": "recordings/job_wait_summary_slot/meeting.webm",
-                    "downloadUrl": "https://storage.example.test/recordings/job_wait_summary_slot/meeting.webm",
-                    "contentType": "video/webm",
-                },
-            },
-            summary_slot_results=[False, True],
-        )
-        sleep_calls = []
-
-        result = run_transcription_worker_iteration(
-            worker_id="transcriber-alpha",
-            client=client,
-            downloader=FakeDownloader("/tmp/job_wait_summary_slot.wav"),
-            media_preparer=FakeMediaPreparer(local_audio_path="/tmp/job_wait_summary_slot.wav"),
-            transcriber=FakeTranscriber(
-                {
-                    "language": "zh",
-                    "segments": [{"start_ms": 0, "end_ms": 900, "text": "summary slot wait"}],
-                }
-            ),
-            summarizer=summarizer,
-            sleep_fn=lambda seconds: sleep_calls.append(seconds),
-        )
-
-        self.assertEqual(result, {"kind": "processed", "job_id": "job_wait_summary_slot"})
-        self.assertEqual(client.summary_slot_requests, [])
-        self.assertEqual(sleep_calls, [])
 
 
 if __name__ == "__main__":

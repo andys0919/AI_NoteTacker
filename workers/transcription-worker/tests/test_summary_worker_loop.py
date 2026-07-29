@@ -128,6 +128,8 @@ class RunSummaryWorkerIterationTests(unittest.TestCase):
                     "completion_tokens": 80,
                     "reasoning_completion_tokens": 30,
                     "total_tokens": 200,
+                    "provider_request_count": 2,
+                    "unmetered_request_count": 1,
                 },
             }
         )
@@ -151,6 +153,8 @@ class RunSummaryWorkerIterationTests(unittest.TestCase):
                 "completionTokens": 80,
                 "reasoningCompletionTokens": 30,
                 "totalTokens": 200,
+                "providerRequestCount": 2,
+                "unmeteredRequestCount": 1,
             },
         )
 
@@ -170,6 +174,7 @@ class RunSummaryWorkerIterationTests(unittest.TestCase):
                             "rawText": "需要黑電淨化器",
                             "displayText": "需要黑電淨化器",
                             "language": "zh-Hant",
+                            "speaker": "Speaker A",
                             "reviewFlags": [
                                 {
                                     "reason": "domain-term",
@@ -218,6 +223,10 @@ class RunSummaryWorkerIterationTests(unittest.TestCase):
         self.assertEqual(
             summarizer.inputs[0]["segments"][0]["text"],
             "需要黑電淨化器",
+        )
+        self.assertEqual(
+            summarizer.inputs[0]["segments"][0]["speaker"],
+            "Speaker A",
         )
 
     def test_posts_summary_failure_instead_of_crashing(self) -> None:

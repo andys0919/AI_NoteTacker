@@ -20,12 +20,16 @@ export class InMemoryTranscriptionProviderSettingsRepository
 {
   private current: TranscriptionProviderSetting;
   private readonly localTranscriptionModel: string;
+  private readonly qwenTranscriptionModel: string;
+  private readonly maiTranscriptionModel: string;
   private readonly cloudTranscriptionModel: string;
 
   constructor(input: {
     defaultTranscriptionProvider: TranscriptionProvider;
     defaultTranscriptionModel: string;
     defaultLocalTranscriptionModel?: string;
+    defaultQwenTranscriptionModel?: string;
+    defaultMaiTranscriptionModel?: string;
     defaultCloudTranscriptionModel?: string;
     defaultSummaryProvider: SummaryProvider;
     defaultSummaryModel: string;
@@ -36,6 +40,10 @@ export class InMemoryTranscriptionProviderSettingsRepository
   }) {
     this.localTranscriptionModel =
       input.defaultLocalTranscriptionModel ?? input.defaultTranscriptionModel;
+    this.qwenTranscriptionModel =
+      input.defaultQwenTranscriptionModel ?? 'qwen3-asr-1.7b';
+    this.maiTranscriptionModel =
+      input.defaultMaiTranscriptionModel ?? 'mai-transcribe-1.5';
     this.cloudTranscriptionModel =
       input.defaultCloudTranscriptionModel ?? 'gpt-4o-transcribe';
     this.current = {
@@ -44,7 +52,11 @@ export class InMemoryTranscriptionProviderSettingsRepository
       transcriptionModel:
         input.defaultTranscriptionProvider === 'azure-openai-gpt-4o-transcribe'
           ? this.cloudTranscriptionModel
-          : this.localTranscriptionModel,
+          : input.defaultTranscriptionProvider === 'azure-speech-mai-transcribe-1.5'
+            ? this.maiTranscriptionModel
+            : input.defaultTranscriptionProvider === 'qwen3-asr-1.7b'
+              ? this.qwenTranscriptionModel
+              : this.localTranscriptionModel,
       summaryProvider: input.defaultSummaryProvider,
       summaryModel: input.defaultSummaryModel,
       pricingVersion: input.defaultPricingVersion,
@@ -99,14 +111,29 @@ export class InMemoryTranscriptionProviderSettingsRepository
       (nextProvider !== this.current.transcriptionProvider
         ? nextProvider === 'azure-openai-gpt-4o-transcribe'
           ? this.cloudTranscriptionModel
-          : this.localTranscriptionModel
+          : nextProvider === 'azure-speech-mai-transcribe-1.5'
+            ? this.maiTranscriptionModel
+            : nextProvider === 'qwen3-asr-1.7b'
+              ? this.qwenTranscriptionModel
+              : this.localTranscriptionModel
         : this.current.transcriptionModel);
+    const normalizedTranscriptionModel =
+      nextProvider === 'azure-speech-mai-transcribe-1.5'
+        ? this.maiTranscriptionModel
+        : nextProvider === 'qwen3-asr-1.7b' &&
+            [
+              this.localTranscriptionModel,
+              this.maiTranscriptionModel,
+              this.cloudTranscriptionModel
+            ].includes(nextTranscriptionModel)
+          ? this.qwenTranscriptionModel
+          : nextTranscriptionModel;
 
     this.current = {
       ...this.current,
       provider: nextProvider,
       transcriptionProvider: nextProvider,
-      transcriptionModel: nextTranscriptionModel,
+      transcriptionModel: normalizedTranscriptionModel,
       summaryProvider: input.summaryProvider ?? this.current.summaryProvider,
       summaryModel: input.summaryModel ?? this.current.summaryModel,
       pricingVersion: input.pricingVersion ?? this.current.pricingVersion,

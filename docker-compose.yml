@@ -18,11 +18,16 @@ services:
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
       AZURE_OPENAI_SUMMARY_API_KEY: ${AZURE_OPENAI_SUMMARY_API_KEY:-}
       AZURE_OPENAI_SUMMARY_ENDPOINT: ${AZURE_OPENAI_SUMMARY_ENDPOINT:-}
-      DEFAULT_TRANSCRIPTION_PROVIDER: ${DEFAULT_TRANSCRIPTION_PROVIDER:-azure-openai-gpt-4o-transcribe}
+      AZURE_SPEECH_MAI_API_KEY: ${AZURE_SPEECH_MAI_API_KEY:-}
+      AZURE_SPEECH_MAI_ENDPOINT: ${AZURE_SPEECH_MAI_ENDPOINT:-}
+      AZURE_SPEECH_MAI_MODEL: ${AZURE_SPEECH_MAI_MODEL:-mai-transcribe-1.5}
+      DEFAULT_TRANSCRIPTION_PROVIDER: ${DEFAULT_TRANSCRIPTION_PROVIDER:-azure-speech-mai-transcribe-1.5}
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-cloud}
       DOCKER_SOCKET_PATH: /var/run/docker.sock
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-internal-token}
       MEETING_BOT_CONTAINER_NAME: ${MEETING_BOT_CONTAINER_NAME:-ai_notetacker-meeting-bot-1}
+      QWEN_ASR_ENDPOINT: ${QWEN_ASR_ENDPOINT:-}
+      QWEN_ASR_MODEL: ${QWEN_ASR_MODEL:-qwen3-asr-1.7b}
     ports:
       - "3000:3000"
     volumes:
@@ -35,8 +40,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_started
       minio:
         condition: service_started
 
@@ -59,59 +62,107 @@ services:
       context: .
       dockerfile: workers/transcription-worker/Dockerfile
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
       AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2025-03-01-preview}
       AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
+      AZURE_OPENAI_DIARIZE_API_KEY: ${AZURE_OPENAI_DIARIZE_API_KEY:-}
+      AZURE_OPENAI_DIARIZE_API_VERSION: ${AZURE_OPENAI_DIARIZE_API_VERSION:-2025-04-01-preview}
+      AZURE_OPENAI_DIARIZE_ENDPOINT: ${AZURE_OPENAI_DIARIZE_ENDPOINT:-}
+      AZURE_OPENAI_DIARIZE_MAX_WORKERS: ${AZURE_OPENAI_DIARIZE_MAX_WORKERS:-3}
+      AZURE_OPENAI_DIARIZE_MODEL: ${AZURE_OPENAI_DIARIZE_MODEL:-}
+      AZURE_OPENAI_DIARIZE_TIMEOUT_SECONDS: ${AZURE_OPENAI_DIARIZE_TIMEOUT_SECONDS:-300}
+      AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS: ${AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS:-300}
       AZURE_OPENAI_SUMMARY_API_KEY: ${AZURE_OPENAI_SUMMARY_API_KEY:-}
       AZURE_OPENAI_SUMMARY_ENDPOINT: ${AZURE_OPENAI_SUMMARY_ENDPOINT:-}
       AZURE_OPENAI_TRANSCRIBE_LANGUAGE: ${AZURE_OPENAI_TRANSCRIBE_LANGUAGE:-}
       AZURE_OPENAI_TRANSCRIBE_PROMPT: ${AZURE_OPENAI_TRANSCRIBE_PROMPT:-}
+      AZURE_OPENAI_TRANSCRIBE_TIMEOUT_SECONDS: ${AZURE_OPENAI_TRANSCRIBE_TIMEOUT_SECONDS:-300}
       AZURE_OPENAI_PUNCTUATION_MODEL: ${AZURE_OPENAI_PUNCTUATION_MODEL:-}
-      TRANSCRIPT_PUNCTUATION_ENABLED: ${TRANSCRIPT_PUNCTUATION_ENABLED:-true}
+      AZURE_SPEECH_MAI_API_KEY: ${AZURE_SPEECH_MAI_API_KEY:-}
+      AZURE_SPEECH_MAI_API_VERSION: ${AZURE_SPEECH_MAI_API_VERSION:-2025-10-15}
+      AZURE_SPEECH_MAI_ENDPOINT: ${AZURE_SPEECH_MAI_ENDPOINT:-}
+      AZURE_SPEECH_MAI_MODEL: ${AZURE_SPEECH_MAI_MODEL:-mai-transcribe-1.5}
+      AZURE_SPEECH_MAI_TIMEOUT_SECONDS: ${AZURE_SPEECH_MAI_TIMEOUT_SECONDS:-300}
+      CONTROL_PLANE_BASE_URL: ${CONTROL_PLANE_BASE_URL:-http://control-plane:3000}
+      CONTROL_PLANE_TIMEOUT_SECONDS: ${CONTROL_PLANE_TIMEOUT_SECONDS:-30}
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-cloud}
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-internal-token}
-      SUMMARY_MODEL: ${SUMMARY_MODEL:-gpt-5.4-mini}
+      POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-1000}
+      QWEN_ASR_ENDPOINT: ${QWEN_ASR_ENDPOINT:-}
+      QWEN_ASR_MODEL: ${QWEN_ASR_MODEL:-qwen3-asr-1.7b}
+      QWEN_ASR_TIMEOUT_SECONDS: ${QWEN_ASR_TIMEOUT_SECONDS:-300}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_REGION: ${S3_REGION:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+      SUMMARY_MODEL: ${SUMMARY_MODEL:-gpt-5.6-luna}
+      TRANSCRIPT_PUNCTUATION_ENABLED: ${TRANSCRIPT_PUNCTUATION_ENABLED:-true}
+      TRANSCRIPT_POLISHING_REASONING_EFFORT: ${TRANSCRIPT_POLISHING_REASONING_EFFORT:-max}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
+      WHISPER_MODEL: ${WHISPER_MODEL:-tiny}
       WORKER_ID: transcriber-alpha
-      SUMMARY_ENABLED: "true"
-      CODEX_HOME: /codex-home
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     gpus: all
     volumes:
-      - ${CODEX_HOME}:/codex-home
       - whisper_model_cache:/root/.cache/huggingface
     depends_on:
       control-plane:
         condition: service_healthy
+
+  qwen3-asr:
+    profiles: ["qwen"]
+    image: qwenllm/qwen3-asr@sha256:fb75b775f089e06e5a1aaebffd421e37505cc630d50c86d889d95ffa45a7e16a
+    restart: unless-stopped
+    entrypoint: ["qwen-asr-serve"]
+    command:
+      - Qwen/Qwen3-ASR-1.7B
+      - --served-model-name
+      - qwen3-asr-1.7b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - "0.40"
+      - --max-model-len
+      - "8192"
+      - --max-num-seqs
+      - "1"
+      - --enforce-eager
+    gpus: all
+    volumes:
+      - qwen3_asr_cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
 
   summary-worker:
     build:
       context: .
       dockerfile: workers/transcription-worker/Dockerfile
     restart: unless-stopped
-    env_file:
-      - .env
     command: ["python", "-m", "transcription_worker.summary_main"]
     environment:
-      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
-      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2025-03-01-preview}
-      AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-}
-      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
       AZURE_OPENAI_SUMMARY_API_KEY: ${AZURE_OPENAI_SUMMARY_API_KEY:-}
       AZURE_OPENAI_SUMMARY_ENDPOINT: ${AZURE_OPENAI_SUMMARY_ENDPOINT:-}
-      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-cloud}
+      AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS: ${AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS:-300}
+      CODEX_CLI_PATH: ${CODEX_CLI_PATH:-codex}
+      CONTROL_PLANE_BASE_URL: ${CONTROL_PLANE_BASE_URL:-http://control-plane:3000}
+      CONTROL_PLANE_TIMEOUT_SECONDS: ${CONTROL_PLANE_TIMEOUT_SECONDS:-30}
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-internal-token}
-      SUMMARY_MODEL: ${SUMMARY_MODEL:-gpt-5.4-mini}
+      POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-1000}
+      SUMMARY_MODEL: ${SUMMARY_MODEL:-gpt-5.6-luna}
+      SUMMARY_REASONING_EFFORT: ${SUMMARY_REASONING_EFFORT:-max}
       WORKER_ID: summarizer-alpha
-      SUMMARY_ENABLED: "true"
       CODEX_HOME: /codex-home
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
-    gpus: all
     volumes:
       - ${CODEX_HOME}:/codex-home
     depends_on:
@@ -135,12 +186,6 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  redis:
-    image: redis:7
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-
   minio:
     image: minio/minio:latest
     restart: unless-stopped
@@ -157,4 +202,6 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  qwen3_asr_cache:
+    name: qwen3-asr-cache
   whisper_model_cache:

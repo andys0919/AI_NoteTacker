@@ -77,7 +77,12 @@ describe('transcription provider management API', () => {
         whisperModel: 'large-v3',
         azureOpenAiEndpoint: 'https://azure.example.test',
         azureOpenAiDeployment: 'gpt-4o-transcribe',
-        azureOpenAiApiKey: 'secret'
+        azureOpenAiApiKey: 'secret',
+        qwenAsrEndpoint: 'http://qwen3-asr:8000',
+        qwenAsrModel: 'qwen3-asr-1.7b',
+        azureSpeechMaiEndpoint: 'https://speech.example.test',
+        azureSpeechMaiModel: 'mai-transcribe-1.5',
+        azureSpeechMaiApiKey: 'secret'
       })
     );
 
@@ -91,6 +96,16 @@ describe('transcription provider management API', () => {
       {
         value: 'self-hosted-whisper',
         label: 'Self-hosted Whisper',
+        ready: true
+      },
+      {
+        value: 'qwen3-asr-1.7b',
+        label: 'Qwen3-ASR 1.7B',
+        ready: true
+      },
+      {
+        value: 'azure-speech-mai-transcribe-1.5',
+        label: 'Azure Speech MAI-Transcribe 1.5',
         ready: true
       },
       {

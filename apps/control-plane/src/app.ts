@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type ErrorRequestHandler } from 'express';
 import multer from 'multer';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -46,7 +46,6 @@ import {
   attachQueuedRecordingArtifact,
   attachSummaryArtifact,
   attachTranscriptArtifact,
-  assignRecordingJobToWorker,
   createRecordingJob,
   DEFAULT_JOIN_NAME,
   DEFAULT_WORKER_LEASE_DURATION_MS,
@@ -81,10 +80,7 @@ import type {
 import type { OperatorAuth } from './infrastructure/operator-auth.js';
 import type { AuthenticatedOperator } from './infrastructure/operator-auth.js';
 import type { SummaryProviderCatalog } from './infrastructure/summary-provider-catalog.js';
-import {
-  createSummaryProviderCatalog,
-  createSummaryProviderCatalogFromEnvironment
-} from './infrastructure/summary-provider-catalog.js';
+import { createSummaryProviderCatalogFromEnvironment } from './infrastructure/summary-provider-catalog.js';
 import type { TranscriptionProviderCatalog } from './infrastructure/transcription-provider-catalog.js';
 import { createTranscriptionProviderCatalogFromEnvironment } from './infrastructure/transcription-provider-catalog.js';
 import type { UploadedAudioStorage } from './infrastructure/uploaded-audio-storage.js';
@@ -109,6 +105,34 @@ const operatorMeetingJobRequestSchema = z.object({
   meetingPasscode: z.string().trim().max(64).optional(),
   submissionTemplateId: z.enum(submissionTemplateIds).optional()
 });
+
+const transcriptionGlossarySchema = z
+  .array(z.string().min(1).max(200))
+  .max(50);
+
+const parseTranscriptionGlossary = (value: unknown) => {
+  if (value === undefined || value === '') {
+    return transcriptionGlossarySchema.safeParse([]);
+  }
+
+  if (typeof value !== 'string' && !Array.isArray(value)) {
+    return transcriptionGlossarySchema.safeParse(value);
+  }
+
+  const values = typeof value === 'string' ? [value] : value;
+  if (!values.every((line): line is string => typeof line === 'string')) {
+    return transcriptionGlossarySchema.safeParse(value);
+  }
+
+  return transcriptionGlossarySchema.safeParse([
+    ...new Set(
+      values
+        .flatMap((line) => line.split(/\r?\n/))
+        .map((line) => line.trim())
+        .filter(Boolean)
+    )
+  ]);
+};
 
 const operatorJobsQuerySchema = z.object({
   submitterId: z.string().trim().min(1).max(120).optional(),
@@ -208,13 +232,27 @@ const transcriptSegmentSchema = z.object({
   language: z.string().min(2).optional(),
   languageConfidence: z.number().min(0).max(1).optional(),
   timingSource: z.enum(['provider', 'estimated']).optional(),
+  speaker: z.string().min(1).optional(),
+  speakerSource: z.string().min(1).optional(),
+  speakerAlignmentScore: z.number().min(0).max(1).optional(),
   reviewFlags: z.array(transcriptReviewFlagSchema).optional()
 });
 
 const transcriptArtifactSchema = recordingArtifactSchema.extend({
   schemaVersion: z.literal(2).optional(),
   language: z.string().min(2),
-  segments: z.array(transcriptSegmentSchema)
+  segments: z.array(transcriptSegmentSchema),
+  speakerAttribution: z
+    .object({
+      provider: z.literal('azure-openai'),
+      model: z.string().min(1),
+      status: z.enum(['complete', 'partial', 'failed']),
+      referenceCount: z.number().int().nonnegative().max(4),
+      attributedSegmentCount: z.number().int().nonnegative(),
+      totalSegmentCount: z.number().int().nonnegative(),
+      failedChunkCount: z.number().int().nonnegative()
+    })
+    .optional()
 });
 
 const punctuationUsageSchema = z.object({
@@ -254,26 +292,44 @@ const punctuationUsageSchema = z.object({
     });
   }
 
-  if (usage.unmeteredRequestCount > usage.fallbackChunkCount) {
+  if (usage.unmeteredRequestCount > usage.requestCount) {
     context.addIssue({
       code: 'custom',
       path: ['unmeteredRequestCount'],
-      message: 'Unmetered requests cannot exceed fallback chunks.'
+      message: 'Unmetered requests cannot exceed requests.'
     });
   }
 
-  if (usage.acceptedChunkCount + usage.fallbackChunkCount !== usage.requestCount) {
+  const chunkOutcomeCount = usage.acceptedChunkCount + usage.fallbackChunkCount;
+  if (
+    chunkOutcomeCount > usage.requestCount ||
+    (usage.requestCount === 0) !== (chunkOutcomeCount === 0)
+  ) {
     context.addIssue({
       code: 'custom',
       path: ['acceptedChunkCount'],
-      message: 'Accepted plus fallback chunks must equal requests.'
+      message: 'Chunk outcomes must be non-empty when requests exist and cannot exceed requests.'
     });
   }
 });
 
 const transcriptUsageSchema = z.object({
   audioMs: z.number().int().nonnegative().optional(),
-  punctuation: punctuationUsageSchema.optional()
+  punctuation: punctuationUsageSchema.optional(),
+  diarization: z
+    .object({
+      provider: z.literal('azure-openai'),
+      model: z.string().min(1),
+      audioMs: z.number().int().nonnegative(),
+      requestCount: z.number().int().positive(),
+      unmeteredRequestCount: z.number().int().nonnegative(),
+      failedChunkCount: z.number().int().nonnegative()
+    })
+    .refine((usage) => usage.unmeteredRequestCount <= usage.requestCount, {
+      message: 'Unmetered diarization requests cannot exceed total requests.',
+      path: ['unmeteredRequestCount']
+    })
+    .optional()
 });
 
 const summaryArtifactSchema = z.object({
@@ -297,7 +353,9 @@ const summaryUsageSchema = z.object({
   cachedPromptTokens: z.number().int().nonnegative(),
   completionTokens: z.number().int().nonnegative(),
   reasoningCompletionTokens: z.number().int().nonnegative(),
-  totalTokens: z.number().int().nonnegative()
+  totalTokens: z.number().int().nonnegative(),
+  providerRequestCount: z.number().int().positive().optional(),
+  unmeteredRequestCount: z.number().int().nonnegative().optional()
 }).superRefine((usage, context) => {
   if (usage.cachedPromptTokens > usage.promptTokens) {
     context.addIssue({
@@ -320,6 +378,17 @@ const summaryUsageSchema = z.object({
       code: 'custom',
       path: ['totalTokens'],
       message: 'Total tokens must equal prompt tokens plus completion tokens.'
+    });
+  }
+
+  if (
+    usage.providerRequestCount !== undefined &&
+    (usage.unmeteredRequestCount ?? 0) > usage.providerRequestCount
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['unmeteredRequestCount'],
+      message: 'Unmetered request count cannot exceed provider request count.'
     });
   }
 });
@@ -422,13 +491,13 @@ const recordingJobEventSchema = z.intersection(
 ).superRefine((event, context) => {
   if (
     (event.type === 'transcript-artifact-stored' || event.type === 'transcription-failed') &&
-    event.usage?.punctuation &&
+    (event.usage?.punctuation || event.usage?.diarization) &&
     !event.leaseToken
   ) {
     context.addIssue({
       code: 'custom',
       path: ['leaseToken'],
-      message: 'A lease token is required when reporting punctuation usage.'
+      message: 'A lease token is required when reporting transcript provider usage.'
     });
   }
 });
@@ -447,6 +516,7 @@ type AppOptions = {
   cloudUsageLedgerRepository?: CloudUsageLedgerRepository;
   adminAuditLogRepository?: AdminAuditLogRepository;
   maxTranscriptionAttempts?: number;
+  maxUploadBytes?: number;
   operatorAuth?: OperatorAuth;
   uploadedAudioStorage?: UploadedAudioStorage;
   meetingBotController?: MeetingBotController;
@@ -475,6 +545,7 @@ const toApiRecordingJob = (job: {
   summaryProfile?: string;
   preferredExportFormat?: string;
   uploadedFileName?: string;
+  transcriptionGlossary?: string[];
   state: string;
   processingStage?: string;
   processingMessage?: string;
@@ -547,6 +618,7 @@ const toApiRecordingJob = (job: {
   summaryProfile: job.summaryProfile,
   preferredExportFormat: job.preferredExportFormat,
   uploadedFileName: job.uploadedFileName,
+  transcriptionGlossary: job.transcriptionGlossary ?? [],
   state: job.state,
   displayState: job.displayState,
   processingStage: job.processingStage,
@@ -844,6 +916,9 @@ const formatSrtTimestamp = (milliseconds: number): string => {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(remainingMs).padStart(3, '0')}`;
 };
 
+const renderTranscriptSegmentText = (segment: TranscriptArtifact['segments'][number]): string =>
+  `${segment.speaker ? `${segment.speaker}: ` : ''}${segment.text}`;
+
 const renderMarkdownExport = (job: RecordingJob): string => {
   const parts = [
     '# AI NoteTacker Export',
@@ -875,7 +950,7 @@ const renderMarkdownExport = (job: RecordingJob): string => {
       '',
       ...job.transcriptArtifact.segments.map(
         (segment) =>
-          `- [${formatSrtTimestamp(segment.startMs).replace(',', '.')}] ${segment.text}`
+          `- [${formatSrtTimestamp(segment.startMs).replace(',', '.')}] ${renderTranscriptSegmentText(segment)}`
       )
     );
   }
@@ -902,7 +977,8 @@ const renderTextExport = (job: RecordingJob): string => {
       '',
       'Transcript',
       ...job.transcriptArtifact.segments.map(
-        (segment) => `[${formatSrtTimestamp(segment.startMs)}] ${segment.text}`
+        (segment) =>
+          `[${formatSrtTimestamp(segment.startMs)}] ${renderTranscriptSegmentText(segment)}`
       )
     );
   }
@@ -914,7 +990,7 @@ const renderSrtExport = (job: RecordingJob): string =>
   (job.transcriptArtifact?.segments ?? [])
     .map(
       (segment, index) =>
-        `${index + 1}\n${formatSrtTimestamp(segment.startMs)} --> ${formatSrtTimestamp(segment.endMs)}\n${segment.text}`
+        `${index + 1}\n${formatSrtTimestamp(segment.startMs)} --> ${formatSrtTimestamp(segment.endMs)}\n${renderTranscriptSegmentText(segment)}`
     )
     .join('\n\n');
 
@@ -1119,13 +1195,21 @@ export const createApp = (
   const summaryProviderCatalog =
     options.summaryProviderCatalog ?? createSummaryProviderCatalogFromEnvironment();
   const defaultLocalTranscriptionModel = process.env.WHISPER_MODEL ?? 'large-v3';
+  const defaultQwenTranscriptionModel = process.env.QWEN_ASR_MODEL ?? 'qwen3-asr-1.7b';
+  const defaultMaiTranscriptionModel =
+    process.env.AZURE_SPEECH_MAI_MODEL ?? 'mai-transcribe-1.5';
   const defaultCloudTranscriptionModel =
     process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-4o-transcribe';
   const defaultTranscriptionModel =
     transcriptionProviderCatalog.defaultProvider === 'azure-openai-gpt-4o-transcribe'
       ? defaultCloudTranscriptionModel
-      : defaultLocalTranscriptionModel;
-  const defaultSummaryModel = process.env.SUMMARY_MODEL ?? 'gpt-5.4-mini';
+      : transcriptionProviderCatalog.defaultProvider ===
+          'azure-speech-mai-transcribe-1.5'
+        ? defaultMaiTranscriptionModel
+      : transcriptionProviderCatalog.defaultProvider === 'qwen3-asr-1.7b'
+        ? defaultQwenTranscriptionModel
+        : defaultLocalTranscriptionModel;
+  const defaultSummaryModel = process.env.SUMMARY_MODEL ?? 'gpt-5.6-luna';
   const defaultDailyCloudQuotaUsd = Number(process.env.DEFAULT_DAILY_CLOUD_QUOTA_USD ?? '5');
   const defaultLiveMeetingReservationCapUsd = Number(
     process.env.LIVE_MEETING_RESERVATION_CAP_USD ?? '1.5'
@@ -1137,6 +1221,8 @@ export const createApp = (
       defaultTranscriptionProvider: transcriptionProviderCatalog.defaultProvider,
       defaultTranscriptionModel,
       defaultLocalTranscriptionModel,
+      defaultQwenTranscriptionModel,
+      defaultMaiTranscriptionModel,
       defaultCloudTranscriptionModel,
       defaultSummaryProvider: summaryProviderCatalog.defaultProvider,
       defaultSummaryModel,
@@ -1205,7 +1291,7 @@ export const createApp = (
   const upload = multer({
     dest: tmpdir(),
     limits: {
-      fileSize: 250 * 1024 * 1024
+      fileSize: options.maxUploadBytes ?? 512 * 1024 * 1024
     }
   });
 
@@ -1387,7 +1473,8 @@ export const createApp = (
         job.transcriptionProvider !== undefined &&
         isCloudTranscriptionProvider(job.transcriptionProvider)) ||
       ((event.type === 'transcript-artifact-stored' || event.type === 'transcription-failed') &&
-        event.usage?.punctuation !== undefined) ||
+        (event.usage?.punctuation !== undefined ||
+          event.usage?.diarization !== undefined)) ||
       ((event.type === 'summary-artifact-stored' || event.type === 'summary-failed') &&
         event.usage !== undefined &&
         job.summaryProvider !== undefined &&
@@ -1471,6 +1558,29 @@ export const createApp = (
     }
 
     if (
+      (event.type === 'transcript-artifact-stored' || event.type === 'transcription-failed') &&
+      event.usage?.diarization
+    ) {
+      const usage = event.usage.diarization;
+      await cloudUsageLedgerRepository.append({
+        entryKey: `actual:${job.id}:diarization:${event.leaseToken!}`,
+        jobId: job.id,
+        submitterId: job.submitterId,
+        quotaDayKey: job.quotaDayKey,
+        entryType: 'actual',
+        stage: 'transcription',
+        provider: 'azure-openai-gpt-4o-transcribe',
+        model: usage.model,
+        pricingVersion: job.pricingVersion,
+        usageQuantity: usage.audioMs,
+        usageUnit: 'audio-ms',
+        costUsd: null,
+        pricingStatus: 'unpriced',
+        detail: usage
+      });
+    }
+
+    if (
       (event.type === 'summary-artifact-stored' || event.type === 'summary-failed') &&
       event.usage &&
       job.summaryProvider &&
@@ -1481,19 +1591,24 @@ export const createApp = (
         cachedPromptTokens,
         completionTokens,
         reasoningCompletionTokens,
-        totalTokens
+        totalTokens,
+        providerRequestCount,
+        unmeteredRequestCount
       } = event.usage;
       const model =
         job.summaryModel ??
         (event.type === 'summary-artifact-stored' ? event.summaryArtifact.model : 'unknown');
-      const pricing = calculateAzureResponsesCost({
-        model,
-        pricingVersion: job.pricingVersion,
-        inputTokens: promptTokens,
-        cachedInputTokens: cachedPromptTokens,
-        outputTokens: completionTokens,
-        reasoningOutputTokens: reasoningCompletionTokens
-      });
+      const pricing =
+        (unmeteredRequestCount ?? 0) > 0
+          ? ({ costUsd: null, pricingStatus: 'unpriced' } as const)
+          : calculateAzureResponsesCost({
+              model,
+              pricingVersion: job.pricingVersion,
+              inputTokens: promptTokens,
+              cachedInputTokens: cachedPromptTokens,
+              outputTokens: completionTokens,
+              reasoningOutputTokens: reasoningCompletionTokens
+            });
 
       await cloudUsageLedgerRepository.append({
         entryKey: `actual:${job.id}:summary:${event.leaseToken!}`,
@@ -1513,7 +1628,9 @@ export const createApp = (
           cachedPromptTokens,
           completionTokens,
           reasoningCompletionTokens,
-          totalTokens
+          totalTokens,
+          ...(providerRequestCount === undefined ? {} : { providerRequestCount }),
+          ...(unmeteredRequestCount === undefined ? {} : { unmeteredRequestCount })
         }
       });
     }
@@ -3095,6 +3212,19 @@ export const createApp = (
       });
     }
 
+    const parsedGlossary = parseTranscriptionGlossary(request.body.transcriptionGlossary);
+    if (!parsedGlossary.success) {
+      await cleanupUploadedTempFile();
+      return response.status(400).json({
+        error: {
+          code: 'invalid-transcription-glossary',
+          message:
+            parsedGlossary.error.issues[0]?.message ??
+            'Transcription glossary is invalid.'
+        }
+      });
+    }
+
     const normalizedFileName = normalizeUploadedFileName(file.originalname);
     const requestedTemplateId =
       typeof request.body.submissionTemplateId === 'string'
@@ -3142,6 +3272,7 @@ export const createApp = (
       summaryProfile: workflowTemplate.summaryProfile,
       preferredExportFormat: workflowTemplate.preferredExportFormat,
       uploadedFileName: normalizedFileName,
+      transcriptionGlossary: parsedGlossary.data,
       transcriptionProvider: policySnapshot.policy.transcriptionProvider,
       transcriptionModel: policySnapshot.policy.transcriptionModel,
       summaryProvider: policySnapshot.policy.summaryProvider,
@@ -3883,6 +4014,21 @@ export const createApp = (
 
     return response.status(200).json(toApiRecordingJob(job));
   });
+
+  const uploadErrorHandler: ErrorRequestHandler = (error, _request, response, next) => {
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      response.status(413).json({
+        error: {
+          code: 'uploaded-media-too-large',
+          message: 'Uploaded media exceeds the configured size limit.'
+        }
+      });
+      return;
+    }
+
+    next(error);
+  };
+  app.use(uploadErrorHandler);
 
   app.use(express.static(publicDir));
 

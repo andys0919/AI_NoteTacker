@@ -23,6 +23,9 @@ class TranscriptSummaryPromptTests(unittest.TestCase):
         self.assertIn("Use an empty array", prompt)
         self.assertIn("Do not invent generic follow-up work", prompt)
         self.assertIn("Do not repeat the same fact", prompt)
+        self.assertIn("Only include a decision when the transcript explicitly reaches", prompt)
+        self.assertIn("Keep tentative, contested, or later-to-be-confirmed points out", prompt)
+        self.assertIn("Do not treat questions as facts", prompt)
 
     def test_marks_review_candidates_as_unconfirmed_and_preserves_literals(self) -> None:
         prompt = build_summary_prompt(
@@ -53,6 +56,46 @@ class TranscriptSummaryPromptTests(unittest.TestCase):
         self.assertIn("750kW", prompt)
         self.assertIn("X-5", prompt)
         self.assertIn("Preserve foreign-language text", prompt)
+
+    def test_uses_operator_verified_display_alias_without_unconfirmed_flag(self) -> None:
+        prompt = build_summary_prompt(
+            {
+                "language": "zh-Hant",
+                "segments": [
+                    {
+                        "start_ms": 0,
+                        "end_ms": 1000,
+                        "text": "掃描舌片條碼。",
+                        "raw_text": "掃描蛇片條碼。",
+                        "display_text": "掃描舌片條碼。",
+                        "review_flags": [
+                            {
+                                "reason": "operator-verified-alias",
+                                "original_text": "蛇片",
+                                "candidates": ["舌片"],
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+        self.assertIn("掃描舌片條碼", prompt)
+        self.assertNotIn("蛇片", prompt)
+        self.assertNotIn("UNCONFIRMED review flag", prompt)
+
+    def test_prefixes_only_aligned_anonymous_speaker_evidence(self) -> None:
+        prompt = build_summary_prompt(
+            {
+                "segments": [
+                    {"text": "請確認規格。", "speaker": "Speaker A"},
+                    {"text": "尚未決定。"},
+                ]
+            }
+        )
+
+        self.assertIn("Speaker A: 請確認規格。\n尚未決定。", prompt)
+        self.assertIn("do not infer a person's real identity", prompt)
 
 
 if __name__ == "__main__":

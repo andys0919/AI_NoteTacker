@@ -11,11 +11,11 @@ The current product focus is still operational reliability for recording and tra
 - Playwright + Chromium for browser-based meeting join flows
 - Docker for worker isolation and deployment
 - FFmpeg, Xvfb, and PulseAudio for isolated media capture where browser-native capture is insufficient
-- Whisper-based transcription, with `faster-whisper` as the self-hosted implementation target and Azure OpenAI `gpt-4o-transcribe` as the optional hosted provider selected by policy
+- Transcription selected by policy among Azure Speech `mai-transcribe-1.5`,
+  self-hosted Qwen3-ASR or Whisper, and Azure OpenAI `gpt-4o-transcribe`
 - Transcript punctuation restoration and meeting summaries through either local Codex or an explicitly configured Azure Responses API deployment (currently `gpt-5.6-luna` in the example configuration)
 - Object storage compatible with S3/MinIO for recording artifacts
 - PostgreSQL for job metadata and transcript indexing
-- Redis for current queue coordination and worker dispatch
 
 ## Project Conventions
 
@@ -56,7 +56,9 @@ The current product focus is still operational reliability for recording and tra
 ## Important Constraints
 - No capture path may depend on the submitting user's live system audio device.
 - The MVP must not require storing or using the user's personal Google, Microsoft, or Zoom credentials.
-- The product supports both self-hosted Whisper and explicitly configured Azure OpenAI transcription. The cloud deployment template currently selects Azure, while policy can switch future jobs back to self-hosted execution.
+- The product supports MAI, Qwen, Whisper, and Azure OpenAI transcription. The
+  cloud deployment template selects MAI, while policy can switch future jobs to
+  another configured provider.
 - The system must prefer self-hosted infrastructure and locally controlled artifacts.
 - A reservation estimate is not actual spend. Usage without an authoritative exact model/version/meter price must remain `unpriced` with a null complete USD total.
 - Unsupported meetings must surface clear failure reasons instead of hanging indefinitely.
@@ -66,7 +68,7 @@ The current product focus is still operational reliability for recording and tra
 - Chromium / Playwright runtime
 - Whisper model weights and runtime dependencies
 - S3-compatible object storage such as MinIO
-- PostgreSQL and optionally Redis
+- PostgreSQL
 - Azure OpenAI / Microsoft Foundry for optional hosted transcription and Responses calls
 - Codex CLI for optional local summary generation
 - A fork or derivative of `screenappai/meeting-bot` as the likely browser automation foundation

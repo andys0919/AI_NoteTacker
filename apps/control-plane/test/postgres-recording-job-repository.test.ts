@@ -61,7 +61,8 @@ describe('PostgresRecordingJobRepository', () => {
   it('persists and reloads a recording job with artifact metadata', async () => {
     const created = createRecordingJob({
       meetingUrl: 'https://meet.google.com/abc-defg-hij',
-      platform: 'google-meet'
+      platform: 'google-meet',
+      transcriptionGlossary: ['舌片 = 蛇片', '條碼 = 調碼']
     });
 
     const withRecording = attachRecordingArtifact(created, {
@@ -116,6 +117,18 @@ describe('PostgresRecordingJobRepository', () => {
     });
     expect(reloaded?.summaryArtifact?.model).toBe('gpt-5.3-codex-spark');
     expect(reloaded?.summaryArtifact?.text).toBe('hello team summary');
+    expect(reloaded?.transcriptionGlossary).toEqual(['舌片 = 蛇片', '條碼 = 調碼']);
+  });
+
+  it('loads legacy jobs without a glossary as an empty list', async () => {
+    const created = createRecordingJob({
+      meetingUrl: 'https://meet.google.com/legacy-empty-glossary',
+      platform: 'google-meet'
+    });
+
+    await repository.save(created);
+
+    expect((await repository.getById(created.id))?.transcriptionGlossary).toEqual([]);
   });
 
   it('persists and reloads the meeting passcode', async () => {

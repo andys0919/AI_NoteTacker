@@ -25,16 +25,9 @@ services:
       WHISPER_MODEL: tiny
       WHISPER_DEVICE: cuda
       WHISPER_COMPUTE_TYPE: float16
-      SUMMARY_ENABLED: "true"
-      SUMMARY_MODEL: gpt-5.4-mini
-      SUMMARY_REASONING_EFFORT: medium
-      CODEX_CLI_PATH: codex
-      CODEX_HOME: /codex-home
 
   summary-worker:
     environment:
-      DEPLOYMENT_MODE: local
-      SUMMARY_ENABLED: "true"
       SUMMARY_MODEL: gpt-5.4-mini
       SUMMARY_REASONING_EFFORT: medium
       CODEX_CLI_PATH: codex

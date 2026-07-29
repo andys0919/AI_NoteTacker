@@ -22,8 +22,9 @@ another model.
   store: false}`; accept only `status=completed`, concatenate all assistant
   `output_text` parts in response order, and reject invalid, empty, or
   schema-incomplete summary responses.
-- Apply an explicit configurable socket-operation timeout and no hidden
-  provider retry to each Responses call.
+- Apply an explicit configurable socket-operation timeout. Provider calls do
+  not retry except for the separately approved, identical-payload, summary-only
+  HTTP 400 retry in `improve-uploaded-meeting-note-quality`.
 - Keep transcript punctuation best-effort and fidelity-guarded, while defining
   it as its own `punctuation` cloud stage rather than summary or transcription
   usage.

@@ -15,7 +15,7 @@
 - [x] 3.1 Require an explicit Responses endpoint/key and remove or reject the legacy derived `chat/completions` fallback.
 - [x] 3.2 Add `store: false` to both summary and punctuation request payloads and assert it in tests.
 - [x] 3.3 Require `status=completed`; add multi-item/multi-part ordered-concatenation tests and reject incomplete, failed, or empty summary responses.
-- [x] 3.4 Add a configurable finite socket-operation timeout and prove that neither caller performs a hidden provider retry.
+- [x] 3.4 Add a configurable finite socket-operation timeout and prove that punctuation and non-400 summary failures do not retry; the later `improve-uploaded-meeting-note-quality` change owns the one identical summary HTTP 400 retry.
 - [x] 3.5 Validate non-negative integer input/output/total tokens without defaulting missing usage to zero; preserve cached-input and reasoning token details.
 - [x] 3.6 Preserve punctuation metered subtotals and report how many provider calls were unmetered.
 - [x] 3.7 Reject schema-incomplete Azure summary JSON while preserving valid provider usage on the failure callback.

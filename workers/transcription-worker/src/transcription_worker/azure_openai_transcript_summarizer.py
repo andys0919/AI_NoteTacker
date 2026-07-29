@@ -1,4 +1,5 @@
 from transcription_worker.azure_openai_responses import (
+    AzureOpenAiResponsesHttpError,
     extract_output_text,
     extract_token_usage,
     request_response,
@@ -16,13 +17,25 @@ class AzureOpenAiSummaryError(RuntimeError):
         self.usage = usage
 
 
-def _raise_with_valid_usage(error: Exception, payload: dict) -> None:
+def _raise_with_valid_usage(
+    error: Exception,
+    payload: dict,
+    provider_request_count: int,
+    unmetered_request_count: int,
+) -> None:
     try:
         usage = extract_token_usage(payload)
     except Exception:
         raise error
 
-    raise AzureOpenAiSummaryError(str(error), usage) from error
+    raise AzureOpenAiSummaryError(
+        str(error),
+        {
+            **usage,
+            "provider_request_count": provider_request_count,
+            "unmetered_request_count": unmetered_request_count,
+        },
+    ) from error
 
 
 class AzureOpenAiTranscriptSummarizer:
@@ -31,12 +44,14 @@ class AzureOpenAiTranscriptSummarizer:
         endpoint: str,
         api_key: str,
         model: str,
+        reasoning_effort: str = "max",
         timeout_seconds: int = 300,
         urlopen=None,
     ) -> None:
         self._endpoint = endpoint
         self._api_key = api_key
         self._model = model
+        self._reasoning_effort = reasoning_effort
         self._timeout_seconds = timeout_seconds
         self._urlopen = urlopen
 
@@ -49,25 +64,70 @@ class AzureOpenAiTranscriptSummarizer:
         prompt = build_summary_prompt(transcript_result, summary_profile=summary_profile)
         model = model_override or self._model
 
-        payload = request_response(
+        request_options = dict(
             endpoint=self._endpoint,
             api_key=self._api_key,
             model=model,
             instructions="You are a precise meeting summarizer. Return JSON only.",
             user_input=prompt,
+            reasoning_effort=self._reasoning_effort,
             timeout_seconds=self._timeout_seconds,
             urlopen=self._urlopen,
         )
+        provider_request_count = 1
+        unmetered_request_count = 0
+
+        try:
+            payload = request_response(**request_options)
+        except AzureOpenAiResponsesHttpError as error:
+            if error.status_code != 400:
+                raise AzureOpenAiSummaryError(
+                    str(error),
+                    {
+                        "input_tokens": 0,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 0,
+                        "reasoning_output_tokens": 0,
+                        "total_tokens": 0,
+                        "provider_request_count": 1,
+                        "unmetered_request_count": 1,
+                    },
+                ) from error
+
+            provider_request_count = 2
+            unmetered_request_count = 1
+            try:
+                payload = request_response(**request_options)
+            except Exception as retry_error:
+                raise AzureOpenAiSummaryError(
+                    f"Azure OpenAI summary failed after one HTTP 400 retry: {retry_error}",
+                    {
+                        "input_tokens": 0,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 0,
+                        "reasoning_output_tokens": 0,
+                        "total_tokens": 0,
+                        "provider_request_count": 2,
+                        "unmetered_request_count": 2,
+                    },
+                ) from retry_error
 
         try:
             summary_text = extract_output_text(payload)
         except Exception as error:
-            _raise_with_valid_usage(error, payload)
+            _raise_with_valid_usage(
+                error,
+                payload,
+                provider_request_count,
+                unmetered_request_count,
+            )
 
         if not summary_text:
             _raise_with_valid_usage(
                 RuntimeError("azure openai returned no summary text"),
                 payload,
+                provider_request_count,
+                unmetered_request_count,
             )
 
         try:
@@ -77,13 +137,32 @@ class AzureOpenAiTranscriptSummarizer:
                 require_complete_schema=True,
             )
         except Exception as error:
-            _raise_with_valid_usage(error, payload)
+            _raise_with_valid_usage(
+                error,
+                payload,
+                provider_request_count,
+                unmetered_request_count,
+            )
 
-        usage = extract_token_usage(payload)
+        try:
+            usage = extract_token_usage(payload)
+        except Exception as error:
+            raise AzureOpenAiSummaryError(
+                str(error),
+                {
+                    "input_tokens": 0,
+                    "cached_input_tokens": 0,
+                    "output_tokens": 0,
+                    "reasoning_output_tokens": 0,
+                    "total_tokens": 0,
+                    "provider_request_count": provider_request_count,
+                    "unmetered_request_count": provider_request_count,
+                },
+            ) from error
 
         return {
             "model": model,
-            "reasoning_effort": "cloud-default",
+            "reasoning_effort": self._reasoning_effort,
             "text": render_summary_markdown(summary_payload),
             "structured": {
                 "summary": summary_payload["summary"],
@@ -99,5 +178,7 @@ class AzureOpenAiTranscriptSummarizer:
                 "completion_tokens": usage.get("output_tokens", 0),
                 "reasoning_completion_tokens": usage.get("reasoning_output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
+                "provider_request_count": provider_request_count,
+                "unmetered_request_count": unmetered_request_count,
             },
         }

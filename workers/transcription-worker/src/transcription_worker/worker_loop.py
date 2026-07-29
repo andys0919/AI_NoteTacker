@@ -6,6 +6,10 @@ from transcription_worker.heartbeat import start_lease_heartbeat
 def _transcription_progress_message(provider: str) -> str:
     if provider == "azure-openai-gpt-4o-transcribe":
         return "Running Azure OpenAI transcription."
+    if provider == "qwen3-asr-1.7b":
+        return "Running Qwen3-ASR transcription."
+    if provider == "azure-speech-mai-transcribe-1.5":
+        return "Running Azure Speech MAI-Transcribe 1.5."
 
     return "Running Whisper transcription."
 
@@ -67,6 +71,9 @@ def _to_artifact_segment(segment: dict) -> dict:
         ("language", "language"),
         ("language_confidence", "languageConfidence"),
         ("timing_source", "timingSource"),
+        ("speaker", "speaker"),
+        ("speaker_source", "speakerSource"),
+        ("speaker_alignment_score", "speakerAlignmentScore"),
     ):
         if source in segment:
             result[target] = segment[source]
@@ -77,16 +84,36 @@ def _to_artifact_segment(segment: dict) -> dict:
     return result
 
 
+def _to_artifact_speaker_attribution(diarization: dict) -> dict:
+    return {
+        "provider": diarization["provider"],
+        "model": diarization["model"],
+        "status": diarization["status"],
+        "referenceCount": diarization["reference_count"],
+        "attributedSegmentCount": diarization["attributed_segment_count"],
+        "totalSegmentCount": diarization["total_segment_count"],
+        "failedChunkCount": diarization["failed_chunk_count"],
+    }
+
+
+def _to_artifact_diarization_usage(diarization: dict) -> dict:
+    return {
+        "provider": diarization["provider"],
+        "model": diarization["model"],
+        "audioMs": diarization["audio_ms"],
+        "requestCount": diarization["request_count"],
+        "unmeteredRequestCount": diarization["unmetered_request_count"],
+        "failedChunkCount": diarization["failed_chunk_count"],
+    }
+
+
 def run_transcription_worker_iteration(
     worker_id,
     client,
     downloader,
     media_preparer,
     transcriber,
-    summarizer=None,
     transcriber_registry=None,
-    summarizer_registry=None,
-    sleep_fn=None,
     heartbeat_interval_ms=30_000,
 ):
     claimed_job = client.claim_next_job(worker_id)
@@ -105,6 +132,7 @@ def run_transcription_worker_iteration(
     prepared_audio = None
     local_media_path = None
     punctuation_usage = None
+    diarization_usage = None
     transcription_audio_ms = 0
     transcription_completed = False
 
@@ -115,6 +143,14 @@ def run_transcription_worker_iteration(
             if transcriber_registry is not None
             else transcriber
         )
+        if transcription_provider == "azure-speech-mai-transcribe-1.5":
+            latched_model = claimed_job.get("transcriptionModel")
+            worker_model = getattr(selected_transcriber, "deployment", None)
+            if latched_model and worker_model and latched_model != worker_model:
+                raise RuntimeError(
+                    f"Latched MAI model {latched_model!r} does not match "
+                    f"worker model {worker_model!r}."
+                )
         progress_message = _transcription_progress_message(transcription_provider)
         recording_artifact = claimed_job["recordingArtifact"]
         _post_progress(
@@ -183,22 +219,20 @@ def run_transcription_worker_iteration(
 
             percent = update["percent"]
 
-            if last_reported_percent is not None and percent <= last_reported_percent:
-                return
-
-            last_reported_percent = percent
-            client.post_job_event(
-                claimed_job["id"],
-                {
-                    "type": "progress-updated",
-                    "processingStage": "transcribing-audio",
-                    "processingMessage": progress_message,
-                    "progressPercent": percent,
-                    "progressProcessedMs": update["processed_ms"],
-                    "progressTotalMs": update["total_ms"],
-                },
-                lease_token=claimed_job.get("leaseToken"),
-            )
+            if last_reported_percent is None or percent > last_reported_percent:
+                last_reported_percent = percent
+                client.post_job_event(
+                    claimed_job["id"],
+                    {
+                        "type": "progress-updated",
+                        "processingStage": "transcribing-audio",
+                        "processingMessage": progress_message,
+                        "progressPercent": percent,
+                        "progressProcessedMs": update["processed_ms"],
+                        "progressTotalMs": update["total_ms"],
+                    },
+                    lease_token=claimed_job.get("leaseToken"),
+                )
 
             latest_job = client.get_job(claimed_job["id"])
             if (
@@ -209,17 +243,27 @@ def run_transcription_worker_iteration(
                 raise JobCancelledError("job cancelled by operator")
 
         def report_transcription_usage(update):
-            nonlocal transcription_audio_ms
+            nonlocal diarization_usage, transcription_audio_ms
+            if update.get("diarization") is not None:
+                diarization_usage = _to_artifact_diarization_usage(
+                    update["diarization"]
+                )
+                return
             transcription_audio_ms += update["audio_ms"]
 
-        if transcription_provider == "azure-openai-gpt-4o-transcribe":
+        if transcription_provider in {
+            "azure-openai-gpt-4o-transcribe",
+            "qwen3-asr-1.7b",
+            "azure-speech-mai-transcribe-1.5",
+        }:
             transcript_result = selected_transcriber.transcribe(
                 prepared_audio["local_audio_path"],
                 on_progress=report_transcription_progress,
                 on_punctuation_usage=report_punctuation_usage,
                 on_transcription_usage=report_transcription_usage,
                 workflow_context={
-                    "template_id": claimed_job.get("submissionTemplateId") or "general"
+                    "template_id": claimed_job.get("submissionTemplateId") or "general",
+                    "glossary": claimed_job.get("transcriptionGlossary") or [],
                 },
             )
         else:
@@ -241,6 +285,10 @@ def run_transcription_worker_iteration(
         }
         if any("rawText" in segment for segment in artifact_segments):
             transcript_artifact["schemaVersion"] = 2
+        if transcript_result.get("diarization"):
+            transcript_artifact["speakerAttribution"] = (
+                _to_artifact_speaker_attribution(transcript_result["diarization"])
+            )
 
         transcript_event = {
             "type": "transcript-artifact-stored",
@@ -252,6 +300,12 @@ def run_transcription_worker_iteration(
             event_usage["audioMs"] = audio_ms
         if punctuation_usage and punctuation_usage["requestCount"] > 0:
             event_usage["punctuation"] = punctuation_usage
+        if diarization_usage:
+            event_usage["diarization"] = diarization_usage
+        elif transcript_result.get("diarization", {}).get("request_count", 0) > 0:
+            event_usage["diarization"] = _to_artifact_diarization_usage(
+                transcript_result["diarization"]
+            )
         if event_usage:
             transcript_event["usage"] = event_usage
         _post_terminal_event(
@@ -268,6 +322,8 @@ def run_transcription_worker_iteration(
             event_usage["audioMs"] = transcription_audio_ms
         if punctuation_usage and punctuation_usage["requestCount"] > 0:
             event_usage["punctuation"] = punctuation_usage
+        if diarization_usage:
+            event_usage["diarization"] = diarization_usage
         if event_usage:
             _post_terminal_event(
                 client,
@@ -299,6 +355,8 @@ def run_transcription_worker_iteration(
             event_usage["audioMs"] = transcription_audio_ms
         if punctuation_usage and punctuation_usage["requestCount"] > 0:
             event_usage["punctuation"] = punctuation_usage
+        if diarization_usage:
+            event_usage["diarization"] = diarization_usage
         if event_usage:
             failure_event["usage"] = event_usage
         _post_terminal_event(

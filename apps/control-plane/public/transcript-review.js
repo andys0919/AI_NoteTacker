@@ -30,14 +30,17 @@ export const renderTranscriptReviewMarkup = (segments) =>
       const displayText = segment.displayText || segment.text || '';
       const reviewFlags = Array.isArray(segment.reviewFlags) ? segment.reviewFlags : [];
       const hasRawEvidence = typeof segment.rawText === 'string';
+      const speaker = segment.speaker
+        ? `<strong class="transcript-speaker">${escapeHtml(segment.speaker)}：</strong>`
+        : '';
 
       if (!hasRawEvidence && reviewFlags.length === 0) {
-        return `<p class="transcript-segment-text">${escapeHtml(displayText)}</p>`;
+        return `<p class="transcript-segment-text">${speaker}${escapeHtml(displayText)}</p>`;
       }
 
       return `
         <div class="transcript-segment">
-          <p class="transcript-segment-text">${escapeHtml(displayText)}</p>
+          <p class="transcript-segment-text">${speaker}${escapeHtml(displayText)}</p>
           <details class="transcript-evidence">
             <summary>${reviewFlags.length ? `待確認（${reviewFlags.length}）` : '查看原始辨識'}</summary>
             ${hasRawEvidence ? `<p><strong>原始辨識：</strong>${escapeHtml(segment.rawText)}</p>` : ''}

@@ -199,7 +199,7 @@ run is not a successful recording verification.
 Real meeting recording only happens when the `recording-worker` runs with
 `RECORDING_EXECUTOR=screenapp`, which is supplied by `docker-compose.screenapp.yml`.
 
-- Always deploy with `make deploy` (or `./scripts/deploy.sh up`). It pins the
+- Always deploy with `./scripts/deploy.sh up`. It pins the
   correct file set: `-f docker-compose.yml -f docker-compose.screenapp.yml`.
 - A bare `docker compose up -d` (base file only), or any deploy that includes
   `docker-compose.smoke.yml`, sets `RECORDING_EXECUTOR=stub`. In stub mode the

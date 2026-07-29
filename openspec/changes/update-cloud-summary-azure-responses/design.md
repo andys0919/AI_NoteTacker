@@ -50,7 +50,9 @@ actual transcription cost.
   storage.
 - Invent, scrape, or infer a Luna price.
 - Reconstruct historical token usage or meter identity that was never stored.
-- Add automatic retries inside the Responses transport.
+- Add automatic retries inside the shared Responses transport. The later
+  `improve-uploaded-meeting-note-quality` change permits one summary-caller
+  retry for HTTP 400 only.
 
 ## Decisions
 
@@ -105,15 +107,17 @@ Alternative considered: accept partial output from an incomplete response.
 Rejected because a partial JSON summary is unsafe to persist and partial
 punctuation cannot be distinguished reliably from a truncated rewrite.
 
-### 4. Bound worker network operations and avoid hidden provider retry
+### 4. Bound worker network operations and avoid unbounded provider retry
 
 Each HTTP request receives an explicit configurable `urlopen` timeout for
 blocking connection/socket operations. It bounds an individual blocking
 operation but is not a guaranteed end-to-end wall-clock deadline. A timeout is
-a terminal result for that provider call. The Responses transport does not
-retry the provider call; a new provider attempt must be visible as a new
-scheduler-issued lease so usage and lifecycle effects remain attributable and
-idempotent.
+a terminal result for that provider call. The shared Responses transport does
+not retry provider calls. The summary caller may make the one
+identical-payload HTTP 400 retry defined by
+`improve-uploaded-meeting-note-quality`; punctuation, timeouts, and every other
+failure remain single-call. Request and unmetered-request counts keep that
+bounded exception attributable within the scheduler-issued summary lease.
 
 The same finite blocking-operation rule applies to Azure transcription uploads
 and the transcription/summary workers' control-plane claim, read, heartbeat,
@@ -270,10 +274,10 @@ order conflicts.
 - Per-chunk Luna punctuation calls can extend transcription completion. The
   finite socket-operation timeout and raw fallback limit each blocking
   operation, while attempt usage remains visible.
-- No hidden provider retry reduces surprise cost but delegates provider-attempt
-  retry policy to the job scheduler and creates a new billed attempt when a new
-  lease is issued. A one-time identical terminal callback delivery retry does
-  not call the provider again.
+- No unbounded provider retry reduces surprise cost. The one later-approved
+  summary HTTP 400 replay records provider/unmetered request counts; every other
+  new provider attempt still requires a new scheduler-issued lease. A one-time
+  identical terminal callback delivery retry does not call the provider again.
 - Unpriced usage makes USD totals incomplete. Reports must surface the unpriced
   count/token volume and must not present partial USD totals as total spend.
 - Sharing explicit summary credentials with punctuation remains coupling. It is

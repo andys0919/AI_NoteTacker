@@ -80,6 +80,87 @@ class TranscriptNormalizerTests(unittest.TestCase):
             ],
         )
 
+    def test_applies_operator_verified_alias_only_to_display_text(self) -> None:
+        normalizer = TranscriptNormalizer(converter=_StubConverter())
+
+        result = normalizer.normalize(
+            "蛇片要貼調碼，Movie in 後再確認",
+            language="zh",
+            start_ms=500,
+            end_ms=1500,
+            glossary=[
+                {
+                    "term": "舌片",
+                    "aliases": ["蛇片"],
+                    "accepted": True,
+                },
+                {
+                    "term": "條碼",
+                    "aliases": ["調碼"],
+                    "accepted": True,
+                },
+                {
+                    "term": "move in",
+                    "aliases": ["Movie in"],
+                    "accepted": True,
+                },
+            ],
+        )
+
+        self.assertEqual(result["raw_text"], "蛇片要貼調碼，Movie in 後再確認")
+        self.assertEqual(result["display_text"], "舌片要貼條碼，move in 後再確認")
+        self.assertEqual(
+            result["review_flags"],
+            [
+                {
+                    "reason": "operator-verified-alias",
+                    "original_text": "蛇片",
+                    "candidates": ["舌片"],
+                    "start_ms": 500,
+                    "end_ms": 1500,
+                    "evidence": "operator-verified glossary",
+                },
+                {
+                    "reason": "operator-verified-alias",
+                    "original_text": "調碼",
+                    "candidates": ["條碼"],
+                    "start_ms": 500,
+                    "end_ms": 1500,
+                    "evidence": "operator-verified glossary",
+                },
+                {
+                    "reason": "operator-verified-alias",
+                    "original_text": "Movie in",
+                    "candidates": ["move in"],
+                    "start_ms": 500,
+                    "end_ms": 1500,
+                    "evidence": "operator-verified glossary",
+                },
+            ],
+        )
+
+    def test_operator_verified_alias_suppresses_matching_workflow_candidate(self) -> None:
+        result = TranscriptNormalizer(converter=_StubConverter()).normalize(
+            "需要黑電淨化器",
+            language="zh",
+            start_ms=500,
+            end_ms=1500,
+            glossary=[
+                {"term": "黑煙淨化器", "aliases": ["黑電淨化器"]},
+                {
+                    "term": "黑煙淨化器",
+                    "aliases": ["黑電淨化器"],
+                    "accepted": True,
+                },
+            ],
+        )
+
+        self.assertEqual(result["display_text"], "需要黑煙淨化器")
+        self.assertEqual(
+            [flag["reason"] for flag in result["review_flags"]],
+            ["operator-verified-alias"],
+        )
+
     def test_adds_traditional_and_tailo_candidates_for_uncertain_hokkien(self) -> None:
         normalizer = TranscriptNormalizer(converter=_StubConverter())
 

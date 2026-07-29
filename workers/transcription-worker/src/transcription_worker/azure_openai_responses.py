@@ -1,5 +1,15 @@
 import json
-from urllib import request
+from urllib import error as urllib_error, request
+
+
+class AzureOpenAiResponsesHttpError(RuntimeError):
+    def __init__(self, status_code: int, response_body: str) -> None:
+        self.status_code = status_code
+        self.response_body = response_body
+        suffix = f": {response_body}" if response_body else ""
+        super().__init__(
+            f"Azure OpenAI Responses request failed with status {status_code}{suffix}"
+        )
 
 
 def request_response(
@@ -8,6 +18,7 @@ def request_response(
     model: str,
     user_input: str,
     instructions: str | None = None,
+    reasoning_effort: str | None = None,
     timeout_seconds: int = 300,
     urlopen=None,
 ) -> dict:
@@ -26,6 +37,8 @@ def request_response(
     }
     if instructions:
         body_dict["instructions"] = instructions
+    if reasoning_effort:
+        body_dict["reasoning"] = {"effort": reasoning_effort}
     body = json.dumps(body_dict).encode("utf-8")
 
     http_request = request.Request(
@@ -38,8 +51,14 @@ def request_response(
         data=body,
     )
 
-    with urlopen(http_request, timeout=timeout_seconds) as response:  # noqa: S310
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(http_request, timeout=timeout_seconds) as response:  # noqa: S310
+            return json.loads(response.read().decode("utf-8"))
+    except urllib_error.HTTPError as error:
+        response_body = error.read().decode("utf-8", errors="replace").strip()
+        if api_key:
+            response_body = response_body.replace(api_key, "[REDACTED]")
+        raise AzureOpenAiResponsesHttpError(error.code, response_body) from error
 
 
 def extract_output_text(payload: dict) -> str:

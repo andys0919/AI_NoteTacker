@@ -92,6 +92,8 @@ export class PostgresTranscriptionProviderSettingsRepository
     transcriptionProvider: TranscriptionProvider;
     transcriptionModel: string;
     localTranscriptionModel: string;
+    qwenTranscriptionModel: string;
+    maiTranscriptionModel: string;
     cloudTranscriptionModel: string;
     summaryProvider: SummaryProvider;
     summaryModel: string;
@@ -108,6 +110,8 @@ export class PostgresTranscriptionProviderSettingsRepository
           transcriptionProvider: TranscriptionProvider;
           transcriptionModel: string;
           localTranscriptionModel?: string;
+          qwenTranscriptionModel?: string;
+          maiTranscriptionModel?: string;
           cloudTranscriptionModel?: string;
           summaryProvider: SummaryProvider;
           summaryModel: string;
@@ -124,6 +128,8 @@ export class PostgresTranscriptionProviderSettingsRepository
         transcriptionProvider: defaultsOrProvider,
         transcriptionModel: 'large-v3',
         localTranscriptionModel: 'large-v3',
+        qwenTranscriptionModel: 'qwen3-asr-1.7b',
+        maiTranscriptionModel: 'mai-transcribe-1.5',
         cloudTranscriptionModel: 'gpt-4o-transcribe',
         summaryProvider: 'local-codex',
         summaryModel: legacyDefaultSummaryModel,
@@ -144,15 +150,26 @@ export class PostgresTranscriptionProviderSettingsRepository
       ...defaultsOrProvider,
       localTranscriptionModel:
         defaultsOrProvider.localTranscriptionModel ?? defaultsOrProvider.transcriptionModel,
+      qwenTranscriptionModel:
+        defaultsOrProvider.qwenTranscriptionModel ?? 'qwen3-asr-1.7b',
+      maiTranscriptionModel:
+        defaultsOrProvider.maiTranscriptionModel ?? 'mai-transcribe-1.5',
       cloudTranscriptionModel:
         defaultsOrProvider.cloudTranscriptionModel ?? 'gpt-4o-transcribe'
     };
   }
 
   private resolveDefaultTranscriptionModelForProvider(provider: TranscriptionProvider): string {
-    return provider === 'azure-openai-gpt-4o-transcribe'
-      ? this.defaults.cloudTranscriptionModel
-      : this.defaults.localTranscriptionModel;
+    if (provider === 'azure-openai-gpt-4o-transcribe') {
+      return this.defaults.cloudTranscriptionModel;
+    }
+    if (provider === 'azure-speech-mai-transcribe-1.5') {
+      return this.defaults.maiTranscriptionModel;
+    }
+    if (provider === 'qwen3-asr-1.7b') {
+      return this.defaults.qwenTranscriptionModel;
+    }
+    return this.defaults.localTranscriptionModel;
   }
 
   private normalizeTranscriptionModel(
@@ -163,20 +180,44 @@ export class PostgresTranscriptionProviderSettingsRepository
       return this.resolveDefaultTranscriptionModelForProvider(provider);
     }
 
+    if (provider === 'azure-speech-mai-transcribe-1.5') {
+      return this.defaults.maiTranscriptionModel;
+    }
+
     if (
       provider === 'azure-openai-gpt-4o-transcribe' &&
-      model === this.defaults.localTranscriptionModel &&
-      this.defaults.cloudTranscriptionModel !== this.defaults.localTranscriptionModel
+      model !== this.defaults.cloudTranscriptionModel &&
+      [
+        this.defaults.localTranscriptionModel,
+        this.defaults.qwenTranscriptionModel,
+        this.defaults.maiTranscriptionModel
+      ].includes(model)
     ) {
       return this.defaults.cloudTranscriptionModel;
     }
 
     if (
       provider === 'self-hosted-whisper' &&
-      model === this.defaults.cloudTranscriptionModel &&
-      this.defaults.cloudTranscriptionModel !== this.defaults.localTranscriptionModel
+      model !== this.defaults.localTranscriptionModel &&
+      [
+        this.defaults.cloudTranscriptionModel,
+        this.defaults.qwenTranscriptionModel,
+        this.defaults.maiTranscriptionModel
+      ].includes(model)
     ) {
       return this.defaults.localTranscriptionModel;
+    }
+
+    if (
+      provider === 'qwen3-asr-1.7b' &&
+      model !== this.defaults.qwenTranscriptionModel &&
+      [
+        this.defaults.localTranscriptionModel,
+        this.defaults.cloudTranscriptionModel,
+        this.defaults.maiTranscriptionModel
+      ].includes(model)
+    ) {
+      return this.defaults.qwenTranscriptionModel;
     }
 
     return model;
@@ -426,7 +467,10 @@ export class PostgresTranscriptionProviderSettingsRepository
 
     return await this.upsertCurrent({
       transcriptionProvider: nextProvider,
-      transcriptionModel: nextTranscriptionModel,
+      transcriptionModel: this.normalizeTranscriptionModel(
+        nextProvider,
+        nextTranscriptionModel
+      ),
       summaryProvider: input.summaryProvider ?? current.summaryProvider,
       summaryModel: input.summaryModel ?? current.summaryModel,
       pricingVersion: input.pricingVersion ?? current.pricingVersion,

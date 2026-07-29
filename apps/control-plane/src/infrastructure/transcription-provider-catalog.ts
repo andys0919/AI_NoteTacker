@@ -25,6 +25,11 @@ type CatalogInput = {
   azureOpenAiEndpoint?: string;
   azureOpenAiDeployment?: string;
   azureOpenAiApiKey?: string;
+  qwenAsrEndpoint?: string;
+  qwenAsrModel?: string;
+  azureSpeechMaiEndpoint?: string;
+  azureSpeechMaiModel?: string;
+  azureSpeechMaiApiKey?: string;
 };
 
 const hasValue = (value: string | undefined): boolean => (value ?? '').trim().length > 0;
@@ -37,6 +42,11 @@ export const createTranscriptionProviderCatalog = (
     hasValue(input.azureOpenAiEndpoint) &&
     hasValue(input.azureOpenAiDeployment) &&
     hasValue(input.azureOpenAiApiKey);
+  const qwenReady = hasValue(input.qwenAsrEndpoint) && hasValue(input.qwenAsrModel);
+  const maiReady =
+    hasValue(input.azureSpeechMaiEndpoint) &&
+    hasValue(input.azureSpeechMaiModel) &&
+    hasValue(input.azureSpeechMaiApiKey);
   const deploymentMode = (input.deploymentMode ?? '').trim().toLowerCase();
 
   const options: TranscriptionProviderOption[] = [
@@ -45,6 +55,22 @@ export const createTranscriptionProviderCatalog = (
       label: getTranscriptionProviderLabel('self-hosted-whisper'),
       ready: localReady,
       reason: localReady ? undefined : 'WHISPER_MODEL is not configured.'
+    },
+    {
+      value: 'qwen3-asr-1.7b',
+      label: getTranscriptionProviderLabel('qwen3-asr-1.7b'),
+      ready: qwenReady,
+      reason: qwenReady
+        ? undefined
+        : 'QWEN_ASR_ENDPOINT and QWEN_ASR_MODEL are required.'
+    },
+    {
+      value: 'azure-speech-mai-transcribe-1.5',
+      label: getTranscriptionProviderLabel('azure-speech-mai-transcribe-1.5'),
+      ready: maiReady,
+      reason: maiReady
+        ? undefined
+        : 'AZURE_SPEECH_MAI_ENDPOINT, AZURE_SPEECH_MAI_MODEL, and AZURE_SPEECH_MAI_API_KEY are required.'
     },
     {
       value: 'azure-openai-gpt-4o-transcribe',
@@ -58,10 +84,14 @@ export const createTranscriptionProviderCatalog = (
 
   return {
     defaultProvider:
-      input.defaultProvider === 'azure-openai-gpt-4o-transcribe' ||
-      (deploymentMode === 'cloud' && azureReady)
-        ? 'azure-openai-gpt-4o-transcribe'
-        : defaultTranscriptionProvider,
+      input.defaultProvider === 'azure-speech-mai-transcribe-1.5'
+        ? 'azure-speech-mai-transcribe-1.5'
+        : input.defaultProvider === 'qwen3-asr-1.7b'
+          ? 'qwen3-asr-1.7b'
+          : input.defaultProvider === 'azure-openai-gpt-4o-transcribe' ||
+              (deploymentMode === 'cloud' && azureReady)
+            ? 'azure-openai-gpt-4o-transcribe'
+            : defaultTranscriptionProvider,
     options,
     isReady(provider: TranscriptionProvider): boolean {
       return options.find((option) => option.value === provider)?.ready ?? false;
@@ -81,5 +111,10 @@ export const createTranscriptionProviderCatalogFromEnvironment = (
     defaultProvider: environment.DEFAULT_TRANSCRIPTION_PROVIDER,
     azureOpenAiEndpoint: environment.AZURE_OPENAI_ENDPOINT,
     azureOpenAiDeployment: environment.AZURE_OPENAI_DEPLOYMENT,
-    azureOpenAiApiKey: environment.AZURE_OPENAI_API_KEY
+    azureOpenAiApiKey: environment.AZURE_OPENAI_API_KEY,
+    qwenAsrEndpoint: environment.QWEN_ASR_ENDPOINT,
+    qwenAsrModel: environment.QWEN_ASR_MODEL,
+    azureSpeechMaiEndpoint: environment.AZURE_SPEECH_MAI_ENDPOINT,
+    azureSpeechMaiModel: environment.AZURE_SPEECH_MAI_MODEL,
+    azureSpeechMaiApiKey: environment.AZURE_SPEECH_MAI_API_KEY
   });

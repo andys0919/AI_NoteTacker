@@ -60,6 +60,15 @@ const punctuationUsage = {
   unmeteredRequestCount: 0
 };
 
+const diarizationUsage = {
+  provider: 'azure-openai' as const,
+  model: 'gpt-4o-transcribe-diarize',
+  audioMs: 60_000,
+  requestCount: 2,
+  unmeteredRequestCount: 1,
+  failedChunkCount: 0
+};
+
 class FailOnceCloudUsageLedgerRepository extends InMemoryCloudUsageLedgerRepository {
   private shouldFail = true;
 
@@ -95,7 +104,7 @@ class DelayedCloudUsageLedgerRepository extends InMemoryCloudUsageLedgerReposito
 }
 
 describe('cloud usage event settlement API', () => {
-  it('settles distinct unpriced transcription and punctuation usage before storing a transcript', async () => {
+  it('settles distinct transcription, punctuation, and diarization usage before storing a transcript', async () => {
     const recordingJobs = new InMemoryRecordingJobRepository();
     const cloudUsage = new InMemoryCloudUsageLedgerRepository();
     const job = createAssignedCloudJob();
@@ -110,13 +119,14 @@ describe('cloud usage event settlement API', () => {
         transcriptArtifact,
         usage: {
           audioMs: 60_000,
-          punctuation: punctuationUsage
+          punctuation: punctuationUsage,
+          diarization: diarizationUsage
         }
       });
 
     expect(response.status, response.text).toBe(202);
     const entries = await cloudUsage.listByJob(job.id);
-    expect(entries).toHaveLength(2);
+    expect(entries).toHaveLength(3);
     expect(entries).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -139,6 +149,18 @@ describe('cloud usage event settlement API', () => {
           pricingStatus: 'unpriced',
           costUsd: null,
           detail: punctuationUsage
+        }),
+        expect.objectContaining({
+          entryKey: `actual:${job.id}:diarization:${job.transcriptionLeaseToken}`,
+          stage: 'transcription',
+          provider: 'azure-openai-gpt-4o-transcribe',
+          model: 'gpt-4o-transcribe-diarize',
+          pricingVersion: '2026-07-09',
+          usageQuantity: 60_000,
+          usageUnit: 'audio-ms',
+          pricingStatus: 'unpriced',
+          costUsd: null,
+          detail: diarizationUsage
         })
       ])
     );
@@ -345,8 +367,9 @@ describe('cloud usage event settlement API', () => {
     ['cached input exceeds input', { cachedInputTokens: 1_001 }],
     ['reasoning output exceeds output', { reasoningOutputTokens: 301 }],
     ['total does not equal input plus output', { totalTokens: 1_299 }],
-    ['unmetered requests exceed fallbacks', { unmeteredRequestCount: 2 }],
-    ['chunk outcomes do not equal requests', { acceptedChunkCount: 0, fallbackChunkCount: 1 }]
+    ['unmetered requests exceed requests', { unmeteredRequestCount: 3 }],
+    ['chunk outcomes exceed requests', { acceptedChunkCount: 2, fallbackChunkCount: 1 }],
+    ['requests exist without a chunk outcome', { acceptedChunkCount: 0, fallbackChunkCount: 0 }]
   ])('rejects punctuation usage when %s', async (_description, invalidFields) => {
     const recordingJobs = new InMemoryRecordingJobRepository();
     const cloudUsage = new InMemoryCloudUsageLedgerRepository();
@@ -371,6 +394,33 @@ describe('cloud usage event settlement API', () => {
     expect(response.status).toBe(400);
     expect(response.body.error.code).toBe('invalid-request');
     expect(await cloudUsage.listByJob(job.id)).toEqual([]);
+  });
+
+  it('accepts a polished chunk that succeeds after one unmetered provider retry', async () => {
+    const recordingJobs = new InMemoryRecordingJobRepository();
+    const cloudUsage = new InMemoryCloudUsageLedgerRepository();
+    const job = createAssignedCloudJob();
+    await recordingJobs.save(job);
+    const app = createApp(recordingJobs, { cloudUsageLedgerRepository: cloudUsage });
+
+    const response = await request(app)
+      .post(`/recording-jobs/${job.id}/events`)
+      .send({
+        type: 'transcript-artifact-stored',
+        leaseToken: job.transcriptionLeaseToken,
+        transcriptArtifact,
+        usage: {
+          punctuation: {
+            ...punctuationUsage,
+            requestCount: 2,
+            acceptedChunkCount: 1,
+            fallbackChunkCount: 0,
+            unmeteredRequestCount: 1
+          }
+        }
+      });
+
+    expect(response.status, response.text).toBe(202);
   });
 
   it('leaves lifecycle state unsaved when settlement fails so the callback can heal on retry', async () => {
@@ -459,6 +509,75 @@ describe('cloud usage event settlement API', () => {
         }
       })
     ]);
+  });
+
+  it('keeps a retried summary unpriced and stores provider request counts', async () => {
+    const mutableCatalog = AZURE_RESPONSES_PRICING_CATALOG as AzureResponsesPricing[];
+    const originalCatalog = [...mutableCatalog];
+    mutableCatalog.splice(0, mutableCatalog.length, {
+      model: 'gpt-5.6-luna',
+      pricingVersion: '2026-07-09',
+      baseModel: 'gpt-5.6-luna',
+      modelVersion: '2026-07-09',
+      sku: 'GlobalStandard',
+      currency: 'USD',
+      effectiveDate: '2026-07-09',
+      meterSource: 'official-test-meter',
+      inputUsdPerMillionTokens: 1,
+      cachedInputUsdPerMillionTokens: 0.1,
+      outputUsdPerMillionTokens: 2
+    });
+
+    try {
+      const recordingJobs = new InMemoryRecordingJobRepository();
+      const cloudUsage = new InMemoryCloudUsageLedgerRepository();
+      const job = assignSummaryJobToWorker(
+        attachTranscriptArtifact(createAssignedCloudJob(), transcriptArtifact),
+        'summary-worker-1'
+      );
+      await recordingJobs.save(job);
+      const app = createApp(recordingJobs, { cloudUsageLedgerRepository: cloudUsage });
+
+      const response = await request(app)
+        .post(`/recording-jobs/${job.id}/events`)
+        .send({
+          type: 'summary-artifact-stored',
+          leaseToken: job.summaryLeaseToken,
+          summaryArtifact: {
+            model: 'gpt-5.6-luna',
+            reasoningEffort: 'medium',
+            text: '摘要'
+          },
+          usage: {
+            promptTokens: 1_000,
+            cachedPromptTokens: 200,
+            completionTokens: 300,
+            reasoningCompletionTokens: 100,
+            totalTokens: 1_300,
+            providerRequestCount: 2,
+            unmeteredRequestCount: 1
+          }
+        });
+
+      expect(response.status, response.text).toBe(202);
+      expect(await cloudUsage.listByJob(job.id)).toEqual([
+        expect.objectContaining({
+          pricingStatus: 'unpriced',
+          costUsd: null,
+          detail: {
+            promptTokens: 1_000,
+            cachedPromptTokens: 200,
+            completionTokens: 300,
+            reasoningCompletionTokens: 100,
+            totalTokens: 1_300,
+            providerRequestCount: 2,
+            unmeteredRequestCount: 1
+          }
+        })
+      ]);
+    } finally {
+      mutableCatalog.splice(0, mutableCatalog.length, ...originalCatalog);
+    }
   });
 
   it('settles valid Luna usage before storing a summary failure', async () => {

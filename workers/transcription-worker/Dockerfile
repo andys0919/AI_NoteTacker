@@ -3,16 +3,12 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg git nodejs npm \
+  && apt-get install -y --no-install-recommends ffmpeg nodejs npm \
   && rm -rf /var/lib/apt/lists/*
 
 COPY workers/transcription-worker/requirements.txt ./requirements.txt
 
-ARG MEETING_AI_PIPELINE_GIT_URL=https://github.com/andys0919/meeting-ai-pipeline.git
-ARG MEETING_AI_PIPELINE_GIT_REF=main
-
-RUN pip install --no-cache-dir -r requirements.txt nvidia-cublas-cu12 nvidia-cudnn-cu12==9.* \
-  "git+${MEETING_AI_PIPELINE_GIT_URL}@${MEETING_AI_PIPELINE_GIT_REF}"
+RUN pip install --no-cache-dir -r requirements.txt nvidia-cublas-cu12 nvidia-cudnn-cu12==9.*
 RUN npm install -g @openai/codex
 
 COPY workers/transcription-worker/src ./src

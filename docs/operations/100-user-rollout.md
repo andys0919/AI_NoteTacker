@@ -36,7 +36,6 @@ Operational expectation:
 Minimum runtime for this rollout profile:
 - `1` control-plane instance
 - `1` postgres instance with persistent storage
-- `1` redis instance
 - `1` minio or equivalent S3-compatible object store
 - `1` recording worker
 - `1` transcription worker

@@ -49,6 +49,7 @@ type RecordingJobRow = {
   summary_profile: SummaryProfile | null;
   preferred_export_format: PreferredExportFormat | null;
   uploaded_file_name: string | null;
+  transcription_glossary: string[] | null;
   state: RecordingJob['state'];
   processing_stage: string | null;
   processing_message: string | null;
@@ -112,6 +113,7 @@ const recordingJobSchemaSql = `
     summary_profile TEXT,
     preferred_export_format TEXT,
     uploaded_file_name TEXT,
+    transcription_glossary TEXT[] NOT NULL DEFAULT '{}',
     state TEXT NOT NULL,
     processing_stage TEXT,
     processing_message TEXT,
@@ -188,6 +190,8 @@ const recordingJobSchemaSql = `
   ADD COLUMN IF NOT EXISTS preferred_export_format TEXT;
   ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS uploaded_file_name TEXT;
+  ALTER TABLE recording_jobs
+  ADD COLUMN IF NOT EXISTS transcription_glossary TEXT[] NOT NULL DEFAULT '{}';
   ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS processing_stage TEXT;
   ALTER TABLE recording_jobs
@@ -330,6 +334,7 @@ const mapRowToRecordingJob = (row: RecordingJobRow): RecordingJob => ({
   summaryProfile: row.summary_profile ?? undefined,
   preferredExportFormat: row.preferred_export_format ?? undefined,
   uploadedFileName: row.uploaded_file_name ?? undefined,
+  transcriptionGlossary: row.transcription_glossary ?? [],
   state: row.state,
   processingStage: row.processing_stage ?? undefined,
   processingMessage: row.processing_message ?? undefined,
@@ -603,9 +608,10 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           terminal_notification_state,
           meeting_passcode,
           issued_transcription_lease_tokens,
-          issued_summary_lease_tokens
+          issued_summary_lease_tokens,
+          transcription_glossary
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::timestamptz, $22::timestamptz, $23::timestamptz, $24, $25::timestamptz, $26::timestamptz, $27::timestamptz, $28, $29::timestamptz, $30::timestamptz, $31::timestamptz, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42::timestamptz, $43::timestamptz, $44, $45, $46::jsonb, $47::jsonb, $48::jsonb, $49, $50, $51, $52, $53::jsonb, $54::timestamptz, $55, $56, $57, $58::jsonb, $59::jsonb)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21::timestamptz, $22::timestamptz, $23::timestamptz, $24, $25::timestamptz, $26::timestamptz, $27::timestamptz, $28, $29::timestamptz, $30::timestamptz, $31::timestamptz, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42::timestamptz, $43::timestamptz, $44, $45, $46::jsonb, $47::jsonb, $48::jsonb, $49, $50, $51, $52, $53::jsonb, $54::timestamptz, $55, $56, $57, $58::jsonb, $59::jsonb, $60::text[])
         ON CONFLICT (id) DO UPDATE SET
           meeting_url = EXCLUDED.meeting_url,
           platform = EXCLUDED.platform,
@@ -663,6 +669,7 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           terminal_notification_target = EXCLUDED.terminal_notification_target,
           terminal_notification_state = EXCLUDED.terminal_notification_state,
           meeting_passcode = EXCLUDED.meeting_passcode,
+          transcription_glossary = EXCLUDED.transcription_glossary,
           issued_transcription_lease_tokens = CASE
             WHEN recording_jobs.issued_transcription_lease_tokens
               @> EXCLUDED.issued_transcription_lease_tokens
@@ -742,7 +749,8 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
         job.terminalNotificationState ?? null,
         job.meetingPasscode ?? null,
         JSON.stringify(job.issuedTranscriptionLeaseTokens ?? []),
-        JSON.stringify(job.issuedSummaryLeaseTokens ?? [])
+        JSON.stringify(job.issuedSummaryLeaseTokens ?? []),
+        job.transcriptionGlossary ?? []
       ]
     );
 

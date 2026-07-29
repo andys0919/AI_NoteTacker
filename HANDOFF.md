@@ -1,17 +1,24 @@
-# Handoff — Azure Responses、潤稿 usage 與誠實計價
+# Handoff — MAI 主轉錄、Luna max 潤稿／摘要、speaker evidence 與誠實計價
 
-_更新：2026-07-15（Asia/Taipei）_
+_更新：2026-07-29（Asia/Taipei）_
 
 ## 目標與已核准架構
 
-使用者已核准方案 A：保留一個共用的 Azure Responses transport，讓「摘要」與「逐字稿標點潤稿」使用明確設定的 Responses endpoint/key；兩者可共用 credential，但不得從語音轉錄的 Azure endpoint/key 暗中推導或 fallback。
+使用者已核准把 Azure Speech `mai-transcribe-1.5` 改為新工作的主轉錄，
+保留 Azure `gpt-4o-transcribe-diarize`作獨立 speaker evidence；Qwen、Azure
+OpenAI transcription 與 Whisper 保留為 operator 可選 fallback。逐字稿潤稿與
+摘要使用同一組明確設定的 Azure Responses endpoint/key，但必須是兩次獨立的
+`gpt-5.6-luna`、`reasoning.effort=max` request，不得共用 response state。
 
 處理鏈如下：
 
-1. 語音轉文字：`gpt-4o-transcribe`，既有 Azure transcription resource。
-2. 標點潤稿：`gpt-5.6-luna`，Azure Responses API；仍是 best-effort，字詞保真檢查失敗時保留原文。
-3. 摘要：`gpt-5.6-luna`，Azure Responses API；輸出、狀態或 usage 不完整時整次失敗，不儲存半成品。
-4. Cloud usage：`transcription`、`punctuation`、`summary` 是三個獨立 stage；沒有官方可驗證費率時以 `pricingStatus: unpriced`、`costUsd: null` 表示，絕不拿其他模型費率或估算值冒充實際成本。
+1. 主轉錄：`mai-transcribe-1.5`，Azure Speech LLM API、固定 30 秒切片、
+   最多三段並行、依時間還原順序、`transcribeStyle=verbatim`，不帶 phrase
+   list、forced locale 或比對答案。
+2. Speaker evidence：`gpt-4o-transcribe-diarize`與 MAI 並行，只附加通過對齊閘門的匿名 speaker，不改寫 MAI raw/display text。
+3. 逐字稿潤稿：獨立 `gpt-5.6-luna` Responses request、`reasoning.effort=max`；允許高信心 ASR 同音字／術語／標點修正，數字或內容漂移閘門失敗時保留 raw-derived display text，`rawText` 永不覆寫。
+4. 摘要：另一個獨立 `gpt-5.6-luna` Responses request、`reasoning.effort=max`；輸出、狀態或 usage 不完整時整次失敗，不儲存半成品。
+5. Cloud usage：`transcription`、`punctuation`、`summary` 是三個獨立 stage；沒有官方可驗證費率時以 `pricingStatus: unpriced`、`costUsd: null` 表示，絕不拿其他模型費率或估算值冒充實際成本。
 
 Responses endpoint 只記錄形狀，不記錄真實 hostname：
 
@@ -31,20 +38,37 @@ https://<resource-host>/openai/v1/responses
 - admin API/UI 對 transcription ledger 顯示 `audioMs`／秒數，不再把它錯顯示成 0 tokens。
 - production compose override 不再把 `SUMMARY_MODEL` 硬改回舊模型；canonical production file set 仍是 base + screenapp。
 - OpenSpec change `update-cloud-summary-azure-responses` 已補 proposal、design、tasks 與三個 capability delta。
+- OpenSpec change `use-qwen-primary-transcription` 已完成 provider、adapter、
+  Compose profile 與盲比對契約；Qwen 現保留為明確啟用的可選方案，不是正式
+  global default，也不阻塞 MAI worker 啟動。
+- OpenSpec change `use-mai-luna-transcription-pipeline` 的程式、正式 worker
+  部署、正確 HDD WAV 盲測、PLAUD 比較與 Standards／Spec 雙軸 review 均已
+  完成；strict validation 通過，完整證據見該 change 的 `benchmark.md`。
 
 ### Verified（本 checkpoint 可重現）
 
-- `npm test` 通過：control-plane 34 files／282 tests、recording-worker 13 tests、外部 Python package 2 tests、transcription-worker 96 tests，共 393 tests。
-- `npm run build`、四個 browser JS `node --check` 與 `git diff --check` 全部通過。
-- selected OpenSpec strict validation 通過；`openspec validate --all --strict --no-interactive` 為 22/22。
+- 2026-07-29 fresh transcription-worker full suite 為 148/148；最後 diarization
+  retry／cancel／usage focused file 為 32/32。
+- `npm run build:python` 與 `git diff --check` 通過。
+- `openspec validate --all --strict --no-interactive` 為 28/28。
 - canonical production Compose 的安全 boolean 檢查為 `true`：兩個 worker 都解析成 Luna、正確 Responses URL shape 與非空 credential；驗證沒有輸出 hostname 或 key。
 - 2026-07-15 查詢 Microsoft 官方 Azure OpenAI 定價頁與 Retail Prices API，沒有找到 `gpt-5.6-luna` / GPT-5.6 的公開 input、cached-input 或 output 單價。針對 Azure OpenAI GPT5 meter 的 `5.6` filter 回傳 `Count: 0`。
+- 2026-07-29 Qwen benchmark service 曾 healthy、零 restart；同一 worker
+  image 對 9 組既有 Azure 歷史錄音盲跑 171.52 分鐘，9/9 成功、0
+  marker leak、0 整稿 repetition failure；175/175 個 Qwen HTTP request 都
+  沒有 `prompt`、phrase list、job glossary 或前段模型文字。詳見
+  `docs/research/2026-07-29-qwen-vs-stored-azure.md`。
+- 正確 HDD WAV 的官方 Qwen3-ASR API 94 個一分鐘 chunk 為 94/94 成功、
+  110.482 provider-request 秒、p50 1.168 秒且無 gzip-ratio failure；它仍沒有
+  自動恢復所有畫面可證的術語，詳見
+  `docs/research/2026-07-29-full-asr-validation.md`。
 - 下方「歷史 live 觀察」僅證明先前環境曾可呼叫，不算目前工作樹、目前映像或目前 DB 的驗收證據。
 
 ### Remaining（需外部權限／另行授權）
 
-- 先輪替已曝露的 `AZURE_OPENAI_SUMMARY_API_KEY`，之後才可做任何新的 live call。
-- 需要另行部署／付費測試授權後，才部署目前工作樹並留下可稽核、已去識別的 live E2E 證據。
+- 用至少三場未參與調參的新會議建立人工 reference，才能計算 Qwen、Azure
+  與其他候選的 CER／專有名詞 accuracy；目前歷史比對只有 provider agreement
+  與內容覆蓋證據。
 - 取得 Azure subscription billing 權限後，核對實際 deployment identity 與 Cost Details `EffectivePrice`；公開 retail 價不等於此訂閱的實際成交價。
 - 依 `design.md` 完成 active-change archive order 的 rebase/revalidation，再另行授權 archive。
 - PostgreSQL repository 目前由 pg-mem integration 與受控 interleaving tests 驗證；尚未在真實 PostgreSQL 上做 concurrent callback／claim 或 rolling-migration 演練。部署時必須先停止新 claim／routing、讓舊 control-plane 保持可接收既有 callback，drain 或明確處理所有舊 attempt，最後才停止全部舊 control-plane 並執行 active-token backfill。
@@ -58,18 +82,42 @@ https://<resource-host>/openai/v1/responses
 - `AZURE_OPENAI_SUMMARY_ENDPOINT`：HTTPS，path 必須是 `/openai/v1/responses`；不得接受 `chat/completions`。
 - `AZURE_OPENAI_SUMMARY_API_KEY`：只從明確的 summary 設定讀取；不得 fallback 到 transcription key。
 - `SUMMARY_MODEL=gpt-5.6-luna`。
+- `SUMMARY_REASONING_EFFORT=max`。
+- `AZURE_SPEECH_MAI_ENDPOINT`、`AZURE_SPEECH_MAI_API_KEY` 與
+  `AZURE_SPEECH_MAI_MODEL=mai-transcribe-1.5` 必須成組設定。
 
 可選設定／程式預設值：
 
 - `AZURE_OPENAI_PUNCTUATION_MODEL` 留空時沿用 `SUMMARY_MODEL`；若填值則只改潤稿 model，不改 endpoint/key。
+- `TRANSCRIPT_POLISHING_REASONING_EFFORT=max`。
 - `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS=300`。
-- `AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS=30`。
+- `AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS=300`。
+- `AZURE_SPEECH_MAI_TIMEOUT_SECONDS=300`。
 - `AZURE_OPENAI_TRANSCRIBE_TIMEOUT_SECONDS=300`。
 - `CONTROL_PLANE_TIMEOUT_SECONDS=30`。
 
-每次 request 的有效 body 為 `model`、`instructions`、`input`、`store: false`；以 `api-key` header 驗證。`store: false` 會關閉 Responses application state／message history 儲存；它本身**不等於** Zero Data Retention，也不控制獨立的 abuse-monitoring retention，後者仍須依 Azure resource 的資料隱私設定核對。
+每次 Luna request 的有效 body 為 `model`、`instructions`、`input`、
+`reasoning: {"effort":"max"}`、`store: false`；以 `api-key` header 驗證。
+潤稿與摘要各自建立新 request。`store: false` 會關閉 Responses application
+state／message history 儲存；它本身**不等於** Zero Data Retention，也不控制
+獨立的 abuse-monitoring retention，後者仍須依 Azure resource 的資料隱私設定核對。
 
-每次 provider HTTP call 都只呼叫 Responses transport 一次，並設定 `urlopen` 的 connection/socket-operation timeout：摘要 300 秒，潤稿每個 chunk 30 秒；Azure transcription upload 預設 300 秒，Python transcription／summary workers 對 control-plane 的 GET／POST／heartbeat 預設 30 秒。這會限制個別阻塞 I/O 操作，並不是保證整段流程在該秒數內結束的 wall-clock deadline。transport **沒有 hidden provider retry**；要重新呼叫 Azure 必須由 scheduler 發出新的 lease，讓成本與 lifecycle 可依 attempt 追蹤。provider 已完成後，terminal control-plane callback 的第一次傳送若失敗，worker 只會把完全相同的 payload 重送一次，不會再呼叫 provider，也不會把成功改報成失敗。
+每次 provider HTTP call 都設定 `urlopen` 的 connection/socket-operation
+timeout：摘要與潤稿 300 秒、Azure transcription upload 300 秒，Python
+transcription／summary workers 對 control-plane 的 GET／POST／heartbeat 30
+秒。這會限制個別阻塞 I/O 操作，並不是保證整段流程在該秒數內結束的
+wall-clock deadline。明確 retry 只有：MAI HTTP 400 會以完全相同的 request
+重送一次；DNS／timeout／reset／broken connection 會以相同 request 在
+2／10／30 秒後有限重送；speaker diarize HTTP 400 會以相同 request
+重送一次，DNS／timeout／reset／broken connection 會以相同 request 在
+2／10／30 秒後有限重送；Luna 潤稿與摘要 HTTP 400 會重送一次；
+transcription 內容品質失敗最多重送兩次。內容品質失敗包括
+可聽但稀疏的五分鐘 span，以及至少 20 秒、HTTP 200 但正規化文字 gzip ratio
+大於 4.0 的高重複 span；後者從同一原音訊切成最多 30 秒重跑，保留 base
+prompt／job glossary，但不帶前段生成文字。retry 都不改音訊或加入答案提示；
+持續失敗時明確終止，不保存可疑文字。provider 已完成後，terminal
+control-plane callback 的第一次傳送若失敗，worker 只會把完全相同的 payload
+重送一次，不會再呼叫 provider，也不會把成功改報成失敗。
 
 Response 契約：
 
@@ -207,7 +255,7 @@ production 一律使用 `docker-compose.yml` + `docker-compose.screenapp.yml`；
 2. 在任何新 live provider call 或部署前輪替已曝露的 summary key；把新值只寫入 secret store／gitignored `.env`，不輸出、不提交。
 3. 保存上一版 immutable release/image IDs、相容的安全 env snapshot 與 DB backup；snapshot 不放 repo。上一版 bundle 只可用於 migration 前的 abort，不能在新 schema 生效後直接恢復舊 control-plane。
 4. 確認舊 attempt 已 drain／處理後，停止所有舊 control-plane instance，避免舊 binary 在 active-token backfill 後再核發沒有 history 的 lease；接著執行 additive schema migration，並部署可理解 `punctuation`、issued-token history、lease entry key、`pricing_status` 與 nullable `cost_usd` 的新 control-plane。已清除且沒有 active token／持久 history 的 pre-migration lease 無法事後重建。
-5. 設定完整 Responses URL、rotated key、Luna model，以及摘要／transcription 300 秒、潤稿／Python worker control-plane 30 秒的 socket-operation timeout，但先不要把尚未驗證的 routing 宣告完成。
+5. 設定完整 Responses URL、rotated key、Luna model，以及摘要／transcription／潤稿 300 秒、Python worker control-plane 30 秒的 socket-operation timeout，但先不要把尚未驗證的 routing 宣告完成。
 6. 用同一個 release bundle rebuild/recreate transcription-worker 與 summary-worker；禁止把 chat endpoint 與 Responses caller 混搭。
 7. compatibility/health 通過後才切換 runtime policy，接著執行已去識別的 live flow 並保留 ledger evidence。
 
@@ -239,15 +287,23 @@ rollback 有明確的 schema compatibility floor：
 - 尚未部署目前 release，也沒有 retained redacted live evidence 或 rollback drill。
 - `add-codex-transcript-summaries`、`add-cloud-usage-governance`、`add-admin-summary-model-switch`、`add-operator-productivity-workflows` 對 summary/governance requirement 有 archive-order overlap；CLI validation 不會偵測 MODIFIED requirement 的語意覆蓋。必須依 `design.md` 的順序 rebase/revalidate 後才能 archive。
 
-本 handoff 不授權 commit、push 或 archive；需收到個別明確要求才執行。
+2026-07-29 使用者已另行明確授權這次 MAI/Luna 變更的 commit、push、部署與
+重啟；未授權 archive、tag 或 pull request。
+
+`remove-unused-runtime-scaffolding` 另有固定的未來 archive 順序：
+`extract-meeting-ai-pipeline-package` →
+`externalize-meeting-ai-pipeline-dependency` →
+`remove-unused-runtime-scaffolding`。每一步都必須重新 rebase／strict validate；
+不可先 archive removal，否則後續舊 change 會把外部 package requirement 加回 published spec。
+本次未執行任何 archive。
 
 ## 可重跑的 verification / deployment
 
-下列本地 verification 已於 2026-07-15 通過，可在 repo root 重跑且不碰 live：
+下列本地 verification 已於 2026-07-29 通過，可在 repo root 重跑且不碰 live：
 
 ```bash
 git diff --check
-python3 scripts/run_transcription_worker_tests.py
+npm run test:python
 npm run test --workspace @ai-notetacker/control-plane
 npm run build
 openspec validate update-cloud-summary-azure-responses --strict --no-interactive

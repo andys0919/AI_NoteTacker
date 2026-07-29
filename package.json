@@ -13,6 +13,6 @@
     "dev": "npm exec --workspace @ai-notetacker/control-plane -- tsx watch src/server.ts",
     "test": "npm run test:node && npm run test:python",
     "test:node": "npm run test --workspaces --if-present",
-    "test:python": "python3 scripts/run_transcription_worker_tests.py"
+    "test:python": "PYTHONPATH=workers/transcription-worker/src python3 -m unittest discover -s workers/transcription-worker/tests -p 'test_*.py'"
   }
 }

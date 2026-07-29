@@ -42,6 +42,9 @@ export type TranscriptSegment = {
   language?: string;
   languageConfidence?: number;
   timingSource?: 'provider' | 'estimated';
+  speaker?: string;
+  speakerSource?: string;
+  speakerAlignmentScore?: number;
   reviewFlags?: TranscriptReviewFlag[];
 };
 
@@ -58,6 +61,15 @@ export type TranscriptArtifact = RecordingArtifact & {
   schemaVersion?: 2;
   language: string;
   segments: TranscriptSegment[];
+  speakerAttribution?: {
+    provider: 'azure-openai';
+    model: string;
+    status: 'complete' | 'partial' | 'failed';
+    referenceCount: number;
+    attributedSegmentCount: number;
+    totalSegmentCount: number;
+    failedChunkCount: number;
+  };
 };
 
 export type SummaryArtifact = {
@@ -94,6 +106,7 @@ export type RecordingJob = {
   summaryProfile?: SummaryProfile;
   preferredExportFormat?: PreferredExportFormat;
   uploadedFileName?: string;
+  transcriptionGlossary?: string[];
   state: RecordingJobState;
   processingStage?: string;
   processingMessage?: string;
@@ -151,6 +164,7 @@ type CreateRecordingJobInput = {
   summaryProfile?: SummaryProfile;
   preferredExportFormat?: PreferredExportFormat;
   uploadedFileName?: string;
+  transcriptionGlossary?: string[];
   transcriptionProvider?: TranscriptionProvider;
   transcriptionModel?: string;
   summaryProvider?: SummaryProvider;
@@ -250,6 +264,7 @@ export const createRecordingJob = ({
   summaryProfile = 'general',
   preferredExportFormat = 'markdown',
   uploadedFileName,
+  transcriptionGlossary = [],
   transcriptionProvider,
   transcriptionModel,
   summaryProvider,
@@ -271,6 +286,7 @@ export const createRecordingJob = ({
   summaryProfile,
   preferredExportFormat,
   uploadedFileName,
+  transcriptionGlossary,
   transcriptionProvider,
   transcriptionModel,
   summaryProvider,
@@ -574,27 +590,6 @@ export const releaseTranscriptionJobForRetry = (
       })
   };
 };
-
-export const releaseSummaryJobForRetry = (
-  job: RecordingJob,
-  failure: RecordingFailure
-): RecordingJob => ({
-  ...job,
-  ...clearSummaryLeaseState,
-  state: 'transcribing',
-  processingStage: 'summary-pending',
-  processingMessage: failure.message,
-  progressPercent: 90,
-  failureCode: failure.code,
-  failureMessage: failure.message,
-  updatedAt: now(),
-  jobHistory: appendJobHistoryEntry(job, {
-    stage: 'summary-pending',
-    message: failure.message,
-    state: 'transcribing',
-    kind: 'failure'
-  })
-});
 
 export const assignSummaryJobToWorker = (
   job: RecordingJob,

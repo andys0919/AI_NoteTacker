@@ -3,13 +3,13 @@ import time
 
 from transcription_worker.azure_openai_transcript_summarizer import AzureOpenAiTranscriptSummarizer
 from transcription_worker.codex_transcript_summarizer import CodexTranscriptSummarizer
-from transcription_worker.config import read_transcription_worker_config
+from transcription_worker.config import read_summary_worker_config
 from transcription_worker.control_plane_client import ControlPlaneClient
 from transcription_worker.summary_worker_loop import run_summary_worker_iteration
 
 
 def main() -> None:
-    config = read_transcription_worker_config(os.environ)
+    config = read_summary_worker_config(os.environ)
     client = ControlPlaneClient(
         str(config["control_plane_base_url"]),
         internal_service_token=str(config["internal_service_token"])
@@ -30,6 +30,7 @@ def main() -> None:
             endpoint=str(config["azure_openai_summary_endpoint"]),
             api_key=str(config["azure_openai_summary_api_key"]),
             model=str(config["summary_model"]),
+            reasoning_effort=str(config["summary_reasoning_effort"]),
             timeout_seconds=int(config["azure_openai_summary_timeout_seconds"]),
         )
 

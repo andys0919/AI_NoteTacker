@@ -13,6 +13,7 @@ describe('transcript review evidence', () => {
         displayText: '需要黑電淨化器',
         language: 'zh-Hant',
         timingSource: 'provider',
+        speaker: 'Speaker <A>',
         reviewFlags: [
           {
             reason: 'domain-term',
@@ -27,6 +28,9 @@ describe('transcript review evidence', () => {
     ]);
 
     expect(markup).toContain('需要黑電淨化器');
+    expect(markup).toContain(
+      '<strong class="transcript-speaker">Speaker &lt;A&gt;：</strong>'
+    );
     expect(markup).toContain('待確認');
     expect(markup).toContain('原始辨識');
     expect(markup).toContain('需要&lt;黑電&gt;淨化器');

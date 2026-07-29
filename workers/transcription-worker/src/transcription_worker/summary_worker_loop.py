@@ -2,13 +2,18 @@ from transcription_worker.heartbeat import start_lease_heartbeat
 
 
 def _summary_usage_event(usage):
-    return {
+    event = {
         "promptTokens": usage["prompt_tokens"],
         "cachedPromptTokens": usage.get("cached_prompt_tokens", 0),
         "completionTokens": usage["completion_tokens"],
         "reasoningCompletionTokens": usage.get("reasoning_completion_tokens", 0),
         "totalTokens": usage["total_tokens"],
     }
+    if "provider_request_count" in usage:
+        event["providerRequestCount"] = usage["provider_request_count"]
+    if "unmetered_request_count" in usage:
+        event["unmeteredRequestCount"] = usage["unmetered_request_count"]
+    return event
 
 
 def _failed_summary_usage_event(error):
@@ -16,13 +21,18 @@ def _failed_summary_usage_event(error):
     if not isinstance(usage, dict):
         return None
 
-    return {
+    event = {
         "promptTokens": usage["input_tokens"],
         "cachedPromptTokens": usage["cached_input_tokens"],
         "completionTokens": usage["output_tokens"],
         "reasoningCompletionTokens": usage["reasoning_output_tokens"],
         "totalTokens": usage["total_tokens"],
     }
+    if "provider_request_count" in usage:
+        event["providerRequestCount"] = usage["provider_request_count"]
+    if "unmetered_request_count" in usage:
+        event["unmeteredRequestCount"] = usage["unmetered_request_count"]
+    return event
 
 
 def _post_terminal_event(client, job_id, payload, lease_token):
@@ -60,6 +70,7 @@ def _summary_segment(segment):
         ("language", "language"),
         ("languageConfidence", "language_confidence"),
         ("timingSource", "timing_source"),
+        ("speaker", "speaker"),
     ):
         if source_key in segment:
             result[target_key] = segment[source_key]

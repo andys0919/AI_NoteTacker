@@ -1,4 +1,7 @@
 import { statSync } from 'node:fs';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 
@@ -1293,6 +1296,11 @@ describe('recording jobs API', () => {
     const created = await request(app)
       .post('/api/operator/jobs/uploads')
       .field('submitterId', 'operator-a')
+      .field(
+        'transcriptionGlossary',
+        ' 舌片 = 蛇片 | 社片 \n條碼 = 調碼'
+      )
+      .field('transcriptionGlossary', '舌片 = 蛇片 | 社片')
       .attach('audio', Buffer.from('fake-audio'), {
         filename: 'meeting-note.wav',
         contentType: 'audio/wav'
@@ -1303,6 +1311,10 @@ describe('recording jobs API', () => {
     expect(created.body.platform).toBe('uploaded-audio');
     expect(created.body.inputSource).toBe('uploaded-audio');
     expect(created.body.uploadedFileName).toBe('meeting-note.wav');
+    expect(created.body.transcriptionGlossary).toEqual([
+      '舌片 = 蛇片 | 社片',
+      '條碼 = 調碼'
+    ]);
     expect(uploadedAudioStorage.uploads[0]?.originalName).toBe('meeting-note.wav');
 
     const claim = await request(app)
@@ -1313,6 +1325,91 @@ describe('recording jobs API', () => {
     expect(claim.body.id).toBe(created.body.id);
     expect(claim.body.state).toBe('transcribing');
     expect(claim.body.recordingArtifact.storageKey).toContain('meeting-note.wav');
+    expect(claim.body.transcriptionGlossary).toEqual(created.body.transcriptionGlossary);
+  });
+
+  it('keeps legacy uploads compatible with an empty transcription glossary', async () => {
+    const app = createApp(undefined, {
+      uploadedAudioStorage: new FakeUploadedAudioStorage()
+    });
+
+    const created = await request(app)
+      .post('/api/operator/jobs/uploads')
+      .field('submitterId', 'operator-a')
+      .attach('audio', Buffer.from('fake-audio'), {
+        filename: 'legacy.wav',
+        contentType: 'audio/wav'
+      });
+
+    expect(created.status).toBe(201);
+    expect(created.body.transcriptionGlossary).toEqual([]);
+  });
+
+  it('rejects an oversized glossary and removes the temporary upload', async () => {
+    const uploadTempDir = await mkdtemp(join(tmpdir(), 'ai-notetacker-glossary-'));
+    const originalTmpDir = process.env.TMPDIR;
+    process.env.TMPDIR = uploadTempDir;
+
+    try {
+      const uploadedAudioStorage = new FakeUploadedAudioStorage();
+      const app = createApp(undefined, { uploadedAudioStorage });
+      const response = await request(app)
+        .post('/api/operator/jobs/uploads')
+        .field('submitterId', 'operator-a')
+        .field(
+          'transcriptionGlossary',
+          Array.from({ length: 51 }, (_, index) => `term-${index}`).join('\n')
+        )
+        .attach('audio', Buffer.from('fake-audio'), {
+          filename: 'invalid-glossary.wav',
+          contentType: 'audio/wav'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('invalid-transcription-glossary');
+      expect(uploadedAudioStorage.uploads).toEqual([]);
+      expect(await readdir(uploadTempDir)).toEqual([]);
+    } finally {
+      if (originalTmpDir === undefined) {
+        delete process.env.TMPDIR;
+      } else {
+        process.env.TMPDIR = originalTmpDir;
+      }
+      await rm(uploadTempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns structured HTTP 413 and removes an over-limit temporary upload', async () => {
+    const uploadTempDir = await mkdtemp(join(tmpdir(), 'ai-notetacker-limit-'));
+    const originalTmpDir = process.env.TMPDIR;
+    process.env.TMPDIR = uploadTempDir;
+
+    try {
+      const uploadedAudioStorage = new FakeUploadedAudioStorage();
+      const app = createApp(undefined, {
+        uploadedAudioStorage,
+        maxUploadBytes: 4
+      });
+      const response = await request(app)
+        .post('/api/operator/jobs/uploads')
+        .field('submitterId', 'operator-a')
+        .attach('audio', Buffer.from('too-large'), {
+          filename: 'too-large.wav',
+          contentType: 'audio/wav'
+        });
+
+      expect(response.status).toBe(413);
+      expect(response.body.error.code).toBe('uploaded-media-too-large');
+      expect(uploadedAudioStorage.uploads).toEqual([]);
+      expect(await readdir(uploadTempDir)).toEqual([]);
+    } finally {
+      if (originalTmpDir === undefined) {
+        delete process.env.TMPDIR;
+      } else {
+        process.env.TMPDIR = originalTmpDir;
+      }
+      await rm(uploadTempDir, { recursive: true, force: true });
+    }
   });
 
   it('rejects uploaded jobs after the configured transcription backlog limit is reached', async () => {
@@ -2195,6 +2292,9 @@ describe('recording jobs API', () => {
               displayText: 'hello export world',
               language: 'en',
               timingSource: 'provider',
+              speaker: 'Speaker A',
+              speakerSource: 'gpt-4o-transcribe-diarize',
+              speakerAlignmentScore: 0.91,
               reviewFlags: [
                 {
                   reason: 'proper-name',
@@ -2210,7 +2310,16 @@ describe('recording jobs API', () => {
               endMs: 2600,
               text: 'next transcript line'
             }
-          ]
+          ],
+          speakerAttribution: {
+            provider: 'azure-openai',
+            model: 'gpt-4o-transcribe-diarize',
+            status: 'complete',
+            referenceCount: 2,
+            attributedSegmentCount: 1,
+            totalSegmentCount: 2,
+            failedChunkCount: 0
+          }
         }
       ),
       {
@@ -2239,7 +2348,7 @@ describe('recording jobs API', () => {
     expect(markdown.headers['content-disposition']).toContain('.md');
     expect(markdown.text).toContain('# AI NoteTacker Export');
     expect(markdown.text).toContain('Export summary');
-    expect(markdown.text).toContain('hello export world');
+    expect(markdown.text).toContain('Speaker A: hello export world');
     // The generated summary already carries its own "## Summary" heading,
     // so the export must not prepend a duplicate one.
     expect(markdown.text.split('## Summary').length - 1).toBe(1);
@@ -2261,7 +2370,9 @@ describe('recording jobs API', () => {
 
     expect(srt.status).toBe(200);
     expect(srt.headers['content-type']).toContain('application/x-subrip');
-    expect(srt.text).toContain('1\n00:00:00,000 --> 00:00:01,200\nhello export world');
+    expect(srt.text).toContain(
+      '1\n00:00:00,000 --> 00:00:01,200\nSpeaker A: hello export world'
+    );
 
     const json = await request(app)
       .get(`/api/operator/jobs/${exportedJob.id}/export`)
@@ -2278,6 +2389,9 @@ describe('recording jobs API', () => {
       displayText: 'hello export world',
       language: 'en',
       timingSource: 'provider',
+      speaker: 'Speaker A',
+      speakerSource: 'gpt-4o-transcribe-diarize',
+      speakerAlignmentScore: 0.91,
       reviewFlags: [
         {
           reason: 'proper-name',
@@ -2285,6 +2399,15 @@ describe('recording jobs API', () => {
           candidates: ['Solomon']
         }
       ]
+    });
+    expect(json.body.transcript.speakerAttribution).toEqual({
+      provider: 'azure-openai',
+      model: 'gpt-4o-transcribe-diarize',
+      status: 'complete',
+      referenceCount: 2,
+      attributedSegmentCount: 1,
+      totalSegmentCount: 2,
+      failedChunkCount: 0
     });
     expect(json.body.transcript.segments[1]).not.toHaveProperty('rawText');
     expect(json.body.transcript.segments[1]).not.toHaveProperty('languageConfidence');

@@ -36,11 +36,34 @@ class TranscriptNormalizer:
         raw_text = text
         display_text = text
         flags = []
+        accepted_aliases = set()
+        glossary = glossary or []
         normalized_language = _normalized_language(language)
+
+        for entry in glossary:
+            if not isinstance(entry, dict) or not entry.get("accepted"):
+                continue
+            term = str(entry.get("term") or "").strip()
+            for alias in entry.get("aliases", []):
+                alias = str(alias).strip()
+                if not term or not alias or alias == term or alias not in raw_text:
+                    continue
+                display_text = display_text.replace(alias, term)
+                accepted_aliases.add(alias)
+                flags.append(
+                    {
+                        "reason": "operator-verified-alias",
+                        "original_text": alias,
+                        "candidates": [term],
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
+                        "evidence": "operator-verified glossary",
+                    }
+                )
 
         if normalized_language == "zh-Hant":
             try:
-                display_text = self._get_converter().convert(text)
+                display_text = self._get_converter().convert(display_text)
             except Exception as error:
                 flags.append(
                     {
@@ -54,13 +77,15 @@ class TranscriptNormalizer:
                 )
 
         flags.extend(
-            self._review_flags(
+            flag
+            for flag in self._review_flags(
                 raw_text,
                 language=normalized_language,
                 start_ms=start_ms,
                 end_ms=end_ms,
-                glossary=glossary or [],
+                glossary=glossary,
             )
+            if flag["original_text"] not in accepted_aliases
         )
         result = {
             "raw_text": raw_text,
@@ -84,7 +109,7 @@ class TranscriptNormalizer:
     ) -> list[dict]:
         flags = []
         for entry in glossary:
-            if not isinstance(entry, dict):
+            if not isinstance(entry, dict) or entry.get("accepted"):
                 continue
             term = str(entry.get("term") or "").strip()
             aliases = [str(alias).strip() for alias in entry.get("aliases", []) if str(alias).strip()]

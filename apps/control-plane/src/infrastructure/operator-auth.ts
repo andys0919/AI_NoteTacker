@@ -23,7 +23,7 @@ export class SupabaseOperatorAuth implements OperatorAuth {
   private readonly jwks;
 
   constructor(
-    private readonly supabaseUrl: string,
+    supabaseUrl: string,
     private readonly publishableKey: string,
     private readonly fetchImpl: typeof fetch = fetch
   ) {

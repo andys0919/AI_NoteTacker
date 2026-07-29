@@ -24,23 +24,12 @@ services:
       WHISPER_MODEL: tiny
       WHISPER_DEVICE: cuda
       WHISPER_COMPUTE_TYPE: float16
-      SUMMARY_ENABLED: "true"
-      SUMMARY_REASONING_EFFORT: medium
-      CODEX_CLI_PATH: codex
-      CODEX_HOME: /codex-home
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
-    volumes:
-      - ${CODEX_HOME}:/codex-home
 
   summary-worker:
     environment:
-      SUMMARY_ENABLED: "true"
-      SUMMARY_REASONING_EFFORT: medium
+      SUMMARY_REASONING_EFFORT: max
       CODEX_CLI_PATH: codex
       CODEX_HOME: /codex-home
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - ${CODEX_HOME}:/codex-home
 
