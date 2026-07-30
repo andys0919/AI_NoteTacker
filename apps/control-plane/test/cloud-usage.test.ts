@@ -8,21 +8,35 @@ import {
   calculateRemainingCloudQuotaUsd,
   estimateCloudReservationUsd,
   estimateAzureTranscriptionReservationCostUsd,
+  resolveCloudUsageEntryCost,
   roundUsd,
   sumActualConsumedUsd,
   sumReservedUsd
 } from '../src/domain/cloud-usage.js';
 
 describe('cloud usage helpers', () => {
-  it('marks an unknown Azure Responses model as unpriced', () => {
+  it('keeps Luna settlement unpriced when Azure omits billed cache-write tokens', () => {
     expect(
       calculateAzureResponsesCost({
         model: 'gpt-5.6-luna',
         pricingVersion: 'v1',
-        inputTokens: 1_000,
-        outputTokens: 500
+        inputTokens: 57_081,
+        outputTokens: 31_984
       })
     ).toEqual({ costUsd: null, pricingStatus: 'unpriced' });
+  });
+
+  it('prices Luna exactly when every billed cache token category is available', () => {
+    expect(
+      calculateAzureResponsesCost({
+        model: 'gpt-5.6-luna',
+        pricingVersion: 'v1',
+        inputTokens: 1_000_000,
+        cachedInputTokens: 250_000,
+        cacheWriteTokens: 250_000,
+        outputTokens: 1_000_000
+      })
+    ).toEqual({ costUsd: 6.8375, pricingStatus: 'priced' });
   });
 
   it('marks audio-duration-only transcription actual usage as unpriced', () => {
@@ -30,6 +44,67 @@ describe('cloud usage helpers', () => {
       costUsd: null,
       pricingStatus: 'unpriced'
     });
+  });
+
+  it('prices MAI Transcribe 1.5 from the official Azure Speech hourly meter', () => {
+    expect(
+      calculateAzureTranscriptionActualCost({
+        provider: 'azure-speech-mai-transcribe-1.5',
+        model: 'mai-transcribe-1.5',
+        pricingVersion: 'v1',
+        audioMs: 5_616_442
+      })
+    ).toEqual({ costUsd: 0.561644, pricingStatus: 'priced' });
+  });
+
+  it('reprices historical MAI usage stored with the superseded S1 rate', () => {
+    expect(
+      resolveCloudUsageEntryCost({
+        id: 'usage_historical_mai',
+        jobId: 'job_1',
+        submitterId: 'user_1',
+        quotaDayKey: '2026-07-30',
+        entryType: 'actual',
+        stage: 'transcription',
+        provider: 'azure-speech-mai-transcribe-1.5',
+        model: 'mai-transcribe-1.5',
+        pricingVersion: 'v1',
+        usageQuantity: 5_616_442,
+        usageUnit: 'audio-ms',
+        pricingStatus: 'priced',
+        costUsd: 1.560123,
+        detail: { audioMs: 5_616_442 },
+        createdAt: '2026-07-30T09:33:17.000Z'
+      })
+    ).toEqual({ knownCostUsd: 0.561644, hasUnpricedUsage: false });
+  });
+
+  it('shows the metered Luna lower bound when one punctuation request is unmetered', () => {
+    expect(
+      resolveCloudUsageEntryCost({
+        id: 'usage_partial_punctuation',
+        jobId: 'job_1',
+        submitterId: 'user_1',
+        quotaDayKey: '2026-07-30',
+        entryType: 'actual',
+        stage: 'punctuation',
+        provider: 'azure-openai',
+        model: 'gpt-5.6-luna',
+        pricingVersion: 'v1',
+        usageQuantity: 717_022,
+        usageUnit: 'tokens',
+        pricingStatus: 'unpriced',
+        costUsd: null,
+        detail: {
+          inputTokens: 51_414,
+          cachedInputTokens: 0,
+          outputTokens: 665_608,
+          totalTokens: 717_022,
+          unmeteredRequestCount: 1
+        },
+        createdAt: '2026-07-30T01:30:00.000Z'
+      })
+    ).toEqual({ knownCostUsd: 4.045062, hasUnpricedUsage: true });
   });
 
   it('rejects a price row that lacks authoritative meter provenance', () => {
@@ -110,6 +185,7 @@ describe('cloud usage helpers', () => {
     ['non-finite input rate', { inputUsdPerMillionTokens: Number.POSITIVE_INFINITY }],
     ['NaN cached-input rate', { cachedInputUsdPerMillionTokens: Number.NaN }],
     ['negative cached-input rate', { cachedInputUsdPerMillionTokens: -1 }],
+    ['negative cache-write rate', { cacheWriteUsdPerMillionTokens: -1 }],
     ['non-finite output rate', { outputUsdPerMillionTokens: Number.NEGATIVE_INFINITY }],
     ['negative output rate', { outputUsdPerMillionTokens: -1 }]
   ])('fails closed when pricing has %s', (_description, invalidFields) => {

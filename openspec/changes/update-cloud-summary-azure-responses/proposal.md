@@ -10,9 +10,10 @@ and usage contract.
 The first implementation proved the request path, but the change also crosses
 cloud accounting and job lifecycle boundaries. Punctuation is a distinct
 provider call and must not be hidden inside transcription usage. Responses
-usage must remain faithful to provider metadata, and a model without an
-official price must remain visibly unpriced instead of inheriting a price from
-another model.
+usage must remain faithful to provider metadata. An exact published model rate
+may be applied only after its deployment identity is verified; any remainder
+whose provider meter is missing must stay visibly unpriced instead of
+inheriting or guessing a price.
 
 ## What Changes
 - **BREAKING**: require an explicit Responses endpoint and key for these calls.
@@ -42,9 +43,12 @@ another model.
   its job has an invalid quota-day or missing/blank pricing-version identity.
 - Bound Azure transcription and transcription/summary worker-to-control-plane
   blocking network operations with explicit configurable socket-operation timeouts.
-- When no official `gpt-5.6-luna` price is configured, store `costUsd: null` and
-  `pricingStatus: unpriced`; do not fall back to another model's price or label
-  the result as actual USD cost.
+- Configure the now-published `gpt-5.6-luna` Global Standard rates for the
+  verified `2026-07-09` deployment, and configure MAI Transcribe 1.5 against
+  the verified Azure Speech Fast Transcription hourly meter.
+- Resolve historical unpriced rows from their preserved meter details at read
+  time without mutating the immutable usage ledger. Preserve an unpriced flag
+  when only a metered lower bound is known.
 - Fail closed on malformed pricing rows, including blank deployment/pricing
   identity, invalid provenance dates, ambiguous SKU/tier identity, and
   non-finite or negative rates.

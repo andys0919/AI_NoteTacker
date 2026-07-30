@@ -8,7 +8,7 @@ import {
   CloudUsageLedgerConflictError,
   isSameCloudUsageLedgerPayload
 } from '../domain/cloud-usage-ledger-repository.js';
-import { roundUsd } from '../domain/cloud-usage.js';
+import { summarizeActualCostsByJobIds } from '../domain/cloud-usage.js';
 
 const now = (): string => new Date().toISOString();
 const nextId = (): string => `usage_${crypto.randomUUID().replace(/-/g, '')}`;
@@ -67,67 +67,6 @@ export class InMemoryCloudUsageLedgerRepository implements CloudUsageLedgerRepos
   async summarizeActualCostByJobIds(
     jobIds: string[]
   ): Promise<Record<string, CloudUsageCostSummary>> {
-    const summaries: Record<string, CloudUsageCostSummary> = {};
-    const jobIdSet = new Set(jobIds);
-
-    for (const entry of this.entries) {
-      if (entry.entryType !== 'actual' || !jobIdSet.has(entry.jobId)) {
-        continue;
-      }
-
-      const current = summaries[entry.jobId] ?? {
-        actualTranscriptionCostUsd: 0,
-        hasUnpricedTranscriptionUsage: false,
-        actualPunctuationCostUsd: 0,
-        hasUnpricedPunctuationUsage: false,
-        actualSummaryCostUsd: 0,
-        hasUnpricedSummaryUsage: false,
-        actualCloudCostUsd: 0,
-        hasUnpricedUsage: false
-      };
-
-      if (entry.stage === 'transcription') {
-        if (entry.pricingStatus === 'priced') {
-          current.actualTranscriptionCostUsd = roundUsd(
-            current.actualTranscriptionCostUsd + entry.costUsd
-          );
-        } else {
-          current.hasUnpricedTranscriptionUsage = true;
-        }
-      }
-
-      if (entry.stage === 'punctuation') {
-        if (entry.pricingStatus === 'priced') {
-          current.actualPunctuationCostUsd = roundUsd(
-            current.actualPunctuationCostUsd + entry.costUsd
-          );
-        } else {
-          current.hasUnpricedPunctuationUsage = true;
-        }
-      }
-
-      if (entry.stage === 'summary') {
-        if (entry.pricingStatus === 'priced') {
-          current.actualSummaryCostUsd = roundUsd(current.actualSummaryCostUsd + entry.costUsd);
-        } else {
-          current.hasUnpricedSummaryUsage = true;
-        }
-      }
-
-      current.hasUnpricedUsage =
-        current.hasUnpricedTranscriptionUsage ||
-        current.hasUnpricedPunctuationUsage ||
-        current.hasUnpricedSummaryUsage;
-      current.actualCloudCostUsd = current.hasUnpricedUsage
-        ? null
-        : roundUsd(
-            current.actualTranscriptionCostUsd +
-              current.actualPunctuationCostUsd +
-              current.actualSummaryCostUsd
-          );
-      summaries[entry.jobId] = current;
-    }
-
-    return summaries;
+    return summarizeActualCostsByJobIds(this.entries, jobIds);
   }
 }

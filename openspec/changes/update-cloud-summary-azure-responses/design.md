@@ -184,11 +184,32 @@ effective date, and meter source. When that authoritative entry matches the
 event's model and pricing version, the attempt receives `pricingStatus=priced`
 and a calculated `costUsd`. Otherwise it receives `pricingStatus=unpriced` and
 `costUsd=null`. An estimated reservation remains distinguishable from actual
-cost and cannot be used as a fallback price. The current Responses catalog is
-empty because no such Luna identity/rate evidence is available. A punctuation
-aggregate with any unmetered request also remains unpriced even if a future
-token rate exists, because its metered token subtotal is not the complete billed
-quantity.
+cost and cannot be used as a fallback price.
+
+As of 2026-07-30, the deployed `gpt-5.6-luna` identity was verified through the
+Azure resource as model version `2026-07-09`, SKU `GlobalStandard`. Microsoft
+published its short-context Global Standard rates effective 2026-07-01 as
+USD 1.00/M input, USD 0.10/M cached input, USD 1.25/M cache writes, and
+USD 6.00/M output. The live Azure Consumption record for the Southeast Asia
+MAI Transcribe 1.5 resource identifies `Azure Speech - Fast Transcription`;
+its exact regional meter is USD 0.36/audio hour. These identities activate the
+catalog for exact matching rows.
+
+The live Azure Responses probe on 2026-07-30 returned input, cached-input,
+output, reasoning-output, and total tokens but no cache-write token field.
+Microsoft's prompt-caching documentation also states that GPT-5.6 cache writes
+are billed while its usage response does not report them separately. Therefore
+Luna settlement remains incomplete unless that meter becomes available. Reports
+may show input/cached-input/output pricing as a lower bound, but they retain the
+unpriced flag for the missing cache-write quantity.
+
+Historical ledger rows remain immutable. Reporting may re-resolve an unpriced
+row from its preserved exact model, pricing version, duration/token meter, and
+the current authoritative catalog. A punctuation aggregate with any unmetered
+request exposes the priced metered subtotal as a lower bound while keeping the
+unpriced flag; it never presents that subtotal as the complete attempt cost.
+Reporting also re-resolves historical MAI rows stored with the superseded S1
+rate from their preserved audio duration, without mutating the ledger.
 
 Mechanical catalog validation rejects blank deployment model or pricing
 version, non-USD currency, malformed effective dates, missing provenance,
@@ -204,6 +225,12 @@ their duration- or fixed-rate values as actual Azure cost. The migration keeps
 those rows for audit but sets `pricingStatus=unpriced` and `costUsd=null` rather
 than guessing which historical values were authoritative. It does not fabricate
 missing token or lease metadata.
+
+Rows that do preserve an exact model, pricing version, and complete token or
+audio-duration meter can be priced in the reporting view after a matching
+authoritative catalog row becomes available. This late pricing does not update
+the immutable settlement row. Rows with missing provider meter data remain
+unpriced, and partial metered subtotals remain explicit lower bounds.
 
 Issued transcription/summary token histories are added as internal persistence
 fields. New claims append their token atomically with the assignment. Schema

@@ -35,6 +35,8 @@
 - [x] 5.3 Exclude unpriced records from actual USD totals while exposing their attempt count and token volume separately.
 - [x] 5.4 Migrate legacy ledger values without authoritative meter identity to unpriced/null without fabricating token data.
 - [x] 5.5 Reject pricing rows with blank deployment/pricing identity, malformed dates, ambiguous SKU/tier identity, missing provenance, or non-finite/negative rates.
+- [x] 5.6 Add the verified Luna Global Standard and MAI Transcribe Fast Transcription catalog rows.
+- [x] 5.7 Reprice fully metered historical rows in reporting without mutating the immutable ledger, and expose partial metered costs only as lower bounds.
 
 ## 6. Verification and deployment
 - [x] 6.1 Run the pre-hardening Responses unit baseline (7 targeted worker tests pass on 2026-07-15).

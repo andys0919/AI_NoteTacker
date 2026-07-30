@@ -7,8 +7,9 @@ This project lets an operator:
 - upload audio or video files for Whisper transcription
 - let an admin switch future transcription jobs among MAI-Transcribe 1.5, Qwen,
   local Whisper, and Azure OpenAI `gpt-4o-transcribe`
-- let an admin manage cloud quota, AI routing defaults, and per-user cloud quota overrides
-- read full transcripts and Codex or Azure OpenAI summaries in the dashboard
+- let an admin manage AI routing defaults and review cloud usage
+- read full transcripts and Codex or Azure OpenAI summaries in separate,
+  responsive dashboard tabs
 - export completed jobs as Markdown, TXT, SRT, or JSON
 - stop a live meeting bot or interrupt an upload/transcription job
 
@@ -27,14 +28,17 @@ This project lets an operator:
   - `local-codex`
   - `azure-openai`
 - Submission-time AI policy snapshots for future jobs
-- Per-user daily cloud quota reservation and remaining-budget display
+- Cloud reservation estimates and daily usage reporting without submission blocking
 - Cloud usage ledger and admin audit history for governance changes
-- Codex or Azure OpenAI summary generation with structured sections:
+- Codex or Azure OpenAI summary generation with content-derived topics,
+  explicit confirmed/mixed/open status, and structured sections:
   - Action Items
   - Decisions
   - Risks
   - Open Questions
 - Archive search, history timeline, and export
+- On-demand long-form reader with summary navigation and separate transcript
+  timestamp and wording fields
 - Email notifications for completed or failed authenticated jobs when SMTP is configured
 
 ## Prerequisites
@@ -45,7 +49,7 @@ This project lets an operator:
 - Optional:
   - Supabase project for backend operator bearer-token verification
   - SMTP provider for notification emails
-  - Azure OpenAI deployments if you want hosted transcription, punctuation restoration, or summaries
+  - Azure OpenAI deployments if you want hosted transcription or summaries
 
 ## Configure
 
@@ -180,36 +184,37 @@ Admins can now manage:
 - default transcription provider and model
 - default summary provider and model
 - pricing version
-- default daily cloud quota
-- per-user daily cloud quota overrides
 - local/cloud transcription concurrency pools
 - recent governance audit history
 
 Operators can now see:
-- their remaining daily cloud quota
-- current reserved cloud quota
+- their informational daily cloud budget status
+- current estimated cloud reservation
 - current consumed cloud cost for the day
 
 Important:
-- cloud quota applies only to cloud-routed stages
+- daily cloud budget values are informational and never reject a submission
 - local execution does not consume cloud quota
 - jobs snapshot their AI routing policy at submission time, so later admin changes affect only later jobs
 - usage whose model/version has no authoritative pricing-catalog entry is shown as
   `unpriced`, not `$0`; the known priced subtotal remains a lower bound until a rate is supplied
 
-As of 2026-07-15 Azure publishes no public `gpt-5.6-luna` meter. Azure also
-bills `gpt-4o-transcribe` through separate audio-input, text-input, and
-text-output token meters, while the current transcription callback retains only
-audio duration. Both stages therefore keep their usage but report actual USD as
-unpriced/null. Duration-based values are reservation estimates only; they are
-not Azure billing evidence.
+As of 2026-07-30, pricing catalog `v1` includes the verified
+`gpt-5.6-luna` Global Standard rates and the Azure Speech Fast Transcription rate
+used by `mai-transcribe-1.5`. Azure does not return Luna cache-write token
+quantity in the Responses usage payload, so the UI shows the calculable
+input/cached-input/output amount as `（含未定價用量）` instead of hiding the
+known amount. Historical `gpt-4o-transcribe-diarize` rows that preserve only
+audio duration also remain unpriced because that model is billed through
+separate token meters.
 
 ### Read Results
 
 Completed jobs can show:
 - Full Transcript
 - Codex or Azure OpenAI Summary
-- structured summary sections
+- topic-based meeting notes with confirmed, mixed, or open status
+- only the non-empty follow-up, decision, risk, and open-question sections
 - Job Timeline
 - export buttons
 
@@ -233,10 +238,7 @@ Important defaults from [`.env.example`](.env.example):
 - `SUMMARY_MODEL=gpt-5.6-luna`
 - `SUMMARY_REASONING_EFFORT=max`
 - `SUMMARY_ENABLED=true` (control-plane summary-provider readiness)
-- `TRANSCRIPT_PUNCTUATION_ENABLED=true`
 - `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS=300`
-- `TRANSCRIPT_POLISHING_REASONING_EFFORT=max`
-- `AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS=300`
 - `MAX_CONCURRENT_TRANSCRIPTION_JOBS=1`
 - `MAX_MEETING_JOB_BACKLOG=2`
 - `MAX_TRANSCRIPTION_JOB_BACKLOG=10`
@@ -277,38 +279,42 @@ MAI processes up to three independent 30-second `verbatim` chunks concurrently,
 restores timestamp order, and sends no phrase list, forced locale, PLAUD text,
 or stored comparison transcript. HTTP 400 receives one identical retry;
 transient DNS, timeout, reset, or broken-connection failures use bounded
-2/10/30-second identical-request retries.
+2/10/30-second identical-request retries. MAI provider wording is preserved as
+`rawText`; when its locale is Chinese, only `displayText` is deterministically
+converted to Traditional Chinese and the segment language becomes `zh-Hant`.
+The transcription worker does not call Luna or speaker diarization.
 
 The bundled Qwen service is an optional Compose profile and does not start or
 block the MAI production path. To use it explicitly, start with
 `--profile qwen` and configure `QWEN_ASR_ENDPOINT=http://qwen3-asr:8000`.
 
-Optional `gpt-4o-transcribe-diarize` speaker evidence never replaces primary
-text. Its HTTP 400 requests receive one identical retry; transient DNS, timeout,
-reset, or broken-connection failures use the same bounded 2/10/30-second
-identical-request retries. A final failure leaves only that speaker chunk
-unattributed.
+Speaker classification is disabled in the transcription worker.
+Historical speaker metadata remains schema-compatible, but the reader, summary
+prompt, admin transcript, and text exports do not present it.
 
-Azure hosted summary and punctuation restoration require explicit Responses API
-configuration on the control-plane, transcription worker (punctuation), and
-summary worker (summaries):
+The generic summary prompt is coverage-first: it reviews the beginning, middle,
+and final third, groups repeated discussion into content-derived topics, keeps
+distinct process/requirement/exception/dependency/scope/schedule outcomes
+separate, and classifies only explicit actions, decisions, risks, and open
+questions. It contains no PLAUD answer or meeting-specific topic list.
+
+Azure hosted summary requires explicit Responses API configuration on the
+control-plane and summary worker:
 
 - `AZURE_OPENAI_SUMMARY_ENDPOINT` — HTTPS URL whose normalized path is exactly `/openai/v1/responses`
 - `AZURE_OPENAI_SUMMARY_API_KEY`
 - `SUMMARY_MODEL`
 - `SUMMARY_REASONING_EFFORT=max`
-- optional `AZURE_OPENAI_PUNCTUATION_MODEL` (blank reuses `SUMMARY_MODEL`)
-- `TRANSCRIPT_POLISHING_REASONING_EFFORT=max`
 - optional `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS` (default `300`)
-- optional `AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS` (default `300`)
 
 Python transcription/summary worker GET/POST/heartbeat calls use
 `CONTROL_PLANE_TIMEOUT_SECONDS` (default `30`).
 
-The summary endpoint/key are not inferred from the transcription endpoint/key.
-Both Responses callers send `store: false` to disable Responses
-application-state/message-history storage and require finite positive
-socket-operation timeouts. Azure transcription uploads and Python
+The summary endpoint/key are not inferred from the transcription endpoint/key
+and are not exposed to the transcription worker. The summary caller sends
+`store: false` to disable Responses application-state/message-history storage
+and requires a finite positive socket-operation timeout. Azure transcription
+uploads and Python
 transcription/summary worker-to-control-plane calls have the same finite-timeout
 rule. These settings bound blocking socket
 operations rather than the entire workflow. `store: false` is not by itself a
@@ -372,7 +378,7 @@ For Azure OpenAI, also check:
 - `AZURE_OPENAI_SUMMARY_ENDPOINT` ends at `/openai/v1/responses`
 - `AZURE_OPENAI_SUMMARY_API_KEY` is set independently of the transcription key
 - `SUMMARY_MODEL` names the Azure deployment
-- the control-plane, transcription-worker, and summary-worker were recreated after env changes
+- the control-plane and summary-worker were recreated after summary env changes
 
 ### Chinese upload file names look wrong
 

@@ -206,7 +206,14 @@ describe('ensureCloudUsageLedgerSchema', () => {
       usageQuantity: 1_000,
       usageUnit: 'tokens',
       pricingStatus: 'unpriced',
-      costUsd: null
+      costUsd: null,
+      detail: {
+        inputTokens: 1_000,
+        cachedInputTokens: 0,
+        outputTokens: 500,
+        totalTokens: 1_500,
+        unmeteredRequestCount: 1
+      }
     });
     await repository.append(
       pricedUsage({
@@ -224,7 +231,7 @@ describe('ensureCloudUsageLedgerSchema', () => {
       'job-1': {
         actualTranscriptionCostUsd: 0.03,
         hasUnpricedTranscriptionUsage: false,
-        actualPunctuationCostUsd: 0,
+        actualPunctuationCostUsd: 0.004,
         hasUnpricedPunctuationUsage: true,
         actualSummaryCostUsd: 0.02,
         hasUnpricedSummaryUsage: false,

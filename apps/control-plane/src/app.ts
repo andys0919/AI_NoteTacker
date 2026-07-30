@@ -15,6 +15,7 @@ import {
   calculateRemainingCloudQuotaUsd,
   estimateCloudReservationUsd,
   isValidIsoDate,
+  resolveCloudUsageEntryCost,
   roundUsd,
   sumActualConsumedUsd,
   sumReservedUsd
@@ -1500,7 +1501,17 @@ export const createApp = (
     ) {
       const audioMs =
         event.usage?.audioMs ?? job.progressTotalMs ?? job.progressProcessedMs ?? 0;
-      const pricing = calculateAzureTranscriptionActualCost({ audioMs });
+      const model =
+        job.transcriptionModel ??
+        (event.type === 'transcript-artifact-stored'
+          ? event.transcriptArtifact.language
+          : 'unknown');
+      const pricing = calculateAzureTranscriptionActualCost({
+        provider: job.transcriptionProvider,
+        model,
+        pricingVersion: job.pricingVersion,
+        audioMs
+      });
 
       await cloudUsageLedgerRepository.append({
         entryKey: `actual:${job.id}:transcription:${event.leaseToken!}`,
@@ -1510,11 +1521,7 @@ export const createApp = (
         entryType: 'actual',
         stage: 'transcription',
         provider: job.transcriptionProvider,
-        model:
-          job.transcriptionModel ??
-          (event.type === 'transcript-artifact-stored'
-            ? event.transcriptArtifact.language
-            : 'unknown'),
+        model,
         pricingVersion: job.pricingVersion,
         usageQuantity: audioMs,
         usageUnit: 'audio-ms',
@@ -2231,17 +2238,24 @@ export const createApp = (
           }),
           entries: entries
             .filter((entry) => entry.submitterId === submitterId)
-            .map((entry) => ({
-              stage: entry.stage,
-              provider: entry.provider,
-              model: entry.model,
-              entryType: entry.entryType,
-              pricingStatus: entry.pricingStatus,
-              costUsd: entry.costUsd,
-              usageQuantity: entry.usageQuantity,
-              usageUnit: entry.usageUnit,
-              createdAt: entry.createdAt
-            }))
+            .map((entry) => {
+              const resolved = resolveCloudUsageEntryCost(entry);
+
+              return {
+                stage: entry.stage,
+                provider: entry.provider,
+                model: entry.model,
+                entryType: entry.entryType,
+                pricingStatus: resolved.hasUnpricedUsage ? 'unpriced' : 'priced',
+                costUsd:
+                  resolved.knownCostUsd > 0 || !resolved.hasUnpricedUsage
+                    ? resolved.knownCostUsd
+                    : null,
+                usageQuantity: entry.usageQuantity,
+                usageUnit: entry.usageUnit,
+                createdAt: entry.createdAt
+              };
+            })
         };
       })
     );
@@ -2259,7 +2273,9 @@ export const createApp = (
           : roundUsd(rows.reduce((total, row) => total + row.pricedConsumedUsd, 0)),
         hasUnpricedUsage: rows.some((row) => row.hasUnpricedUsage),
         unpricedEntryCount: entries.filter(
-          (entry) => entry.entryType === 'actual' && entry.pricingStatus === 'unpriced'
+          (entry) =>
+            entry.entryType === 'actual' &&
+            resolveCloudUsageEntryCost(entry).hasUnpricedUsage
         ).length
       },
       rows
@@ -2289,6 +2305,7 @@ export const createApp = (
 
     const entries = ledgerEntries.map((entry) => {
       const detail = entry.detail ?? {};
+      const resolved = resolveCloudUsageEntryCost(entry);
       const inputTokens =
         readFiniteNumber(detail.promptTokens) || readFiniteNumber(detail.inputTokens);
       const cachedInputTokens =
@@ -2316,14 +2333,17 @@ export const createApp = (
         provider: entry.provider,
         model: entry.model,
         entryType: entry.entryType,
-        pricingStatus: entry.pricingStatus,
+        pricingStatus: resolved.hasUnpricedUsage ? 'unpriced' : 'priced',
         inputTokens,
         cachedInputTokens,
         outputTokens,
         reasoningOutputTokens,
         totalTokens,
         audioMs,
-        costUsd: entry.costUsd === null ? null : roundUsd(entry.costUsd)
+        costUsd:
+          resolved.knownCostUsd > 0 || !resolved.hasUnpricedUsage
+            ? resolved.knownCostUsd
+            : null
       };
     });
 
@@ -2485,6 +2505,7 @@ export const createApp = (
       submitterEmail: user?.email,
       ledgerEntries: ledgerEntries.map((entry) => {
         const detail = entry.detail ?? {};
+        const resolved = resolveCloudUsageEntryCost(entry);
 
         return {
           stage: entry.stage,
@@ -2493,8 +2514,11 @@ export const createApp = (
           model: entry.model,
           pricingVersion: entry.pricingVersion,
           usageUnit: entry.usageUnit,
-          pricingStatus: entry.pricingStatus,
-          costUsd: entry.costUsd === null ? null : roundUsd(entry.costUsd),
+          pricingStatus: resolved.hasUnpricedUsage ? 'unpriced' : 'priced',
+          costUsd:
+            resolved.knownCostUsd > 0 || !resolved.hasUnpricedUsage
+              ? resolved.knownCostUsd
+              : null,
           inputTokens:
             readFiniteNumber(detail.promptTokens) || readFiniteNumber(detail.inputTokens),
           cachedInputTokens:

@@ -10,7 +10,7 @@ import {
   CloudUsageLedgerConflictError,
   isSameCloudUsageLedgerPayload
 } from '../../domain/cloud-usage-ledger-repository.js';
-import { roundUsd } from '../../domain/cloud-usage.js';
+import { summarizeActualCostsByJobIds } from '../../domain/cloud-usage.js';
 
 type Queryable = {
   query: <TRow extends Record<string, unknown>>(
@@ -270,139 +270,16 @@ export class PostgresCloudUsageLedgerRepository implements CloudUsageLedgerRepos
     }
 
     const placeholders = jobIds.map((_, index) => `$${index + 1}`).join(', ');
-    const result = await this.database.query<{
-      job_id: string;
-      actual_transcription_cost_usd: number | string;
-      unpriced_transcription_count: number | string;
-      actual_punctuation_cost_usd: number | string;
-      unpriced_punctuation_count: number | string;
-      actual_summary_cost_usd: number | string;
-      unpriced_summary_count: number | string;
-    }>(
+    const result = await this.database.query<LedgerRow>(
       `
-        SELECT
-          job_id,
-          COALESCE(
-            SUM(
-              CASE
-                WHEN entry_type = 'actual'
-                  AND stage = 'transcription'
-                  AND pricing_status = 'priced'
-                THEN cost_usd
-                ELSE 0
-              END
-            ),
-            0
-          ) AS actual_transcription_cost_usd,
-          COALESCE(
-            SUM(
-              CASE
-                WHEN entry_type = 'actual'
-                  AND stage = 'transcription'
-                  AND (pricing_status <> 'priced' OR cost_usd IS NULL)
-                THEN 1
-                ELSE 0
-              END
-            ),
-            0
-          ) AS unpriced_transcription_count,
-          COALESCE(
-            SUM(
-              CASE
-                WHEN entry_type = 'actual'
-                  AND stage = 'punctuation'
-                  AND pricing_status = 'priced'
-                THEN cost_usd
-                ELSE 0
-              END
-            ),
-            0
-          ) AS actual_punctuation_cost_usd,
-          COALESCE(
-            SUM(
-              CASE
-                WHEN entry_type = 'actual'
-                  AND stage = 'punctuation'
-                  AND (pricing_status <> 'priced' OR cost_usd IS NULL)
-                THEN 1
-                ELSE 0
-              END
-            ),
-            0
-          ) AS unpriced_punctuation_count,
-          COALESCE(
-            SUM(
-              CASE
-                WHEN entry_type = 'actual'
-                  AND stage = 'summary'
-                  AND pricing_status = 'priced'
-                THEN cost_usd
-                ELSE 0
-              END
-            ),
-            0
-          ) AS actual_summary_cost_usd,
-          COALESCE(
-            SUM(
-              CASE
-                WHEN entry_type = 'actual'
-                  AND stage = 'summary'
-                  AND (pricing_status <> 'priced' OR cost_usd IS NULL)
-                THEN 1
-                ELSE 0
-              END
-            ),
-            0
-          ) AS unpriced_summary_count
+        SELECT *
         FROM cloud_usage_ledger
         WHERE job_id IN (${placeholders})
-        GROUP BY job_id
+        ORDER BY created_at ASC
       `,
       jobIds
     );
 
-    return Object.fromEntries(
-      result.rows.map((row) => {
-        const actualTranscriptionCostUsd =
-          typeof row.actual_transcription_cost_usd === 'number'
-            ? row.actual_transcription_cost_usd
-            : Number(row.actual_transcription_cost_usd);
-        const actualSummaryCostUsd =
-          typeof row.actual_summary_cost_usd === 'number'
-            ? row.actual_summary_cost_usd
-            : Number(row.actual_summary_cost_usd);
-        const actualPunctuationCostUsd =
-          typeof row.actual_punctuation_cost_usd === 'number'
-            ? row.actual_punctuation_cost_usd
-            : Number(row.actual_punctuation_cost_usd);
-        const hasUnpricedTranscriptionUsage = Number(row.unpriced_transcription_count) > 0;
-        const hasUnpricedPunctuationUsage = Number(row.unpriced_punctuation_count) > 0;
-        const hasUnpricedSummaryUsage = Number(row.unpriced_summary_count) > 0;
-        const hasUnpricedUsage =
-          hasUnpricedTranscriptionUsage ||
-          hasUnpricedPunctuationUsage ||
-          hasUnpricedSummaryUsage;
-
-        return [
-          row.job_id,
-          {
-            actualTranscriptionCostUsd: roundUsd(actualTranscriptionCostUsd),
-            hasUnpricedTranscriptionUsage,
-            actualPunctuationCostUsd: roundUsd(actualPunctuationCostUsd),
-            hasUnpricedPunctuationUsage,
-            actualSummaryCostUsd: roundUsd(actualSummaryCostUsd),
-            hasUnpricedSummaryUsage,
-            actualCloudCostUsd: hasUnpricedUsage
-              ? null
-              : roundUsd(
-                  actualTranscriptionCostUsd +
-                    actualPunctuationCostUsd +
-                    actualSummaryCostUsd
-                ),
-            hasUnpricedUsage
-          }
-        ];
-      })
-    );
+    return summarizeActualCostsByJobIds(result.rows.map(mapRow), jobIds);
   }
 }

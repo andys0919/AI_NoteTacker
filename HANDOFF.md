@@ -1,24 +1,31 @@
-# Handoff — MAI 主轉錄、Luna max 潤稿／摘要、speaker evidence 與誠實計價
+# Handoff — MAI 主轉錄、正體中文顯示、Luna max 摘要與誠實計價
 
-_更新：2026-07-29（Asia/Taipei）_
+_更新：2026-07-30（Asia/Taipei）_
 
 ## 目標與已核准架構
 
-使用者已核准把 Azure Speech `mai-transcribe-1.5` 改為新工作的主轉錄，
-保留 Azure `gpt-4o-transcribe-diarize`作獨立 speaker evidence；Qwen、Azure
-OpenAI transcription 與 Whisper 保留為 operator 可選 fallback。逐字稿潤稿與
-摘要使用同一組明確設定的 Azure Responses endpoint/key，但必須是兩次獨立的
-`gpt-5.6-luna`、`reasoning.effort=max` request，不得共用 response state。
+使用者已核准把 Azure Speech `mai-transcribe-1.5` 改為新工作的主轉錄，並於
+2026-07-30 決定正式系統不再做 Speaker 分類；Qwen、Azure OpenAI
+transcription 與 Whisper 保留為 operator 可選 fallback。轉寫 worker 不再
+取得或使用 Luna 設定；Luna 只由摘要 worker 以
+`gpt-5.6-luna`、`reasoning.effort=max` 呼叫。
 
 處理鏈如下：
 
 1. 主轉錄：`mai-transcribe-1.5`，Azure Speech LLM API、固定 30 秒切片、
    最多三段並行、依時間還原順序、`transcribeStyle=verbatim`，不帶 phrase
    list、forced locale 或比對答案。
-2. Speaker evidence：`gpt-4o-transcribe-diarize`與 MAI 並行，只附加通過對齊閘門的匿名 speaker，不改寫 MAI raw/display text。
-3. 逐字稿潤稿：獨立 `gpt-5.6-luna` Responses request、`reasoning.effort=max`；允許高信心 ASR 同音字／術語／標點修正，數字或內容漂移閘門失敗時保留 raw-derived display text，`rawText` 永不覆寫。
-4. 摘要：另一個獨立 `gpt-5.6-luna` Responses request、`reasoning.effort=max`；輸出、狀態或 usage 不完整時整次失敗，不儲存半成品。
-5. Cloud usage：`transcription`、`punctuation`、`summary` 是三個獨立 stage；沒有官方可驗證費率時以 `pricingStatus: unpriced`、`costUsd: null` 表示，絕不拿其他模型費率或估算值冒充實際成本。
+2. 逐字稿：MAI provider wording 原樣保存為 `rawText`；MAI locale 為中文時，
+   只以既有 OpenCC `s2twp` 將 `displayText` 轉成正體中文並標記 `zh-Hant`，
+   不呼叫 Luna 潤稿。
+3. Speaker 分類：轉寫 worker 不接 diarization 設定，也不發出
+   `gpt-4o-transcribe-diarize` request；歷史 metadata 保留相容，但不進摘要
+   prompt、閱讀畫面、管理台逐字稿或文字匯出。
+4. 摘要：獨立 `gpt-5.6-luna` Responses request、
+   `reasoning.effort=max`；輸出、狀態或 usage 不完整時整次失敗，不儲存半成品。
+5. Cloud usage：新工作只有 `transcription` 與 `summary` provider stage；
+   歷史 `punctuation`／diarization ledger 仍保留相容。沒有官方可驗證費率時以
+   `pricingStatus: unpriced`、`costUsd: null` 表示。
 
 Responses endpoint 只記錄形狀，不記錄真實 hostname：
 
@@ -30,11 +37,15 @@ https://<resource-host>/openai/v1/responses
 
 ### Done（本地架構／程式／文件 review 已完成）
 
-- 共用 `azure_openai_responses.py` 已承接摘要與潤稿 request/response/usage 契約。
-- Python transcription／summary workers 已加入摘要、潤稿與 Azure transcription socket-operation timeout，以及這兩個 workers 對 control-plane GET／POST／heartbeat 的 timeout；Azure 摘要嚴格要求完整六欄 schema，valid usage 即使伴隨 invalid summary 也會留在 failure callback。
+- 共用 `azure_openai_responses.py` 承接摘要 request/response/usage 契約；舊潤稿
+  caller 保留為歷史相容程式，但 canonical worker 不再建立或呼叫它。
+- Python transcription／summary workers 已加入摘要與 Azure transcription
+  socket-operation timeout，以及這兩個 workers 對 control-plane
+  GET／POST／heartbeat 的 timeout；Azure 摘要嚴格要求完整 topic-based
+  schema，valid usage 即使伴隨 invalid summary 也會留在 failure callback。
 - terminal callback 第一次傳送失敗時會精確重送一次，不會重做 provider call 或把成功改報失敗；轉錄中途失敗也保留先前成功 upload 的 audio usage。
 - control-plane 已有 `punctuation` stage、nullable pricing、lease-token entry key、immutable idempotent append、scheduler-issued token history，以及 callback 先結算 usage、再以 active-token CAS 處理 lifecycle 的實作與測試；cloud terminal callback 不再接受 missing、never-issued 或共用 `legacy` lease key。
-- pricing catalog 的 deployment model、pricing version、base model/version 與 meter source 必須非空，另須具備 SKU 或 service tier、USD、有效的 `YYYY-MM-DD` effective date，且三種 rate 都必須 finite、非負；SKU/service tier 必須恰有一個。production Luna catalog 保持空白。
+- pricing catalog 的 deployment model、pricing version、base model/version 與 meter source 必須非空，另須具備 SKU 或 service tier、USD、有效的 `YYYY-MM-DD` effective date，且所有 rate 都必須 finite、非負；SKU/service tier 必須恰有一個。production catalog 已加入驗證過的 Luna Global Standard 與 MAI Fast Transcription 費率。
 - admin API/UI 對 transcription ledger 顯示 `audioMs`／秒數，不再把它錯顯示成 0 tokens。
 - production compose override 不再把 `SUMMARY_MODEL` 硬改回舊模型；canonical production file set 仍是 base + screenapp。
 - OpenSpec change `update-cloud-summary-azure-responses` 已補 proposal、design、tasks 與三個 capability delta。
@@ -44,15 +55,41 @@ https://<resource-host>/openai/v1/responses
 - OpenSpec change `use-mai-luna-transcription-pipeline` 的程式、正式 worker
   部署、正確 HDD WAV 盲測、PLAUD 比較與 Standards／Spec 雙軸 review 均已
   完成；strict validation 通過，完整證據見該 change 的 `benchmark.md`。
+- OpenSpec change `simplify-mai-transcription-pipeline` 已取代其中的 Luna
+  逐字稿潤稿與 diarization runtime wiring；新工作只執行 MAI、確定性正體化
+  與 Luna/max 摘要。
+- completed job 內容改為按需載入的 `摘要`／`逐字稿` 分頁；摘要使用文章層級
+  與可用章節目錄，逐字稿分開顯示時間與文字，正常閱讀面不顯示 Speaker 或
+  raw-recognition evidence。歷史 flat summary 不需重新生成。
+- Luna/max 摘要 prompt 改為 coverage-first：先覆蓋前／中／後段，再以內容
+  衍生主題，並分別收錄明確行動、決議、風險與待確認事項；沒有加入 PLAUD
+  答案、HDD 主題清單或 phrase list。
 
 ### Verified（本 checkpoint 可重現）
 
 - 2026-07-29 fresh transcription-worker full suite 為 148/148；最後 diarization
   retry／cancel／usage focused file 為 32/32。
 - `npm run build:python` 與 `git diff --check` 通過。
-- `openspec validate --all --strict --no-interactive` 為 28/28。
-- canonical production Compose 的安全 boolean 檢查為 `true`：兩個 worker 都解析成 Luna、正確 Responses URL shape 與非空 credential；驗證沒有輸出 hostname 或 key。
-- 2026-07-15 查詢 Microsoft 官方 Azure OpenAI 定價頁與 Retail Prices API，沒有找到 `gpt-5.6-luna` / GPT-5.6 的公開 input、cached-input 或 output 單價。針對 Azure OpenAI GPT5 meter 的 `5.6` filter 回傳 `Count: 0`。
+- `openspec validate --all --strict --no-interactive` 為 29/29。
+- 2026-07-30 focused worker tests 27/27、control-plane tests 78/78 與
+  TypeScript build 通過；三個受影響服務已 rebuild/recreate，health 正常。
+- canonical transcription-worker 的 Compose 與 runtime
+  `diarization_configured=false`；live HDD job 仍保留 399 個歷史 speaker
+  metadata，但 658/658 個 reader segment 輸出 0 個 speaker field 與 0 個
+  matching speaker prefix。既有摘要 artifact 仍有 10 個匿名 Speaker label，
+  operator/admin 呈現與 Markdown/TXT 匯出為 0；JSON evidence export 保留原始
+  metadata。
+- 同一 live HDD 逐字稿以新 coverage-first prompt 直接驗證 Luna/max 兩次，
+  兩次都在 300 秒等 response header 時發生 read timeout，沒有 HTTP
+  response、summary payload 或 usage；因此目前沒有新內容可聲稱優於 PLAUD，
+  job 也未被改寫。
+- 2026-07-30 simplified worker 映像已 rebuild/recreate：transcription worker
+  解析為 `mai-transcribe-1.5`，不含 summary、punctuation、diarization config
+  key；容器內 `zh-CN` 樣本輸出 `language=zh-Hant`、raw 簡體保留、display
+  正體化。summary worker 解析為 `gpt-5.6-luna`／`max` 且 endpoint/key 已設定；
+  兩個 worker 均在運行，control-plane health 為 `ok`，重建時 active job 為
+  0。
+- 2026-07-30 已核對 live Azure deployment 為 `gpt-5.6-luna` model version `2026-07-09`、SKU `GlobalStandard`；Microsoft 官方公告與 Retail Prices API 均顯示短 context input USD 1.00/M、cached input USD 0.10/M、cache write USD 1.25/M、output USD 6.00/M。Southeast Asia MAI resource 的 Azure Consumption product 為 `Azure Speech - Fast Transcription`，其 exact regional meter 為 USD 0.36/hour。
 - 2026-07-29 Qwen benchmark service 曾 healthy、零 restart；同一 worker
   image 對 9 組既有 Azure 歷史錄音盲跑 171.52 分鐘，9/9 成功、0
   marker leak、0 整稿 repetition failure；175/175 個 Qwen HTTP request 都
@@ -88,29 +125,26 @@ https://<resource-host>/openai/v1/responses
 
 可選設定／程式預設值：
 
-- `AZURE_OPENAI_PUNCTUATION_MODEL` 留空時沿用 `SUMMARY_MODEL`；若填值則只改潤稿 model，不改 endpoint/key。
-- `TRANSCRIPT_POLISHING_REASONING_EFFORT=max`。
 - `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS=300`。
-- `AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS=300`。
 - `AZURE_SPEECH_MAI_TIMEOUT_SECONDS=300`。
 - `AZURE_OPENAI_TRANSCRIBE_TIMEOUT_SECONDS=300`。
 - `CONTROL_PLANE_TIMEOUT_SECONDS=30`。
 
-每次 Luna request 的有效 body 為 `model`、`instructions`、`input`、
+摘要 Luna request 的有效 body 為 `model`、`instructions`、`input`、
 `reasoning: {"effort":"max"}`、`store: false`；以 `api-key` header 驗證。
-潤稿與摘要各自建立新 request。`store: false` 會關閉 Responses application
-state／message history 儲存；它本身**不等於** Zero Data Retention，也不控制
+轉寫 worker 不取得這組 endpoint/key。`store: false` 會關閉 Responses
+application state／message history 儲存；它本身**不等於** Zero Data
+Retention，也不控制
 獨立的 abuse-monitoring retention，後者仍須依 Azure resource 的資料隱私設定核對。
 
 每次 provider HTTP call 都設定 `urlopen` 的 connection/socket-operation
-timeout：摘要與潤稿 300 秒、Azure transcription upload 300 秒，Python
+timeout：摘要 300 秒、Azure transcription upload 300 秒，Python
 transcription／summary workers 對 control-plane 的 GET／POST／heartbeat 30
 秒。這會限制個別阻塞 I/O 操作，並不是保證整段流程在該秒數內結束的
 wall-clock deadline。明確 retry 只有：MAI HTTP 400 會以完全相同的 request
 重送一次；DNS／timeout／reset／broken connection 會以相同 request 在
-2／10／30 秒後有限重送；speaker diarize HTTP 400 會以相同 request
-重送一次，DNS／timeout／reset／broken connection 會以相同 request 在
-2／10／30 秒後有限重送；Luna 潤稿與摘要 HTTP 400 會重送一次；
+2／10／30 秒後有限重送；正式配置不呼叫 speaker diarize 或 Luna 潤稿；
+Luna 摘要 HTTP 400 會重送一次；
 transcription 內容品質失敗最多重送兩次。內容品質失敗包括
 可聽但稀疏的五分鐘 span，以及至少 20 秒、HTTP 200 但正規化文字 gzip ratio
 大於 4.0 的高重複 span；後者從同一原音訊切成最多 30 秒重跑，保留 base
@@ -126,7 +160,7 @@ Response 契約：
 - 所有 fragment 直接 `"".join(parts)`，**不得自行插入換行或空白**；只在最後對完整字串 trim。
 - `reasoning` 與其他 item type 一律跳過。
 - 摘要輸出 trim 後必須非空。
-- Azure 摘要 JSON 必須完整包含非空字串 `summary`，以及 `key_points`、`action_items`、`decisions`、`risks`、`open_questions` 五個 `string[]`；空陣列合法，但缺欄、錯型或非字串元素都使該 attempt 失敗。若 usage 已合法解析，仍須在 failure callback 結算。
+- Azure 摘要 JSON 必須完整包含非空字串 `summary`、`topics` 陣列，以及 `key_points`、`action_items`、`decisions`、`risks`、`open_questions` 五個 `string[]`。`topics` 可為空；每個 topic 必須有非空 `title`、`points`、`conclusion` 與 `confirmed|mixed|open` 狀態。其他空陣列合法，但缺欄、錯型或非字串元素都使該 attempt 失敗。若 usage 已合法解析，仍須在 failure callback 結算。
 
 完整 usage 必須包含非負整數：
 
@@ -138,11 +172,12 @@ output_tokens_details.reasoning_tokens
 total_tokens
 ```
 
-並要求 `total_tokens == input_tokens + output_tokens`、`cached_tokens <= input_tokens`、`reasoning_tokens <= output_tokens`。缺欄位、型別錯誤或不一致不能默認成 0。摘要因此失敗；潤稿則保留 raw chunk，若 provider usage 已成功讀到仍須保留該次 metered usage，否則增加 `unmeteredRequestCount`。
+並要求 `total_tokens == input_tokens + output_tokens`、`cached_tokens <= input_tokens`、`reasoning_tokens <= output_tokens`。缺欄位、型別錯誤或不一致不能默認成 0，摘要因此失敗。
 
-## Punctuation usage 與 lifecycle settlement
+## 歷史 Punctuation usage 與 lifecycle settlement
 
-潤稿雖在 transcription worker 內執行，會計上仍是獨立 `stage=punctuation`。callback metadata 包含：
+canonical transcription worker 已不再產生 `stage=punctuation`。為了讓既有
+ledger、舊 callback 與歷史稽核資料仍可讀，以下契約保留相容：
 
 - `inputTokens`、`cachedInputTokens`、`outputTokens`、`reasoningOutputTokens`、`totalTokens`
 - `requestCount`、`acceptedChunkCount`、`fallbackChunkCount`、`unmeteredRequestCount`
@@ -173,48 +208,45 @@ callback 若帶有必須結算的 provider usage，但 job 的 `quotaDayKey` 不
 
 ## 官方費率查核與目前 pricing truth
 
-截至 2026-07-15，Microsoft 官方 model catalog 可確認 `gpt-5.6-luna`（model version/date `2026-07-09`）與 Responses 支援，但官方 Azure OpenAI pricing page 與 Retail Prices API 沒有提供這個 exact model/version/SKU 的公開 input/output PAYG／retail 費率。因此目前答案不是某組美元數字，而是：**Luna 公開 PAYG／retail exact rate 尚不可取得；此 subscription 的 actual rate 仍須由 Cost Details `EffectivePrice` 取得，不可推測。**
+截至 2026-07-30，live Azure deployment 已確認為 `gpt-5.6-luna`、model
+version `2026-07-09`、SKU `GlobalStandard`。Microsoft 已公布短 context
+Global Standard 費率，Retail Prices API 亦可查到 2026-07-01 生效的相同
+meter：
+
+| Meter | Rate |
+|---|---:|
+| Input | US$1.00 / 1M tokens |
+| Cached input | US$0.10 / 1M tokens |
+| Cache write | US$1.25 / 1M tokens |
+| Output | US$6.00 / 1M tokens |
+
+Southeast Asia 的 `mai-transcribe-1.5` 使用 Azure Speech Fast Transcription；
+該訂閱 usage detail 的 meter ID
+`e366297b-9194-5c2f-91f9-2b6472d890b3` 對應 US$0.36 / audio hour。
 
 官方來源：
 
-- [Azure Foundry models sold directly by Azure](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure)
-- [Azure OpenAI Service pricing](https://azure.microsoft.com/en-us/pricing/details/azure-openai/)
+- [GPT-5.6 now available in Microsoft Foundry](https://azure.microsoft.com/en-us/blog/gpt-5-6-now-available-in-microsoft-foundry/)
+- [MAI Transcribe](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe)
+- [Prompt caching](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/prompt-caching)
 - [Azure Retail Prices API](https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices)
 - [Cost Details 欄位（`EffectivePrice`）](https://learn.microsoft.com/en-us/azure/cost-management-billing/automate/understand-usage-details-fields)
-- [Azure AI Foundry cost management](https://learn.microsoft.com/en-us/azure/foundry/concepts/manage-costs)
-- [Azure OpenAI data privacy](https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy)
 
-可重跑的公開查核（不需 credential）：
-
-```bash
-curl -fsS --get 'https://prices.azure.com/api/retail/prices' \
-  --data-urlencode "\$filter=contains(meterName, '5.6') and productName eq 'Azure OpenAI GPT5'" \
-  | jq '{Count, Items}'
-```
-
-即使 Retail API 日後出現價格，它代表公開 retail/PAYG meter，不必然等於此 Azure subscription 的 negotiated actual。實際費率需先確認 deployment 的 base model、model version、SKU、service tier、region/currency 與 effective meter，再從 Cost Details 讀 `EffectivePrice`。只有 inference deployment name `gpt-5.6-luna` 不足以證明這些 identity；PTU 也不能換算成假定的 per-token actual rate。runtime 的 catalog validation 只能證明 row 形狀與數值合理，不能自行查出或證明 operator 填入的 deployment／meter identity；新增 row 前仍需人工核對 deployment metadata 與 Cost Details。
-
-取得適當 Azure 權限後先查 deployment identity：
-
-```bash
-az cognitiveservices account deployment show \
-  --resource-group "$AZURE_RESOURCE_GROUP" \
-  --name "$AZURE_ACCOUNT_NAME" \
-  --deployment-name "gpt-5.6-luna" \
-  --query '{deployment:name,baseModel:properties.model.name,modelVersion:properties.model.version,sku:sku.name,serviceTier:properties.serviceTier,upgradePolicy:properties.versionUpgradeOption}'
-```
-
-Responses 日後若有 exact rate，計價公式是：
+Responses 已知 token 計價公式是：
 
 ```text
 (input - cached_input) * input_rate
 + cached_input * cached_input_rate
++ cache_write * cache_write_rate
 + output * output_rate
 ```
 
 `cached_tokens` 已包含在 input，`reasoning_tokens` 已包含在 output，兩者都不能再重複加總。
+但 Azure Responses usage 目前不回傳另行計費的 cache-write token 數量。
+因此 Luna 的 input/cached-input/output 可作為已知 lower bound，完整 billed total
+仍須標示含未定價用量；不能把缺少的 cache-write meter 當成 0。
 
-同日 Retail Prices API 可查到 `gpt-4o-transcribe` 公開 PAYG meter，但它們是
+Retail Prices API 可查到 `gpt-4o-transcribe` 公開 PAYG meter，但它們是
 token 單位而不是目前程式舊用的 per-minute actual：
 
 | Deployment type | Audio input | Text input | Text output |
@@ -226,13 +258,23 @@ Regional meter 依 region 與 effective date 不同。以上仍只是公開 reta
 subscription 的 `EffectivePrice`；而且目前 callback 沒有這三種 billed token
 數量，所以不能拿表中的費率算出本 job 的 actual。
 
-目前 ledger 的真實語義：
+目前 ledger 與 reporting 的真實語義：
 
-- Luna 摘要與 Luna 潤稿：保留 token meter，`pricingStatus=unpriced`、`costUsd=null`。
-- `gpt-4o-transcribe`：Azure meter 是 token-based，但目前 worker callback 只帶 `audioMs`，不足以重建實際 token charge；因此 actual transcription 同樣是 `unpriced/null`。既有每分鐘常數只能用於 reservation estimate，不能標成 actual。
-- 任一 actual entry 未定價時，完整 `totalCostUsd` 必須是 `null` 並設 `hasUnpricedUsage=true`。已定價項目的 `pricedCostUsd`／各 stage subtotal 只是 **known lower bound**，不可命名為完整 total；UI 要同時顯示未定價旗標。
-- daily quota 的 `remainingUsd` 目前只能扣除已定價 lower bound 與仍在途的 reservation；當 Luna／transcription actual 都未定價時，它不是 Azure 實際支出的 hard cap，operator 必須搭配 Azure budget／Cost Management 控制風險。
-- 無法證明 meter identity 的 legacy cost row 保留稽核資料，但轉成 `unpriced/null`；不可補造 token 或費率。
+- immutable settlement row 不回填新價格；reporting 以保存的 exact model、
+  pricing version 與 duration/token meter 在讀取時解析目前已知金額。
+- MAI audio duration 可完整套用 Fast Transcription hourly meter；歷史上以
+  S1 US$1.00/hour 儲存的列由 reporting read-time 依完整 audio duration
+  重算，不修改 immutable ledger。
+- 新工作只有 Luna 摘要可計算 input/cached-input/output lower bound，但
+  cache-write quantity 不存在於 provider response，所以仍保留 unpriced
+  flag；歷史 Luna 潤稿 row 同樣依舊資料處理。
+- `gpt-4o-transcribe-diarize` 舊 row 只有 `audioMs`，不足以重建三種 billed
+  token charge，因此仍是 unpriced。
+- 任一 actual entry 未完整定價時，完整 `totalCostUsd` 必須是 `null` 並設
+  `hasUnpricedUsage=true`；UI 顯示已知 lower bound 與
+  `（含未定價用量）`，不再把可計算的金額整欄隱藏。
+- daily quota 的 `remainingUsd` 只能扣除已知 lower bound 與仍在途 reservation；
+  它不是 Azure 實際支出的 hard cap，仍須搭配 Azure Budget／Cost Management。
 
 ## 歷史 live 觀察（不是目前 proof）
 
@@ -255,7 +297,9 @@ production 一律使用 `docker-compose.yml` + `docker-compose.screenapp.yml`；
 2. 在任何新 live provider call 或部署前輪替已曝露的 summary key；把新值只寫入 secret store／gitignored `.env`，不輸出、不提交。
 3. 保存上一版 immutable release/image IDs、相容的安全 env snapshot 與 DB backup；snapshot 不放 repo。上一版 bundle 只可用於 migration 前的 abort，不能在新 schema 生效後直接恢復舊 control-plane。
 4. 確認舊 attempt 已 drain／處理後，停止所有舊 control-plane instance，避免舊 binary 在 active-token backfill 後再核發沒有 history 的 lease；接著執行 additive schema migration，並部署可理解 `punctuation`、issued-token history、lease entry key、`pricing_status` 與 nullable `cost_usd` 的新 control-plane。已清除且沒有 active token／持久 history 的 pre-migration lease 無法事後重建。
-5. 設定完整 Responses URL、rotated key、Luna model，以及摘要／transcription／潤稿 300 秒、Python worker control-plane 30 秒的 socket-operation timeout，但先不要把尚未驗證的 routing 宣告完成。
+5. 設定完整 Responses URL、rotated key、Luna model，以及摘要／transcription
+   300 秒、Python worker control-plane 30 秒的 socket-operation timeout，但
+   先不要把尚未驗證的 routing 宣告完成。
 6. 用同一個 release bundle rebuild/recreate transcription-worker 與 summary-worker；禁止把 chat endpoint 與 Responses caller 混搭。
 7. compatibility/health 通過後才切換 runtime policy，接著執行已去識別的 live flow 並保留 ledger evidence。
 
@@ -310,21 +354,27 @@ openspec validate update-cloud-summary-azure-responses --strict --no-interactive
 openspec validate --all --strict --no-interactive
 ```
 
-確認 production compose 的 effective model/endpoint shape，但只輸出 boolean，不顯示 hostname 或 key：
+確認 production compose 的 stage isolation，但只輸出 boolean，不顯示
+hostname 或 key：
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.screenapp.yml config --format json \
   | jq -e '
       .services as $services
-      | ["transcription-worker", "summary-worker"]
-      | map(
-          . as $name
-          | ($services[$name].environment.SUMMARY_MODEL == "gpt-5.6-luna")
-            and ($services[$name].environment.AZURE_OPENAI_SUMMARY_ENDPOINT
-              | test("^https://[^/]+/openai/v1/responses/?$"))
-            and (($services[$name].environment.AZURE_OPENAI_SUMMARY_API_KEY | length) > 0)
-        )
-      | all
+      | ($services["transcription-worker"].environment.AZURE_SPEECH_MAI_MODEL
+          == "mai-transcribe-1.5")
+        and ($services["transcription-worker"].environment
+          | has("AZURE_OPENAI_SUMMARY_ENDPOINT") | not)
+        and ($services["transcription-worker"].environment
+          | has("AZURE_OPENAI_SUMMARY_API_KEY") | not)
+        and ($services["summary-worker"].environment.SUMMARY_MODEL
+          == "gpt-5.6-luna")
+        and ($services["summary-worker"].environment.SUMMARY_REASONING_EFFORT
+          == "max")
+        and ($services["summary-worker"].environment.AZURE_OPENAI_SUMMARY_ENDPOINT
+          | test("^https://[^/]+/openai/v1/responses/?$"))
+        and (($services["summary-worker"].environment.AZURE_OPENAI_SUMMARY_API_KEY
+          | length) > 0)
     '
 ```
 

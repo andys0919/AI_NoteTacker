@@ -1,4 +1,7 @@
-import type { CloudUsageLedgerEntry } from './cloud-usage-ledger-repository.js';
+import type {
+  CloudUsageCostSummary,
+  CloudUsageLedgerEntry
+} from './cloud-usage-ledger-repository.js';
 import type { RecordingJob } from './recording-job.js';
 import type { TranscriptionProviderSetting } from './transcription-provider-settings-repository.js';
 import { isCloudSummaryProvider } from './summary-provider.js';
@@ -26,6 +29,7 @@ export type AzureResponsesPricing = AzureResponsesPricingProvenance & {
   pricingVersion: string;
   inputUsdPerMillionTokens: number;
   cachedInputUsdPerMillionTokens: number;
+  cacheWriteUsdPerMillionTokens?: number;
   outputUsdPerMillionTokens: number;
 };
 
@@ -35,7 +39,25 @@ export type CloudUsagePricingResult =
   | { costUsd: number; pricingStatus: 'priced' }
   | { costUsd: null; pricingStatus: 'unpriced' };
 
-export const AZURE_RESPONSES_PRICING_CATALOG: AzureResponsesPricingCatalog = [];
+export const AZURE_RESPONSES_PRICING_CATALOG: AzureResponsesPricingCatalog = [
+  {
+    model: 'gpt-5.6-luna',
+    pricingVersion: 'v1',
+    baseModel: 'gpt-5.6-luna',
+    modelVersion: '2026-07-09',
+    sku: 'GlobalStandard',
+    currency: 'USD',
+    effectiveDate: '2026-07-01',
+    meterSource:
+      'https://prices.azure.com/api/retail/prices?currencyCode=USD&$filter=contains(meterName,%20%275.6%20luna%27)',
+    inputUsdPerMillionTokens: 1,
+    cachedInputUsdPerMillionTokens: 0.1,
+    cacheWriteUsdPerMillionTokens: 1.25,
+    outputUsdPerMillionTokens: 6
+  }
+];
+
+const AZURE_SPEECH_MAI_TRANSCRIBE_1_5_USD_PER_HOUR = 0.36;
 
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
@@ -69,6 +91,8 @@ const hasAuthoritativePricingProvenance = (
     hasSku !== hasServiceTier &&
     isValidRate(pricing.inputUsdPerMillionTokens) &&
     isValidRate(pricing.cachedInputUsdPerMillionTokens) &&
+    (pricing.cacheWriteUsdPerMillionTokens === undefined ||
+      isValidRate(pricing.cacheWriteUsdPerMillionTokens)) &&
     isValidRate(pricing.outputUsdPerMillionTokens)
   );
 };
@@ -136,15 +160,10 @@ export const sumActualConsumedUsd = (
       entry.quotaDayKey === quotaDayKey &&
       entry.entryType === 'actual'
   );
-  const hasUnpricedUsage = actualEntries.some(
-    (entry) => entry.pricingStatus === 'unpriced'
-  );
+  const resolvedEntries = actualEntries.map(resolveCloudUsageEntryCost);
+  const hasUnpricedUsage = resolvedEntries.some((entry) => entry.hasUnpricedUsage);
   const pricedCostUsd = roundUsd(
-    actualEntries.reduce(
-      (total, entry) =>
-        total + (entry.pricingStatus === 'priced' ? entry.costUsd : 0),
-      0
-    )
+    resolvedEntries.reduce((total, entry) => total + entry.knownCostUsd, 0)
   );
 
   return {
@@ -182,6 +201,7 @@ export const calculateAzureResponsesCost = (input: {
   pricingVersion: string;
   inputTokens: number;
   cachedInputTokens?: number;
+  cacheWriteTokens?: number;
   outputTokens: number;
   reasoningOutputTokens?: number;
 }, catalog: AzureResponsesPricingCatalog = AZURE_RESPONSES_PRICING_CATALOG): CloudUsagePricingResult => {
@@ -197,21 +217,245 @@ export const calculateAzureResponsesCost = (input: {
   }
 
   const cachedInputTokens = input.cachedInputTokens ?? 0;
-  const uncachedInputTokens = input.inputTokens - cachedInputTokens;
+  const cacheWriteTokens = input.cacheWriteTokens;
+  if (
+    ![input.inputTokens, cachedInputTokens, input.outputTokens]
+      .every((value) => Number.isInteger(value) && value >= 0) ||
+    cachedInputTokens > input.inputTokens ||
+    (cacheWriteTokens !== undefined &&
+      (!Number.isInteger(cacheWriteTokens) ||
+        cacheWriteTokens < 0 ||
+        cachedInputTokens + cacheWriteTokens > input.inputTokens))
+  ) {
+    return { costUsd: null, pricingStatus: 'unpriced' };
+  }
+  if (
+    pricing.cacheWriteUsdPerMillionTokens !== undefined &&
+    cacheWriteTokens === undefined
+  ) {
+    return { costUsd: null, pricingStatus: 'unpriced' };
+  }
+
+  const uncachedInputTokens =
+    input.inputTokens - cachedInputTokens - (cacheWriteTokens ?? 0);
 
   return {
     costUsd: roundUsd(
       (uncachedInputTokens / 1_000_000) * pricing.inputUsdPerMillionTokens +
         (cachedInputTokens / 1_000_000) * pricing.cachedInputUsdPerMillionTokens +
+        ((cacheWriteTokens ?? 0) / 1_000_000) *
+          (pricing.cacheWriteUsdPerMillionTokens ?? pricing.inputUsdPerMillionTokens) +
         (input.outputTokens / 1_000_000) * pricing.outputUsdPerMillionTokens
     ),
     pricingStatus: 'priced'
   };
 };
 
-export const calculateAzureTranscriptionActualCost = (_usage: {
+const calculateAzureResponsesKnownCost = (input: {
+  model: string;
+  pricingVersion: string;
+  inputTokens: number;
+  cachedInputTokens?: number;
+  outputTokens: number;
+}): number | null => {
+  const pricing = AZURE_RESPONSES_PRICING_CATALOG.find(
+    (candidate) =>
+      candidate.model === input.model &&
+      candidate.pricingVersion === input.pricingVersion &&
+      hasAuthoritativePricingProvenance(candidate)
+  );
+  const cachedInputTokens = input.cachedInputTokens ?? 0;
+
+  if (
+    !pricing ||
+    ![input.inputTokens, cachedInputTokens, input.outputTokens].every(
+      (value) => Number.isInteger(value) && value >= 0
+    ) ||
+    cachedInputTokens > input.inputTokens
+  ) {
+    return null;
+  }
+
+  return roundUsd(
+    ((input.inputTokens - cachedInputTokens) / 1_000_000) *
+      pricing.inputUsdPerMillionTokens +
+      (cachedInputTokens / 1_000_000) * pricing.cachedInputUsdPerMillionTokens +
+      (input.outputTokens / 1_000_000) * pricing.outputUsdPerMillionTokens
+  );
+};
+
+export const calculateAzureTranscriptionActualCost = (usage: {
   audioMs: number;
-}): CloudUsagePricingResult => ({ costUsd: null, pricingStatus: 'unpriced' });
+  provider?: TranscriptionProvider;
+  model?: string;
+  pricingVersion?: string;
+}): CloudUsagePricingResult =>
+  usage.provider === 'azure-speech-mai-transcribe-1.5' &&
+  usage.model === 'mai-transcribe-1.5' &&
+  usage.pricingVersion === 'v1' &&
+  Number.isFinite(usage.audioMs) &&
+  usage.audioMs >= 0
+    ? {
+        costUsd: roundUsd(
+          (usage.audioMs / 3_600_000) * AZURE_SPEECH_MAI_TRANSCRIBE_1_5_USD_PER_HOUR
+        ),
+        pricingStatus: 'priced'
+      }
+    : { costUsd: null, pricingStatus: 'unpriced' };
+
+const readUsageInteger = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+
+const readFirstUsageInteger = (
+  detail: Record<string, unknown>,
+  ...keys: string[]
+): number | undefined => {
+  for (const key of keys) {
+    const value = readUsageInteger(detail[key]);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+
+  return undefined;
+};
+
+export type ResolvedCloudUsageEntryCost = {
+  knownCostUsd: number;
+  hasUnpricedUsage: boolean;
+};
+
+export const resolveCloudUsageEntryCost = (
+  entry: CloudUsageLedgerEntry
+): ResolvedCloudUsageEntryCost => {
+  const detail = entry.detail ?? {};
+  if (
+    entry.provider === 'azure-speech-mai-transcribe-1.5' &&
+    entry.model === 'mai-transcribe-1.5'
+  ) {
+    const audioMs =
+      readUsageInteger(detail.audioMs) ??
+      (entry.usageUnit === 'audio-ms' ? Number(entry.usageQuantity) : undefined);
+    const pricing =
+      audioMs === undefined
+        ? { costUsd: null, pricingStatus: 'unpriced' as const }
+        : calculateAzureTranscriptionActualCost({
+            provider: entry.provider,
+            model: entry.model,
+            pricingVersion: entry.pricingVersion,
+            audioMs
+          });
+
+    return pricing.pricingStatus === 'priced'
+      ? { knownCostUsd: pricing.costUsd, hasUnpricedUsage: false }
+      : { knownCostUsd: 0, hasUnpricedUsage: true };
+  }
+
+  if (entry.pricingStatus === 'priced') {
+    return { knownCostUsd: roundUsd(entry.costUsd), hasUnpricedUsage: false };
+  }
+
+  if (entry.provider !== 'azure-openai' || entry.usageUnit !== 'tokens') {
+    return { knownCostUsd: 0, hasUnpricedUsage: true };
+  }
+
+  const inputTokens = readFirstUsageInteger(detail, 'promptTokens', 'inputTokens');
+  const cachedInputTokens = readFirstUsageInteger(
+    detail,
+    'cachedPromptTokens',
+    'cachedInputTokens'
+  );
+  const outputTokens = readFirstUsageInteger(detail, 'completionTokens', 'outputTokens');
+  const totalTokens = readUsageInteger(detail.totalTokens);
+  const unmeteredRequestCount = readUsageInteger(detail.unmeteredRequestCount);
+  if (
+    inputTokens === undefined ||
+    cachedInputTokens === undefined ||
+    outputTokens === undefined ||
+    totalTokens !== inputTokens + outputTokens
+  ) {
+    return { knownCostUsd: 0, hasUnpricedUsage: true };
+  }
+
+  const knownCostUsd = calculateAzureResponsesKnownCost({
+    model: entry.model,
+    pricingVersion: entry.pricingVersion,
+    inputTokens,
+    cachedInputTokens,
+    outputTokens
+  });
+  const exactPricing = calculateAzureResponsesCost({
+    model: entry.model,
+    pricingVersion: entry.pricingVersion,
+    inputTokens,
+    cachedInputTokens,
+    outputTokens
+  });
+
+  return {
+    knownCostUsd: knownCostUsd ?? 0,
+    hasUnpricedUsage:
+      exactPricing.pricingStatus === 'unpriced' || unmeteredRequestCount !== 0
+  };
+};
+
+export const summarizeActualCostsByJobIds = (
+  entries: CloudUsageLedgerEntry[],
+  jobIds: string[]
+): Record<string, CloudUsageCostSummary> => {
+  const summaries: Record<string, CloudUsageCostSummary> = {};
+  const jobIdSet = new Set(jobIds);
+
+  for (const entry of entries) {
+    if (entry.entryType !== 'actual' || !jobIdSet.has(entry.jobId)) {
+      continue;
+    }
+
+    const current = summaries[entry.jobId] ?? {
+      actualTranscriptionCostUsd: 0,
+      hasUnpricedTranscriptionUsage: false,
+      actualPunctuationCostUsd: 0,
+      hasUnpricedPunctuationUsage: false,
+      actualSummaryCostUsd: 0,
+      hasUnpricedSummaryUsage: false,
+      actualCloudCostUsd: 0,
+      hasUnpricedUsage: false
+    };
+    const resolved = resolveCloudUsageEntryCost(entry);
+
+    if (entry.stage === 'transcription') {
+      current.actualTranscriptionCostUsd = roundUsd(
+        current.actualTranscriptionCostUsd + resolved.knownCostUsd
+      );
+      current.hasUnpricedTranscriptionUsage ||= resolved.hasUnpricedUsage;
+    } else if (entry.stage === 'punctuation') {
+      current.actualPunctuationCostUsd = roundUsd(
+        current.actualPunctuationCostUsd + resolved.knownCostUsd
+      );
+      current.hasUnpricedPunctuationUsage ||= resolved.hasUnpricedUsage;
+    } else {
+      current.actualSummaryCostUsd = roundUsd(
+        current.actualSummaryCostUsd + resolved.knownCostUsd
+      );
+      current.hasUnpricedSummaryUsage ||= resolved.hasUnpricedUsage;
+    }
+
+    current.hasUnpricedUsage =
+      current.hasUnpricedTranscriptionUsage ||
+      current.hasUnpricedPunctuationUsage ||
+      current.hasUnpricedSummaryUsage;
+    current.actualCloudCostUsd = current.hasUnpricedUsage
+      ? null
+      : roundUsd(
+          current.actualTranscriptionCostUsd +
+            current.actualPunctuationCostUsd +
+            current.actualSummaryCostUsd
+        );
+    summaries[entry.jobId] = current;
+  }
+
+  return summaries;
+};
 
 const resolveAzureTranscriptionReservationUsdPerMinute = (input: {
   provider?: TranscriptionProvider;

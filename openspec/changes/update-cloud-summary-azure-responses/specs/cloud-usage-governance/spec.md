@@ -107,6 +107,7 @@ unpriced usage without substituting another price.
 #### Scenario: Exact authoritative price is configured
 - **WHEN** a metered Responses attempt has a configured price whose deployment name, base model/version, SKU or tier, currency, effective date, and meter source were verified and whose model and pricing version match the event
 - **THEN** cached input and uncached input use their respective rates
+- **AND** a model with billable cache writes is complete only when cache-write tokens and their rate are present
 - **AND** output tokens are charged once without adding reasoning tokens a second time
 - **AND** the ledger stores the calculated `costUsd` with `pricingStatus=priced`
 
@@ -115,16 +116,37 @@ unpriced usage without substituting another price.
 - **THEN** the candidate is rejected and usage remains `pricingStatus=unpriced` with `costUsd=null`
 - **AND** shape validation is not described as proof that operator-supplied billing identity is authoritative
 
-#### Scenario: Official Luna price is unknown
-- **WHEN** a metered `gpt-5.6-luna` attempt has no authoritative configured price
-- **THEN** the ledger stores `costUsd: null`
-- **AND** it marks `pricingStatus=unpriced`
+#### Scenario: Verified Luna Global Standard price is configured
+- **WHEN** the exact `gpt-5.6-luna` deployment is model version `2026-07-09`, SKU `GlobalStandard`, and pricing version `v1`
+- **THEN** the system configures short-context input at USD 1.00/M tokens, cached input at USD 0.10/M tokens, cache writes at USD 1.25/M tokens, and output at USD 6.00/M tokens
+- **AND** the catalog records the official Microsoft meter source and effective date
+
+#### Scenario: Luna usage omits cache-write quantity
+- **WHEN** Azure reports Luna input, cached-input, and output tokens but omits the separately billable cache-write token quantity
+- **THEN** the immutable attempt remains `pricingStatus=unpriced` with `costUsd=null`
+- **AND** reporting exposes the input/cached-input/output calculation as a known lower bound
+- **AND** the cache-write remainder stays visibly unpriced
+
+#### Scenario: Exact model price remains unknown
+- **WHEN** an attempt has no authoritative configured price matching its model and pricing version
+- **THEN** the ledger stores `costUsd: null` with `pricingStatus=unpriced`
 - **AND** it does not use a price from another model, a guessed price, or an estimated reservation
 
 #### Scenario: Punctuation metering is incomplete
 - **WHEN** a punctuation aggregate has one or more unmetered requests even if a matching token rate is configured
 - **THEN** the complete attempt cost remains `costUsd: null` with `pricingStatus=unpriced`
-- **AND** metered token subtotals remain visible without being presented as complete billed usage
+- **AND** reporting prices the complete token subtotal as a known lower bound
+- **AND** the unmetered remainder remains visible and the lower bound is not presented as complete billed usage
+
+#### Scenario: MAI Transcribe uses the verified Fast Transcription meter
+- **WHEN** `azure-speech-mai-transcribe-1.5` reports audio duration for model `mai-transcribe-1.5` under pricing version `v1`
+- **THEN** the system prices that duration using the verified Southeast Asia Azure Speech Fast Transcription rate of USD 0.36 per audio hour
+- **AND** the meter source, region, SKU, unit, and effective date remain documented
+
+#### Scenario: Historical MAI row used the superseded S1 rate
+- **WHEN** an immutable historical MAI row preserves complete audio duration but stores cost calculated at USD 1.00 per audio hour
+- **THEN** reporting derives its known cost at the verified USD 0.36 Fast Transcription rate
+- **AND** the immutable ledger row is not updated
 
 #### Scenario: Transcription callback reports duration without billed tokens
 - **WHEN** a `gpt-4o-transcribe` callback reports `audioMs` but not the provider's billed audio-input, text-input, and text-output tokens and meter identity
@@ -135,6 +157,12 @@ unpriced usage without substituting another price.
 - **WHEN** one or more actual ledger entries are unpriced
 - **THEN** the report exposes the known priced subtotal and an unpriced-usage indicator
 - **AND** the complete actual USD total is null rather than a partial subtotal presented as total spend
+
+#### Scenario: An historical row becomes priceable
+- **WHEN** an immutable historical row is unpriced but preserves a complete meter that now matches an authoritative catalog entry
+- **THEN** reporting derives its current known cost without updating the ledger row
+- **AND** fully metered usage no longer appears unpriced in the reporting view
+- **AND** partially metered usage keeps the unpriced indicator and exposes only a lower bound
 
 #### Scenario: Legacy rows lack authoritative meter identity
 - **WHEN** the nullable-pricing migration encounters an existing ledger row whose former numeric value cannot be tied to an authoritative meter
