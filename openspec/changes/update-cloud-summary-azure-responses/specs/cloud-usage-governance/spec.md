@@ -121,6 +121,11 @@ unpriced usage without substituting another price.
 - **THEN** the system configures short-context input at USD 1.00/M tokens, cached input at USD 0.10/M tokens, cache writes at USD 1.25/M tokens, and output at USD 6.00/M tokens
 - **AND** the catalog records the official Microsoft meter source and effective date
 
+#### Scenario: OpenAI direct pricing differs from Azure pricing
+- **WHEN** OpenAI publishes a different direct API price for `gpt-5.6-luna` while the deployed provider remains Azure Global Standard
+- **THEN** the system continues using the exact Azure Retail Prices API meters for that deployment
+- **AND** it does not substitute the direct OpenAI price until Microsoft publishes a matching Azure meter change
+
 #### Scenario: Luna usage omits cache-write quantity
 - **WHEN** Azure reports Luna input, cached-input, and output tokens but omits the separately billable cache-write token quantity
 - **THEN** the immutable attempt remains `pricingStatus=unpriced` with `costUsd=null`

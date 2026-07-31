@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  AZURE_RESPONSES_PRICING_CATALOG,
   type AzureResponsesPricing,
   buildQuotaDayKey,
   calculateAzureResponsesCost,
@@ -15,6 +16,22 @@ import {
 } from '../src/domain/cloud-usage.js';
 
 describe('cloud usage helpers', () => {
+  it('uses the latest verified Azure Luna Global Standard retail meters', () => {
+    expect(AZURE_RESPONSES_PRICING_CATALOG).toEqual([
+      expect.objectContaining({
+        model: 'gpt-5.6-luna',
+        modelVersion: '2026-07-09',
+        sku: 'GlobalStandard',
+        effectiveDate: '2026-07-01',
+        inputUsdPerMillionTokens: 1,
+        cachedInputUsdPerMillionTokens: 0.1,
+        cacheWriteUsdPerMillionTokens: 1.25,
+        outputUsdPerMillionTokens: 6,
+        meterSource: expect.stringContaining('prices.azure.com/api/retail/prices')
+      })
+    ]);
+  });
+
   it('keeps Luna settlement unpriced when Azure omits billed cache-write tokens', () => {
     expect(
       calculateAzureResponsesCost({

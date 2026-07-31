@@ -37,6 +37,7 @@
 - [x] 5.5 Reject pricing rows with blank deployment/pricing identity, malformed dates, ambiguous SKU/tier identity, missing provenance, or non-finite/negative rates.
 - [x] 5.6 Add the verified Luna Global Standard and MAI Transcribe Fast Transcription catalog rows.
 - [x] 5.7 Reprice fully metered historical rows in reporting without mutating the immutable ledger, and expose partial metered costs only as lower bounds.
+- [x] 5.8 Re-verify the Luna catalog against Azure Retail Prices API on 2026-07-31 and forbid substituting OpenAI direct pricing for the live Azure deployment.
 
 ## 6. Verification and deployment
 - [x] 6.1 Run the pre-hardening Responses unit baseline (7 targeted worker tests pass on 2026-07-15).

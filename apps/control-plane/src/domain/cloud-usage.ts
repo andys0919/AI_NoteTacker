@@ -49,7 +49,7 @@ export const AZURE_RESPONSES_PRICING_CATALOG: AzureResponsesPricingCatalog = [
     currency: 'USD',
     effectiveDate: '2026-07-01',
     meterSource:
-      'https://prices.azure.com/api/retail/prices?currencyCode=USD&$filter=contains(meterName,%20%275.6%20luna%27)',
+      'https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview&currencyCode=USD&$filter=productName%20eq%20%27Azure%20OpenAI%20GPT5%27%20and%20priceType%20eq%20%27Consumption%27%20and%20contains(skuName,%20%275.6%20luna%20ShortCo%27)%20and%20contains(skuName,%20%27Std%20Gl%27)',
     inputUsdPerMillionTokens: 1,
     cachedInputUsdPerMillionTokens: 0.1,
     cacheWriteUsdPerMillionTokens: 1.25,
