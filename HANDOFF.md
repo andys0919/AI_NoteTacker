@@ -36,7 +36,42 @@ https://<resource-host>/openai/v1/responses
 
 ## 目前 checkpoint
 
-### 2026-08-05 runtime／console scaffolding follow-up（本機 image，未部署）
+### 2026-08-05 18:34 canonical production deployment
+
+- release source 與遠端 `main` 均為
+  `3b6ac29409fed2e756a1af099030c60722210414`；部署前 PostgreSQL 只有
+  86 個 completed 與 32 個 failed job，active summary lease 為 0。mode 0600
+  PostgreSQL 備份保留於 `/tmp/ai-notetacker-predeploy-3b6ac29.dump`，SHA-256
+  為 `bd710953b3c9cc3ae97cc7875152cc5dbb03a30526c5dc20beff976a84489561`。
+- 使用者明確要求本次不處理 summary key 並正式部署；因此沒有讀取、輸出或
+  修改 key，也沒有 provider 測試。`./scripts/deploy.sh up` 仍使用既有
+  gitignored `.env` 完成 base + screenapp build/recreate，這項結果不構成 key
+  已輪替或安全的證據。
+- control-plane、summary-worker 與 transcription-worker 新 image 分別為
+  `sha256:e6573a8a0b79...`、`sha256:8ec20f4e14cd...`、
+  `sha256:df43e4bc4498...`；三者與其餘正式容器均為 running、restart count 0。
+  recording-worker image 未變，Compose 保留既有容器。
+- `/health` 為 `ok`；三個 worker 從容器內讀取 control-plane health 均為 200。
+  recording-worker 在 control-plane recreate 窗口短暫出現 DNS／connection
+  retry，control-plane healthy 後最近一分鐘無新錯誤。真實 migration ledger
+  讀回 `20260805-runtime-hardening-v1`。
+- summary-worker 實際讀回 `gpt-5.6-luna`、effort `max`、timeout `900`，endpoint
+  與 key 只驗證為已設定；transcription-worker 讀回 `mai-transcribe-1.5`，且不含
+  summary endpoint/key。PostgreSQL 與 MinIO 沒有 host published port，舊 Redis
+  orphan 已移除。
+- live `app.js`、`artifact-reader.js`、`styles.css` hash 均與 release source
+  相同；真實 owner notes route 為 200，API 讀回 completed、逐字稿、摘要與
+  structured summary。live CSS 保留 `min(72vh, 52rem)`／`overflow-y:auto` 且
+  沒有 owner `max-height:none` override。Chrome 對 localhost 的 CDP 與獨立
+  one-shot navigation 都 timeout，未產生新截圖，因此
+  `refine-meeting-artifact-reader` task 4.3 仍未完成。
+- PostgreSQL 目前有 98 筆 recording artifact、89 筆 transcript artifact、
+  83 筆 summary artifact；3 筆 operator-hidden job 仍各保留 transcript／summary
+  供 admin audit。production `npm audit --omit=dev` 另回報 0 critical、3 high、
+  3 moderate、1 low；high 位於 `fast-xml-builder`、`multer`、`nodemailer`，本次
+  未以未審查的自動 dependency rewrite 擴大部署。
+
+### 2026-08-05 runtime／console scaffolding 部署前驗證紀錄
 
 - 新 OpenSpec change `shrink-runtime-and-console-scaffolding` 與 GitHub issue
   `andys0919/AI_NoteTacker#7` 追蹤本次 audit follow-up；strict validation 通過。
@@ -257,8 +292,12 @@ https://<resource-host>/openai/v1/responses
   archive 仍需另行授權。
 - PostgreSQL repository 目前由 pg-mem integration 與受控 interleaving tests 驗證；startup schema 已改由 `schema_migrations`、transaction 與 advisory lock 序列化，但尚未在真實 PostgreSQL 上做 concurrent callback／claim 或 multi-instance rolling-migration 演練。
 - migration 之後的 rollback 必須保留懂得 `pricing_status`／nullable `cost_usd` 的 control-plane 與目前 callback contract；上一版 control-plane 不能直接重新上線。目前沒有已演練的 schema-compatible full-code rollback image，所以 task 6.7 仍未完成。
-- Summary stale lease reclaim 已於 2026-08-05 本機 WIP 修正並通過 in-memory、PostgreSQL adapter 與 HTTP claim regression；尚未部署到 live container，所以不能把 live runtime 宣告為已修復。
-- 2026-08-05 runtime-hardening WIP 尚未部署。現有 live PostgreSQL／MinIO 仍是歷史容器設定並暴露 host ports，舊 Redis orphan 仍存在；canonical deploy 會以 private-port Compose recreate 並 `--remove-orphans`，但必須先完成下方 summary key 輪替 gate。
+- Summary stale lease reclaim 已進入目前 live image 且既有 focused regressions 通過；
+  本次沒有在 live DB 注入過期 lease，因此只確認 release 已部署，不宣稱完成真實
+  stale-lease reclaim 演練。
+- runtime-hardening 已 canonical deploy；port closure、migration ledger 與 orphan
+  removal 已讀回。尚未實際觸發 private meeting-bot stop/restart，因此
+  `add-runtime-operations-hardening` task 2.4 保持未完成。
 
 ## Responses runtime 與設定契約
 
@@ -465,8 +504,9 @@ subscription 的 `EffectivePrice`；而且目前 callback 沒有這三種 billed
 production 一律使用 `docker-compose.yml` + `docker-compose.screenapp.yml`；不要執行 bare `docker compose up`，否則 recording worker 會掉回 stub。worker source baked into image，所以 code 修改一定要 rebuild 並 recreate。
 
 2026-08-05 使用者已明確授權本次 commit、push `main` 與 canonical deploy；
-archive、tag 與 pull request 仍未授權。這項部署授權不會略過下方 summary key
-輪替安全 gate。完成輪替後的 forward order 為：
+archive、tag 與 pull request 仍未授權。18:34 使用者又明確要求本次不處理
+summary key 並立即正式部署；部署已依該指示完成，但沒有 key 輪替證據，也沒有
+live provider call。後續安全收斂的 forward order 為：
 
 1. 先停止新 claim／provider routing，但讓舊 control-plane 保持可接收已核發 attempt 的 callback；drain 或明確處理這些 attempt。此步驟只處理既有 attempt／callback，不得以已曝露的 key 啟動新的 provider call。
 2. 在任何新 live provider call 或部署前輪替已曝露的 summary key；把新值只寫入 secret store／gitignored `.env`，不輸出、不提交。
@@ -498,7 +538,9 @@ rollback 有明確的 schema compatibility floor：
 
 一次診斷輸出曾顯示真實 `AZURE_OPENAI_SUMMARY_API_KEY`。即使該值未寫入本文件，也必須視為 compromised：**在任何下一次 live call 或部署前於 Azure 輪替／撤銷舊 key**，更新 secret store／gitignored `.env`，重建受影響 worker，並檢查 shell history、CI artifact 與協作紀錄是否另有副本。不得在 issue、commit、測試 fixture 或驗證輸出中貼出新 key。
 
-2026-08-05 尚未取得已輪替證據，因此本次 runtime-hardening 只完成本機實作與驗證，未執行正式 deploy。這是安全 gate，不是測試或 Compose 失敗。
+2026-08-05 18:34 仍未取得已輪替證據；使用者明確要求不處理 key 並正式部署，
+所以 runtime-hardening 已使用既有 gitignored `.env` 上線。這不解除 compromised
+判定；key 輪替、外部副本檢查與輪替後 provider 驗證仍是未完成 security action。
 
 ## OpenSpec 狀態
 
@@ -506,9 +548,9 @@ rollback 有明確的 schema compatibility floor：
 
 - tasks 為 42/45；只剩 6.6 current-release durable live evidence、6.7 rollback
   drill、6.8 archive-order rebase/revalidation 未勾選。
-- 尚未部署目前 WIP，也沒有可關閉 6.6 的 current-release retained redacted
-  end-to-end evidence 或可關閉 6.7 的 rollback drill；上方 2026-07-29 至
-  2026-07-31 部署紀錄只代表當時版本。
+- 目前 release 已部署，但沒有可關閉 6.6 的 current-release retained redacted
+  provider end-to-end evidence，也沒有可關閉 6.7 的 rollback drill；上方
+  2026-07-29 至 2026-07-31 provider 紀錄只代表當時版本。
 - `add-codex-transcript-summaries`、`add-cloud-usage-governance`、
   `update-cloud-summary-azure-responses`、`use-mai-luna-transcription-pipeline`、
   `simplify-mai-transcription-pipeline`、`add-admin-summary-model-switch` 與
@@ -615,7 +657,9 @@ live evidence 必須遮蔽 transcript、summary、hostname、key 與使用者識
 - production Compose render：PASS；rendered control-plane 沒有 Docker socket，PostgreSQL／MinIO 沒有 published ports，meeting-bot／PostgreSQL／MinIO 都使用 digest，meeting-bot control URL 為 private `http://meeting-bot:3001`。
 - OpenSpec selected change 與 all-change strict：PASS；34/34。
 - `git diff --check`：PASS。
-- live deploy、真實 migration ledger readback、live meeting-bot stop、port closure 與 orphan removal：**NOT RUN**，受上方 key rotation gate 阻擋。
+- live deploy、真實 migration ledger readback、port closure 與 orphan removal：
+  **PASS**；live meeting-bot stop/restart：**NOT RUN**。部署依使用者明確指示未
+  等待 key rotation，沒有執行 provider call。
 
 ## 歷史最終驗證結果（不是目前 WIP proof）
 
