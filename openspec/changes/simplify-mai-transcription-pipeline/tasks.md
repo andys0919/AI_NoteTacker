@@ -8,7 +8,7 @@
   transcription worker.
 - [x] 2.2 Keep deterministic Traditional Chinese display normalization for
   Chinese MAI results while preserving raw provider text.
-- [x] 2.3 Isolate Luna credentials and high reasoning to the summary worker.
+- [x] 2.3 Isolate Luna credentials and max reasoning to the summary worker.
 - [x] 2.4 Update focused tests and operator documentation.
 - [x] 2.5 Remove shared `.env` injection from the non-AI recording worker and
   pass only its active runtime settings.
@@ -25,3 +25,5 @@
 - [x] 3.3 Deploy the approved `high` summary effort and verify the live worker.
 - [x] 3.4 Verify the resolved recording-worker environment excludes AI, admin,
   and sharing credentials without printing secret values.
+- [ ] 3.5 Deploy the approved `max` summary effort after the summary-key rotation
+  gate and verify the live worker.

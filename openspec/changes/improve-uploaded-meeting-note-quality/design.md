@@ -340,7 +340,7 @@ can still be reported on the failure event.
 ### 9. Generate one fluent hierarchical summary and derive compatibility fields
 
 The production summary remains one `gpt-5.6-luna` request with
-`reasoning.effort=high`. There is no separate full-transcript polishing request
+`reasoning.effort=max`. There is no separate full-transcript polishing request
 and no second summary rewrite. The prompt asks the model to convert fragmented
 spoken language into concise, grammatically complete Traditional Chinese while
 preserving the supported meaning, uncertainty, names, numbers, and chronology.

@@ -237,7 +237,7 @@ class ReadSummaryWorkerConfigTests(unittest.TestCase):
                 "worker_id": "summarizer-alpha",
                 "poll_interval_ms": 1000,
                 "summary_model": "gpt-5.6-luna",
-                "summary_reasoning_effort": "high",
+                "summary_reasoning_effort": "max",
                 "codex_cli_path": "codex",
                 "azure_openai_summary_endpoint": None,
                 "azure_openai_summary_api_key": None,

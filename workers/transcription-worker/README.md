@@ -34,7 +34,7 @@ uses.
 - posts transcript or summary artifacts back to the control plane from the responsible process
 - includes speech-to-text and summary usage metadata in callbacks for idempotent cloud-cost settlement
 - sends summary Azure Responses requests with `store: false` and
-  `reasoning.effort=high`; they use 900-second socket-operation timeouts by
+  `reasoning.effort=max`; they use 900-second socket-operation timeouts by
   default
 - uses a 300-second socket-operation timeout for Azure transcription uploads and a 30-second timeout for control-plane GET/POST calls by default
 - rejects Azure summaries unless `title` and `summary` are non-empty strings;

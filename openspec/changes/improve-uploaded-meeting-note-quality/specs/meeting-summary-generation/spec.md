@@ -116,6 +116,6 @@ The system SHALL produce a fluent Traditional Chinese meeting article in one sum
 - **AND** historical flat or topic-with-points summaries remain readable
 
 #### Scenario: A long Luna summary request exceeds five minutes
-- **WHEN** one valid Luna/high summary request remains active longer than 300 seconds
+- **WHEN** one valid Luna/max summary request remains active longer than 300 seconds
 - **THEN** the worker allows that request up to the configured 900-second socket timeout
 - **AND** it does not issue a timeout retry or a second summary rewrite request

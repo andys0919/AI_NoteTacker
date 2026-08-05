@@ -1,4 +1,4 @@
-# Handoff — MAI 主轉錄、正體中文顯示、Luna high 摘要與誠實計價
+# Handoff — MAI 主轉錄、正體中文顯示、Luna max 摘要與誠實計價
 
 _更新：2026-08-05（Asia/Taipei）_
 
@@ -8,7 +8,7 @@ _更新：2026-08-05（Asia/Taipei）_
 2026-07-30 決定正式系統不再做 Speaker 分類；Qwen、Azure OpenAI
 transcription 與 Whisper 保留為 operator 可選 fallback。轉寫 worker 不再
 取得或使用 Luna 設定；Luna 只由摘要 worker 以
-`gpt-5.6-luna`、`reasoning.effort=high` 呼叫。
+`gpt-5.6-luna`、`reasoning.effort=max` 呼叫。
 
 處理鏈如下：
 
@@ -22,7 +22,7 @@ transcription 與 Whisper 保留為 operator 可選 fallback。轉寫 worker 不
    `gpt-4o-transcribe-diarize` request；歷史 metadata 保留相容，但不進摘要
    prompt、閱讀畫面、管理台逐字稿或文字匯出。
 4. 摘要：獨立 `gpt-5.6-luna` Responses request、
-   `reasoning.effort=high`、900 秒 socket-operation timeout；輸出、狀態、
+   `reasoning.effort=max`、900 秒 socket-operation timeout；輸出、狀態、
    schema 或 usage 不完整時整次失敗，不儲存半成品。
 5. Cloud usage：新工作只有 `transcription` 與 `summary` provider stage；
    歷史 `punctuation`／diarization ledger 仍保留相容。沒有官方可驗證費率時以
@@ -101,11 +101,12 @@ https://<resource-host>/openai/v1/responses
   完成；strict validation 通過，完整證據見該 change 的 `benchmark.md`。
 - OpenSpec change `simplify-mai-transcription-pipeline` 已取代其中的 Luna
   逐字稿潤稿與 diarization runtime wiring；新工作只執行 MAI、確定性正體化
-  與 Luna/high 摘要。
+  與 Luna/max 摘要。
 - completed job 內容改為按需載入的 `摘要`／`逐字稿` 分頁；摘要使用文章層級
   與可用章節目錄，逐字稿分開顯示時間與文字，正常閱讀面不顯示 Speaker 或
-  raw-recognition evidence。歷史 flat summary 不需重新生成。
-- Luna/high 摘要 prompt 改為 coverage-first：先覆蓋前／中／後段，再以內容
+  raw-recognition evidence；owner 詳情頁的長逐字稿維持單一具名、可鍵盤操作的
+  bounded scroll region，不再把整頁撐到數萬像素。歷史 flat summary 不需重新生成。
+- Luna/max 摘要 prompt 改為 coverage-first：先覆蓋前／中／後段，再以內容
   衍生會議標題、主題與子主題，並分別收錄 grouped follow-up、決議、風險、
   待確認事項與有逐字稿依據的分析註記；相容的 key points／action items 由該
   hierarchy 推導，不再發第二次 model request。沒有加入 PLAUD 答案、HDD
@@ -251,7 +252,7 @@ https://<resource-host>/openai/v1/responses
 - 依 `design.md` 先 rebase／strict validate／archive
   `update-cloud-summary-azure-responses`，再 rebase／strict validate／archive
   `use-mai-luna-transcription-pipeline`，最後才 rebase／strict validate／archive
-  `simplify-mai-transcription-pipeline`，確保移除 punctuation runtime 與 Luna/high
+  `simplify-mai-transcription-pipeline`，確保移除 punctuation runtime 與 Luna/max
   契約不會被較舊 delta 加回；本次尚未執行任何 archive，task 6.8 仍未完成且
   archive 仍需另行授權。
 - PostgreSQL repository 目前由 pg-mem integration 與受控 interleaving tests 驗證；startup schema 已改由 `schema_migrations`、transaction 與 advisory lock 序列化，但尚未在真實 PostgreSQL 上做 concurrent callback／claim 或 multi-instance rolling-migration 演練。
@@ -266,7 +267,7 @@ https://<resource-host>/openai/v1/responses
 - `AZURE_OPENAI_SUMMARY_ENDPOINT`：HTTPS，path 必須是 `/openai/v1/responses`；不得接受 `chat/completions`。
 - `AZURE_OPENAI_SUMMARY_API_KEY`：只從明確的 summary 設定讀取；不得 fallback 到 transcription key。
 - `SUMMARY_MODEL=gpt-5.6-luna`。
-- `SUMMARY_REASONING_EFFORT=high`。
+- `SUMMARY_REASONING_EFFORT=max`。
 - `AZURE_SPEECH_MAI_ENDPOINT`、`AZURE_SPEECH_MAI_API_KEY` 與
   `AZURE_SPEECH_MAI_MODEL=mai-transcribe-1.5` 必須成組設定。
 
@@ -278,7 +279,7 @@ https://<resource-host>/openai/v1/responses
 - `CONTROL_PLANE_TIMEOUT_SECONDS=30`。
 
 摘要 Luna request 的有效 body 為 `model`、`instructions`、`input`、
-`reasoning: {"effort":"high"}`、`store: false`；以 `api-key` header 驗證。
+`reasoning: {"effort":"max"}`、`store: false`；以 `api-key` header 驗證。
 轉寫 worker 不取得這組 endpoint/key。`store: false` 會關閉 Responses
 application state／message history 儲存；它本身**不等於** Zero Data
 Retention，也不控制
@@ -558,7 +559,7 @@ docker compose -f docker-compose.yml -f docker-compose.screenapp.yml config --fo
         and ($services["summary-worker"].environment.SUMMARY_MODEL
           == "gpt-5.6-luna")
         and ($services["summary-worker"].environment.SUMMARY_REASONING_EFFORT
-          == "high")
+          == "max")
         and ($services["summary-worker"].environment.AZURE_OPENAI_SUMMARY_ENDPOINT
           | test("^https://[^/]+/openai/v1/responses/?$"))
         and (($services["summary-worker"].environment.AZURE_OPENAI_SUMMARY_API_KEY

@@ -46,7 +46,7 @@ model.
   only supported non-empty sections, and keep existing flat summary fields for
   backward-compatible export and sharing.
 - Generate one fluent, content-derived Traditional Chinese meeting article in
-  the existing Luna/high summary call: organize independent decision domains as
+  the existing Luna/max summary call: organize independent decision domains as
   topics, related details as subtopics, explicit work as grouped follow-ups,
   and evidence-backed unresolved gaps as analysis notes. Derive legacy flat
   fields in code instead of asking the model to repeat the same content.

@@ -315,7 +315,7 @@ and remove requirements introduced here. Use this semantic archive sequence:
 5. Only after both `update-cloud-summary-azure-responses` and
    `use-mai-luna-transcription-pipeline` are published, rebase and strictly
    validate `simplify-mai-transcription-pipeline`, then archive it so its
-   REMOVED punctuation requirements and Luna/high summary contract remain the
+   REMOVED punctuation requirements and Luna/max summary contract remain the
    final published behavior.
 6. Rebase `add-admin-summary-model-switch` and
    `add-operator-productivity-workflows` after the preceding archives so neither

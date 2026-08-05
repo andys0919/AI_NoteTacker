@@ -44,8 +44,8 @@ class AzureOpenAiTranscriptSummarizer:
         endpoint: str,
         api_key: str,
         model: str,
-        reasoning_effort: str = "high",
-        timeout_seconds: int = 300,
+        reasoning_effort: str = "max",
+        timeout_seconds: int = 900,
         urlopen=None,
     ) -> None:
         self._endpoint = endpoint

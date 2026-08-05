@@ -6,7 +6,7 @@
 transcript through Luna again adds latency and cost, while diarization adds
 speaker evidence the product no longer wants to display. The requested
 production flow is therefore MAI transcription, deterministic Traditional
-Chinese display normalization, and one independent Luna high summary request.
+Chinese display normalization, and one independent Luna max summary request.
 
 ## What Changes
 
@@ -15,7 +15,7 @@ Chinese display normalization, and one independent Luna high summary request.
 - Preserve MAI provider text as immutable `rawText`.
 - When MAI reports a Chinese locale, normalize only `displayText` to
   Traditional Chinese with the existing deterministic converter.
-- Keep `gpt-5.6-luna` with `reasoning.effort=high` only in the summary worker.
+- Keep `gpt-5.6-luna` with `reasoning.effort=max` only in the summary worker.
 - Remove Luna summary credentials and transcript-polishing settings from the
   transcription-worker runtime.
 

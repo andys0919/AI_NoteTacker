@@ -25,6 +25,7 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
             captured["url"] = http_request.full_url
             captured["headers"] = dict(http_request.header_items())
             captured["body"] = json.loads(http_request.data.decode("utf-8"))
+            captured["timeout"] = timeout
             summary_json = json.dumps(
                 {
                     "title": "導入範圍與待確認時程",
@@ -99,11 +100,12 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
         )
         self.assertEqual(captured["headers"]["Api-key"], "secret")
         self.assertEqual(captured["body"]["model"], "gpt-5.6-luna")
-        self.assertEqual(captured["body"]["reasoning"], {"effort": "high"})
+        self.assertEqual(captured["body"]["reasoning"], {"effort": "max"})
+        self.assertEqual(captured["timeout"], 900)
         self.assertIn("summarizer", captured["body"]["instructions"].lower())
         self.assertIn("sales follow-up", captured["body"]["input"].lower())
         self.assertEqual(result["model"], "gpt-5.6-luna")
-        self.assertEqual(result["reasoning_effort"], "high")
+        self.assertEqual(result["reasoning_effort"], "max")
         self.assertEqual(result["structured"]["action_items"], ["Andy 提供正式報價"])
         self.assertEqual(result["structured"]["topics"][0]["status"], "mixed")
         self.assertEqual(

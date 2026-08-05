@@ -136,7 +136,7 @@ def read_summary_worker_config(
         **_read_worker_config(environment),
         "summary_model": environment.get("SUMMARY_MODEL") or "gpt-5.6-luna",
         "summary_reasoning_effort": _read_reasoning_effort(
-            environment, "SUMMARY_REASONING_EFFORT", "high"
+            environment, "SUMMARY_REASONING_EFFORT", "max"
         ),
         "codex_cli_path": environment.get("CODEX_CLI_PATH") or "codex",
         "azure_openai_summary_endpoint": _read_summary_endpoint(environment),

@@ -15,7 +15,7 @@ summary worker SHALL receive the Luna summary settings.
   and diarization settings
 - **AND** the summary-worker environment includes
   `SUMMARY_MODEL=gpt-5.6-luna`
-- **AND** includes `SUMMARY_REASONING_EFFORT=high`
+- **AND** includes `SUMMARY_REASONING_EFFORT=max`
 
 #### Scenario: Non-AI recording worker environment is resolved
 
