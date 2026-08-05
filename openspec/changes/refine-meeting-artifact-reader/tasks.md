@@ -23,6 +23,7 @@
 - [x] 4.4 Run separate Standards and Spec reviews against the working-tree diff and resolve actionable findings.
 - [x] 4.5 Exclude recording, transcript, and summary artifact JSON from PostgreSQL operator list/search projections while preserving preview, presence, search, cursor, and in-memory parity regressions.
 - [x] 4.6 Backfill historical list previews idempotently and exclude active lease credentials from list types and projections, with focused migration and list regressions.
+- [x] 4.7 Restore bounded transcript scrolling on the dedicated owner page and add a focused layout regression.
 
 ## 5. Speaker-free production
 

@@ -72,6 +72,19 @@ describe('responsive console styles', () => {
     expect(rule).not.toMatch(/max-height:/);
   });
 
+  it('keeps the dedicated owner transcript in a bounded scroll region', () => {
+    const css = readFileSync(resolve(import.meta.dirname, '../public/styles.css'), 'utf-8');
+    const transcriptRules = [...css.matchAll(/\.transcript-reader\s*\{([^}]*)\}/g)]
+      .map((match) => match[1])
+      .join('\n');
+
+    expect(transcriptRules).toMatch(/max-height:\s*min\(72vh, 52rem\);/);
+    expect(transcriptRules).toMatch(/overflow-y:\s*auto;/);
+    expect(css).not.toMatch(
+      /\.meeting-detail-page \.transcript-reader\s*\{[^}]*max-height:\s*none;/
+    );
+  });
+
   it('does not keep selectors for removed frontend surfaces', () => {
     const css = readFileSync(resolve(import.meta.dirname, '../public/styles.css'), 'utf-8');
 

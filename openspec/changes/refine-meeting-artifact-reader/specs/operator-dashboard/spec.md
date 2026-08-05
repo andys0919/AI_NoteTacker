@@ -89,9 +89,11 @@ artifacts without causing page-level horizontal overflow.
 - **WHEN** the viewport is at least 1024 CSS pixels wide
 - **THEN** the summary article and available-section navigation have distinct columns
 - **AND** transcript content remains within a readable line length
+- **AND** the dedicated owner transcript remains inside one named, keyboard-focusable vertical scroll region instead of extending the page by its full segment count
 
 #### Scenario: Reader is opened at 390 CSS pixels
 - **WHEN** the viewport is 390 CSS pixels wide
 - **THEN** summary navigation and content collapse into one column
 - **AND** transcript timestamp and wording remain legible
+- **AND** the dedicated owner transcript remains vertically bounded and scrollable
 - **AND** the page has no horizontal overflow
