@@ -12,7 +12,8 @@ image transfer, attack surface, and maintenance work without adding product valu
 - Build control-plane and recording-worker images in multiple stages so production
   images exclude TypeScript and test dependencies.
 - Delete only CSS declarations that are provably shadowed by a later declaration
-  with the same selector, property, and conditional context.
+  with the same selector, property, and conditional context, while preserving
+  progressive-enhancement fallback declarations.
 - Remove browser helpers, view-model fields, and focused tests that no active
   runtime entrypoint uses.
 - Replace duplicate command-line parsing with Node's standard library, call

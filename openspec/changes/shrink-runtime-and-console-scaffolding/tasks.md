@@ -7,7 +7,7 @@
 - [x] 2.2 Convert the control-plane and recording-worker Dockerfiles to build/runtime stages that exclude development dependencies from final images.
 
 ## 3. Maintained source surface
-- [x] 3.1 Remove cascade-shadowed CSS declarations with an exact-context mechanical pass and preserve rendered behavior.
+- [x] 3.1 Remove cascade-shadowed CSS declarations with an exact-context mechanical pass while preserving rendered behavior and progressive-enhancement fallbacks.
 - [x] 3.2 Remove zero-runtime browser helpers, stale view-model fields, and their test-only coverage.
 - [x] 3.3 Replace duplicate argument parsers with `node:util.parseArgs`, invoke Python `compileall` directly, and delete the wrapper script.
 - [x] 3.4 Remove the always-on `SUMMARY_ENABLED` input and synchronize maintained configuration/documentation.
@@ -18,3 +18,4 @@
 - [x] 4.3 Prove the stylesheet matches the exact-context mechanical deletion output, run maintained viewport contract tests, and render/inspect dashboard and admin-login views at desktop and 390px widths with no horizontal overflow.
 - [x] 4.4 Strictly validate this OpenSpec change and run `git diff --check`.
 - [x] 4.5 Review the complete diff from its fixed point on separate Standards and Spec axes, resolve actionable findings, and repeat only affected checks.
+- [x] 4.6 Resolve post-push review-loop findings, repeat affected checks, and re-review until both axes report zero findings in the same iteration.

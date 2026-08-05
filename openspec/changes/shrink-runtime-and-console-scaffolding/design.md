@@ -49,9 +49,12 @@ runtime stage needs only the compiled output and its package metadata.
 ### 3. Prune CSS by cascade proof, not visual redesign
 
 A declaration is removable only when a later declaration has the same selector,
-property, importance-or-higher, and at-rule context. No declaration is moved, so
-the surviving cascade order and selector interactions remain unchanged. Empty
-rules left by that mechanical deletion are removed.
+property, importance-or-higher, and at-rule context, and the earlier declaration
+is not a progressive-enhancement fallback for the later value. The candidate pass
+therefore retains equivalent `vh` declarations before newer `dvh` values, including
+inside `calc()`. No declaration is moved, so the surviving cascade order and
+selector interactions remain unchanged. Empty rules left by that mechanical
+deletion are removed.
 
 ### 4. Delete configuration with no real off state
 
@@ -67,9 +70,10 @@ Per-job summary lifecycle behavior is unchanged.
 - Pruning Node modules can omit a runtime import → run the control-plane health
   command and recording-worker entrypoint/import checks in final images.
 - CSS removal can alter a conditional cascade if matching is too broad → match
-  exact selector/property/at-rule context only, compare the result byte-for-byte
-  with the mechanically generated output, and retain the existing viewport
-  contract tests; use rendered inspection when browser control is available.
+  exact selector/property/at-rule context, retain declarations whose values form
+  progressive-enhancement fallbacks, compare the result byte-for-byte with the
+  mechanically generated output, and retain focused fallback/viewport contract
+  tests; use rendered inspection when browser control is available.
 - Removing test-only helpers can hide an external script consumer → perform a
   repository-wide reference sweep before and after deletion.
 

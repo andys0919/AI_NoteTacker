@@ -7,6 +7,7 @@ maintained runtime path consumes them, while preserving active observable behavi
 #### Scenario: Maintainer removes console scaffolding
 - **WHEN** the console stylesheet and browser modules are simplified
 - **THEN** removed CSS declarations were shadowed by a later declaration with the same selector, property, and conditional context
+- **AND** declarations that provide syntactic fallbacks for later CSS values remain in cascade order
 - **AND** removed browser helpers, view-model fields, and focused tests have no maintained runtime caller
 - **AND** an exact mechanical-output comparison plus focused viewport contract tests retain the active console behavior
 - **AND** desktop and narrow dashboard and admin-login renders retain complete, unclipped content without horizontal overflow

@@ -45,6 +45,21 @@ describe('responsive console styles', () => {
     expect(css).toContain('min-height: 44px;');
   });
 
+  it('keeps viewport-height fallbacks before dynamic viewport units', () => {
+    const css = readFileSync(resolve(import.meta.dirname, '../public/styles.css'), 'utf-8');
+    const bodyRule = css.match(/(?:^|\n)body\s*\{([^}]*)\}/)?.[1] ?? '';
+    const adminRailRules = [...css.matchAll(/\.admin-rail\s*\{([^}]*)\}/g)]
+      .map((match) => match[1])
+      .join('\n');
+
+    expect(bodyRule).toMatch(/min-height:\s*100vh;\s*min-height:\s*100dvh;/);
+    expect(adminRailRules).toContain('max-height: calc(100vh - 3rem);');
+    expect(adminRailRules).toContain('max-height: calc(100dvh - 3rem);');
+    expect(adminRailRules.indexOf('max-height: calc(100vh - 3rem);')).toBeLessThan(
+      adminRailRules.indexOf('max-height: calc(100dvh - 3rem);')
+    );
+  });
+
   it('keeps the summary navigation sticky in the page without a nested scrollbar', () => {
     const css = readFileSync(resolve(import.meta.dirname, '../public/styles.css'), 'utf-8');
     const rule = [...css.matchAll(/\.summary-toc\s*\{([^}]*)\}/g)]

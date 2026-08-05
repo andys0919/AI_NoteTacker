@@ -40,6 +40,7 @@ html {
 
 body {
   margin: 0;
+  min-height: 100vh;
   min-height: 100dvh;
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 1rem;
@@ -1237,6 +1238,7 @@ summary {
 }
 
 .admin-rail {
+  max-height: calc(100vh - 3rem);
   display: grid;
   gap: 1rem;
   align-self: start;

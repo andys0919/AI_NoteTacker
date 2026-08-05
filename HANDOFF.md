@@ -46,20 +46,25 @@ https://<resource-host>/openai/v1/responses
   不再保留 TypeScript、Vitest、tsx 與 type packages。
 - 本機 build 後 image size：summary `610,707,726` bytes（原
   `4,166,271,374`，-85.3%）、transcription `3,418,958,796`（原
-  `4,166,255,792`，-17.9%）、control-plane `246,114,854`（原
+  `4,166,255,792`，-17.9%）、control-plane `246,114,909`（原
   `342,578,336`，-28.2%）、recording-worker `227,157,245`（原
-  `301,615,980`，-24.7%）；合計減少 `4,473,782,861` bytes（49.8%）。
-- console 刪除 364 個被後方相同 selector／property／at-rule context 覆蓋的
-  CSS declarations 與 73 個空 rules，共 624 行；另刪除無 runtime caller 的
+  `301,615,980`，-24.7%）；合計減少 `4,473,782,806` bytes（49.8%）。
+- console 刪除 362 個被後方相同 selector／property／at-rule context 覆蓋的
+  CSS declarations 與 73 個空 rules，共 622 行；body 與 admin rail 的
+  `vh`／`dvh` progressive-enhancement fallback pairs 保持原順序。另刪除無
+  runtime caller 的
   browser helpers／view-model fields／test-only coverage。CSS 檔案已與機械產生
   的精確刪除結果逐 byte 比對，相關 layout／share shell／helper/API tests 為
-  8 files、66 tests PASS。
+  8 files、66 tests PASS；review-loop fallback 修正後受影響的 layout tests 為
+  1 file、6 tests PASS。
 - `npm run build`、Python production Compose test、base／production／smoke
   Compose target／stage isolation assertions、修改過的 JS syntax、runtime probe
   argument parsing、dead-reference scan、worker image import／dependency assertions
   與 control-plane container health 均通過。
-- 完整 diff 以 `5dff4d5` 為 fixed point 完成 Standards／Spec 雙軸 review；補齊
-  viewport render 證據後兩軸 re-review 均為 0 findings。
+- 完整 diff 以 `5dff4d5` 為 fixed point 完成初始 Standards／Spec 雙軸 review；
+  使用者要求的 post-push review loop 第 1 輪找到並修正 `vh`／`dvh` fallback
+  與孤立 readiness 註解兩個 Low findings；第 2 輪 Standards／Spec 均為
+  0 findings，review loop 終止。
 - in-app browser control 本次不可用，因此改以本機 Chromium DevTools Protocol
   渲染並人工檢查 dashboard `1440x1200`／`390x844` 與 admin login
   `1440x1000`／`390x844`；四個畫面的標題、卡片、表單、按鈕、間距與響應式
