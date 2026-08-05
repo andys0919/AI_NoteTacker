@@ -147,7 +147,7 @@ services:
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN to a dedicated secret of at least 32 bytes}
       POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-1000}
       SUMMARY_MODEL: ${SUMMARY_MODEL:-gpt-5.6-luna}
-      SUMMARY_REASONING_EFFORT: ${SUMMARY_REASONING_EFFORT:-high}
+      SUMMARY_REASONING_EFFORT: ${SUMMARY_REASONING_EFFORT:-max}
       WORKER_ID: summarizer-alpha
       CODEX_HOME: /codex-home
     volumes:

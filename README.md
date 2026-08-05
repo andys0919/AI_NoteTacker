@@ -257,7 +257,7 @@ Important defaults from [`.env.example`](.env.example):
 - `DEFAULT_TRANSCRIPTION_PROVIDER=azure-speech-mai-transcribe-1.5`
 - `DEFAULT_SUMMARY_PROVIDER=azure-openai`
 - `SUMMARY_MODEL=gpt-5.6-luna`
-- `SUMMARY_REASONING_EFFORT=high`
+- `SUMMARY_REASONING_EFFORT=max`
 - `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS=900`
 - `MAX_CONCURRENT_TRANSCRIPTION_JOBS=1`
 - `MAX_MEETING_JOB_BACKLOG=2`
@@ -328,7 +328,7 @@ control-plane and summary worker:
 - `AZURE_OPENAI_SUMMARY_ENDPOINT` — HTTPS URL whose normalized path is exactly `/openai/v1/responses`
 - `AZURE_OPENAI_SUMMARY_API_KEY`
 - `SUMMARY_MODEL`
-- `SUMMARY_REASONING_EFFORT=high`
+- `SUMMARY_REASONING_EFFORT=max`
 - optional `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS` (default `900`)
 
 Python transcription/summary worker GET/POST/heartbeat calls use

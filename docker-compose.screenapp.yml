@@ -25,7 +25,7 @@ services:
 
   summary-worker:
     environment:
-      SUMMARY_REASONING_EFFORT: high
+      SUMMARY_REASONING_EFFORT: ${SUMMARY_REASONING_EFFORT:-max}
       CODEX_CLI_PATH: codex
       CODEX_HOME: /codex-home
     volumes:
