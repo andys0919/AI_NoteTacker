@@ -198,7 +198,15 @@ describe('meeting share API', () => {
     const repository = new InMemoryRecordingJobRepository();
     const job = createCompletedJob();
     await repository.save(job);
-    const app = createApp(repository, { meetingShareSecret: shareSecret });
+    const app = createApp(repository, {
+      meetingShareSecret: shareSecret,
+      uploadedAudioStorage: {
+        async storeUpload() {
+          throw new Error('not used by this test');
+        },
+        async deleteObjects() {}
+      }
+    });
 
     const created = await createShare(app, job.id);
     const rotated = await request(app)
@@ -246,9 +254,11 @@ describe('meeting share API', () => {
 
     vi.setSystemTime(now);
     const activeAgain = await createShare(app, job.id);
-    await request(app)
+    const deletedJob = await request(app)
       .delete(`/api/operator/jobs/${job.id}`)
       .send({ submitterId: 'operator-share' });
+    expect(deletedJob.status).toBe(200);
+    expect(deletedJob.body.artifactCleanup).toEqual({ status: 'completed', objectCount: 1 });
     const deleted = await request(app)
       .get('/api/shared-meeting')
       .set('Authorization', `Bearer ${activeAgain.body.token}`);
