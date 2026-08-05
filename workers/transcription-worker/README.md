@@ -1,6 +1,8 @@
 # Transcription and Summary Workers
 
-The shared worker image runs separate transcription and summary processes.
+The worker Dockerfile exposes separate `transcription` and `summary` targets.
+They share source code, but each image contains only the packages its process
+uses.
 
 ## Current Behavior
 

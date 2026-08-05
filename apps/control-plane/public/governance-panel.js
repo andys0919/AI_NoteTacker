@@ -162,30 +162,6 @@ export const getAdminGovernanceViewModel = ({
   };
 };
 
-export const getQuotaDisplayModel = (payload) => {
-  if (!payload) {
-    return {
-      hidden: true,
-      remainingLabel: '',
-      breakdownText: ''
-    };
-  }
-
-  const consumed = getCloudCostDisplayModel({
-    totalCostUsd: payload.consumedUsd,
-    pricedCostUsd: payload.pricedConsumedUsd ?? payload.consumedUsd,
-    hasUnpricedUsage: payload.hasUnpricedUsage === true
-  });
-
-  return {
-    hidden: false,
-    remainingLabel: `${formatTwdFromUsd(payload.remainingUsd)}${
-      payload.hasUnpricedUsage ? '（依已知費用計算）' : ''
-    }`,
-    breakdownText: `${payload.hasUnpricedUsage ? consumed.label : '已用'} ${consumed.value} / 保留 ${formatTwdFromUsd(payload.reservedUsd)} / 總額 ${formatTwdFromUsd(payload.dailyQuotaUsd)}`
-  };
-};
-
 export const getAuditEntryViewModels = (entries = [], formatTimestamp = (value) => value) =>
   entries.map((entry) => ({
     action: entry.action,

@@ -1,39 +1,23 @@
 #!/usr/bin/env node
 
 import { readFile } from 'node:fs/promises';
+import { parseArgs } from 'node:util';
 
-const parseArgs = (argv) => {
-  const values = new Map();
+const { values: args } = parseArgs({
+  options: Object.fromEntries(
+    ['base-url', 'meeting-url', 'submitter-prefix', 'meetings', 'uploads', 'audio-file', 'auth-token'].map(
+      (name) => [name, { type: 'string' }]
+    )
+  )
+});
 
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index];
-
-    if (!token.startsWith('--')) {
-      continue;
-    }
-
-    const [rawKey, inlineValue] = token.slice(2).split('=', 2);
-    const nextValue = inlineValue ?? argv[index + 1];
-
-    if (inlineValue === undefined) {
-      index += 1;
-    }
-
-    values.set(rawKey, nextValue);
-  }
-
-  return values;
-};
-
-const args = parseArgs(process.argv.slice(2));
-
-const baseUrl = (args.get('base-url') ?? process.env.CONTROL_PLANE_BASE_URL ?? 'http://127.0.0.1:3000').replace(/\/+$/, '');
-const meetingUrl = args.get('meeting-url') ?? 'https://meet.google.com/abc-defg-hij';
-const submitterPrefix = args.get('submitter-prefix') ?? 'load-probe';
-const meetingCount = Number(args.get('meetings') ?? '0');
-const uploadCount = Number(args.get('uploads') ?? '0');
-const audioFilePath = args.get('audio-file');
-const authToken = args.get('auth-token') ?? process.env.LOAD_PROBE_AUTH_TOKEN;
+const baseUrl = (args['base-url'] ?? process.env.CONTROL_PLANE_BASE_URL ?? 'http://127.0.0.1:3000').replace(/\/+$/, '');
+const meetingUrl = args['meeting-url'] ?? 'https://meet.google.com/abc-defg-hij';
+const submitterPrefix = args['submitter-prefix'] ?? 'load-probe';
+const meetingCount = Number(args.meetings ?? '0');
+const uploadCount = Number(args.uploads ?? '0');
+const audioFilePath = args['audio-file'];
+const authToken = args['auth-token'] ?? process.env.LOAD_PROBE_AUTH_TOKEN;
 
 if (!Number.isInteger(meetingCount) || meetingCount < 0) {
   throw new Error('--meetings must be a non-negative integer');

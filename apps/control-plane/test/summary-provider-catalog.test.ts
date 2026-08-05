@@ -7,9 +7,7 @@ import {
 
 describe('summary provider catalog', () => {
   it('defaults to local codex when azure summary is not configured', () => {
-    const catalog = createSummaryProviderCatalog({
-      summaryEnabled: true
-    });
+    const catalog = createSummaryProviderCatalog();
 
     expect(catalog.defaultProvider).toBe('local-codex');
     expect(catalog.isReady('local-codex')).toBe(true);
@@ -22,7 +20,6 @@ describe('summary provider catalog', () => {
   it('allows azure summary as the default when endpoint and api key exist', () => {
     const catalog = createSummaryProviderCatalog({
       defaultProvider: 'azure-openai',
-      summaryEnabled: true,
       azureOpenAiSummaryEndpoint: 'https://azure.example.test/openai/v1/responses',
       azureOpenAiSummaryApiKey: 'secret'
     });
@@ -35,7 +32,6 @@ describe('summary provider catalog', () => {
   it('rejects a chat completions endpoint for the responses provider', () => {
     const catalog = createSummaryProviderCatalog({
       defaultProvider: 'azure-openai',
-      summaryEnabled: true,
       azureOpenAiSummaryEndpoint: 'https://azure.example.test/openai/v1/chat/completions',
       azureOpenAiSummaryApiKey: 'secret'
     });
@@ -48,7 +44,6 @@ describe('summary provider catalog', () => {
   it('rejects a non-https responses endpoint', () => {
     const catalog = createSummaryProviderCatalog({
       defaultProvider: 'azure-openai',
-      summaryEnabled: true,
       azureOpenAiSummaryEndpoint: 'http://azure.example.test/openai/v1/responses',
       azureOpenAiSummaryApiKey: 'secret'
     });
@@ -58,7 +53,6 @@ describe('summary provider catalog', () => {
 
   it('does not reuse azure transcription credentials for summary readiness', () => {
     const catalog = createSummaryProviderCatalogFromEnvironment({
-      SUMMARY_ENABLED: 'true',
       DEFAULT_SUMMARY_PROVIDER: 'azure-openai',
       AZURE_OPENAI_ENDPOINT: 'https://azure.example.test/',
       AZURE_OPENAI_API_KEY: 'secret'

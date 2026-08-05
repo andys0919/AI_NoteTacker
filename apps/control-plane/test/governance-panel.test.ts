@@ -7,7 +7,6 @@ import {
   getAdminGovernanceViewModel,
   getAuditEntryViewModels,
   getCloudCostDisplayModel,
-  getQuotaDisplayModel,
   getUsageHistoryCostViewModel,
   getUsageReportRowViewModels
 } from '../public/governance-panel.js';
@@ -232,38 +231,6 @@ describe('governance panel helpers', () => {
 
     expect(model.submitDisabled).toBe(true);
     expect(model.summaryModelInputDisabled).toBe(false);
-  });
-
-  it('builds a visible quota display model', () => {
-    expect(
-      getQuotaDisplayModel({
-        dailyQuotaUsd: 5,
-        consumedUsd: 1.25,
-        reservedUsd: 0.5,
-        remainingUsd: 3.25
-      })
-    ).toEqual({
-      hidden: false,
-      remainingLabel: 'NT$103.73',
-      breakdownText: '已用 NT$39.90 / 保留 NT$15.96 / 總額 NT$159.59'
-    });
-  });
-
-  it('shows quota consumption as known cost when usage also contains unpriced entries', () => {
-    expect(
-      getQuotaDisplayModel({
-        dailyQuotaUsd: 5,
-        consumedUsd: null,
-        pricedConsumedUsd: 1.25,
-        hasUnpricedUsage: true,
-        reservedUsd: 0.5,
-        remainingUsd: 3.25
-      })
-    ).toEqual({
-      hidden: false,
-      remainingLabel: 'NT$103.73（依已知費用計算）',
-      breakdownText: '已知費用 NT$39.90（含未定價用量） / 保留 NT$15.96 / 總額 NT$159.59'
-    });
   });
 
   it('builds an empty audit entry list and formatted entry view models', () => {

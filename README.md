@@ -107,6 +107,10 @@ runtime images and directly installed worker dependencies are pinned for repeata
 rebuilds. PostgreSQL schema setup is recorded in `schema_migrations` and serialized
 with an advisory transaction lock during control-plane startup.
 
+Compose builds separate `transcription` and `summary` targets from the existing
+worker Dockerfile. The Node services use build/runtime stages so compilers and
+test packages are not retained in their production images.
+
 Open:
 
 ```text
@@ -254,7 +258,6 @@ Important defaults from [`.env.example`](.env.example):
 - `DEFAULT_SUMMARY_PROVIDER=azure-openai`
 - `SUMMARY_MODEL=gpt-5.6-luna`
 - `SUMMARY_REASONING_EFFORT=high`
-- `SUMMARY_ENABLED=true` (control-plane summary-provider readiness)
 - `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS=900`
 - `MAX_CONCURRENT_TRANSCRIPTION_JOBS=1`
 - `MAX_MEETING_JOB_BACKLOG=2`
@@ -390,9 +393,6 @@ For local Codex, check the summary worker environment:
 
 - `CODEX_HOME` is mounted into the container
 - `CODEX_CLI_PATH` resolves to the Codex executable
-
-Also verify `SUMMARY_ENABLED=true` on the control-plane so the local summary
-provider is advertised as ready.
 
 For Azure OpenAI, also check:
 

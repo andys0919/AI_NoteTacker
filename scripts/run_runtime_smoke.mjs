@@ -1,36 +1,21 @@
 #!/usr/bin/env node
 
 import { setTimeout as sleep } from 'node:timers/promises';
+import { parseArgs } from 'node:util';
 
-const parseArgs = (argv) => {
-  const values = new Map();
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index];
-
-    if (!token.startsWith('--')) {
-      continue;
-    }
-
-    const [rawKey, inlineValue] = token.slice(2).split('=', 2);
-    const nextValue = inlineValue ?? argv[index + 1];
-
-    if (inlineValue === undefined) {
-      index += 1;
-    }
-
-    values.set(rawKey, nextValue);
-  }
-
-  return values;
-};
-
-const args = parseArgs(process.argv.slice(2));
-const baseUrl = (args.get('base-url') ?? 'http://127.0.0.1:3000').replace(/\/+$/, '');
-const meetingUrl = args.get('meeting-url') ?? 'https://meet.google.com/abc-defg-hij';
-const timeoutMs = Number(args.get('timeout-ms') ?? '240000');
-const pollIntervalMs = Number(args.get('poll-interval-ms') ?? '2000');
-const idPrefix = args.get('id-prefix') ?? `smoke-${Date.now()}`;
+const { values: args } = parseArgs({
+  options: Object.fromEntries(
+    ['base-url', 'meeting-url', 'timeout-ms', 'poll-interval-ms', 'id-prefix'].map((name) => [
+      name,
+      { type: 'string' }
+    ])
+  )
+});
+const baseUrl = (args['base-url'] ?? 'http://127.0.0.1:3000').replace(/\/+$/, '');
+const meetingUrl = args['meeting-url'] ?? 'https://meet.google.com/abc-defg-hij';
+const timeoutMs = Number(args['timeout-ms'] ?? '240000');
+const pollIntervalMs = Number(args['poll-interval-ms'] ?? '2000');
+const idPrefix = args['id-prefix'] ?? `smoke-${Date.now()}`;
 
 if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
   throw new Error('--timeout-ms must be a positive number');

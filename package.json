@@ -9,7 +9,7 @@
   "scripts": {
     "build": "npm run build:node && npm run build:python",
     "build:node": "npm run build --workspaces --if-present",
-    "build:python": "python3 scripts/compile_transcription_worker.py",
+    "build:python": "test -d workers/transcription-worker/src && python3 -m compileall -q workers/transcription-worker/src",
     "dev": "npm exec --workspace @ai-notetacker/control-plane -- tsx watch src/server.ts",
     "test": "npm run test:node && npm run test:python",
     "test:node": "npm run test --workspaces --if-present",

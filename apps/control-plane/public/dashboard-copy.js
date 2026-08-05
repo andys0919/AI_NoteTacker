@@ -1,4 +1,4 @@
-import { getJobProgressModel, getProgressLabel } from './job-progress.js';
+import { getJobProgressModel } from './job-progress.js';
 import { formatTwdFromUsd } from './currency-display.js';
 
 const badgeLabels = {
@@ -91,8 +91,6 @@ export const getEmptyStateMessage = (search) =>
     : '尚無會議筆記。加入會議或上傳錄音後，進度與結果會顯示在這裡。';
 
 export const renderOptionalMarkup = (value) => (typeof value === 'string' ? value : '');
-
-export const getHistoryStageLabel = (stage) => getProgressLabel(stage || 'queued');
 
 export const formatJobTimestamp = (value) =>
   new Date(value).toLocaleString('zh-TW', {
@@ -194,13 +192,10 @@ export const getJobCardViewModel = (job) => {
     progressProcessedMs: progress.processedMs,
     progressTotalMs: progress.totalMs,
     showProgress: job.state !== 'completed' && job.state !== 'failed',
-    showHistory: false,
     createdLabel: '送出時間',
     updatedLabel: '最近更新',
     durationLabel: durationText ? '時長' : null,
     durationValue: durationText,
-    totalCostLabel: totalCostDisplay.label,
-    totalCostValue: totalCostDisplay.value,
     costItems,
     createdAtText: formatJobTimestamp(job.createdAt),
     updatedAtText: formatJobTimestamp(job.updatedAt)

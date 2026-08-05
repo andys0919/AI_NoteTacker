@@ -31,8 +31,6 @@ export const getArchivePageState = (jobs, filterId, hasMore, searchQuery) => ({
   canLoadMore: Boolean(hasMore && !String(searchQuery || '').trim())
 });
 
-export const getPreferredQuickExportFormat = (job) => job.preferredExportFormat || 'markdown';
-
 export const getJobActionSet = (job, runtimeState) => {
   const actions = [];
 
@@ -56,24 +54,4 @@ export const getJobActionSet = (job, runtimeState) => {
   }
 
   return actions;
-};
-
-export const buildJobSharePayload = (job, origin) => {
-  const url = new URL(origin);
-  url.search = '';
-  url.searchParams.set('jobId', job.id);
-
-  const structured = job.summaryArtifact?.structured;
-  const keyPoints =
-    structured?.keyPoints?.length
-      ? structured.keyPoints
-      : structured?.summary
-        ? [structured.summary]
-        : [];
-
-  return {
-    summaryText: job.summaryArtifact?.text || '',
-    keyPointsText: keyPoints.map((item) => `- ${item}`).join('\n'),
-    shareUrl: url.toString()
-  };
 };

@@ -36,6 +36,38 @@ https://<resource-host>/openai/v1/responses
 
 ## 目前 checkpoint
 
+### 2026-08-05 runtime／console scaffolding follow-up（本機 image，未部署）
+
+- 新 OpenSpec change `shrink-runtime-and-console-scaffolding` 與 GitHub issue
+  `andys0919/AI_NoteTacker#7` 追蹤本次 audit follow-up；strict validation 通過。
+- 既有 Python worker Dockerfile 已提供 `transcription`／`summary` targets；
+  summary image 不含 Whisper、CUDA、FFmpeg、S3、OpenCC 或 npm，transcription
+  image 不含 Node、npm 或 Codex。control-plane／recording-worker final images
+  不再保留 TypeScript、Vitest、tsx 與 type packages。
+- 本機 build 後 image size：summary `610,707,726` bytes（原
+  `4,166,271,374`，-85.3%）、transcription `3,418,958,796`（原
+  `4,166,255,792`，-17.9%）、control-plane `246,114,854`（原
+  `342,578,336`，-28.2%）、recording-worker `227,157,245`（原
+  `301,615,980`，-24.7%）；合計減少 `4,473,782,861` bytes（49.8%）。
+- console 刪除 364 個被後方相同 selector／property／at-rule context 覆蓋的
+  CSS declarations 與 73 個空 rules，共 624 行；另刪除無 runtime caller 的
+  browser helpers／view-model fields／test-only coverage。CSS 檔案已與機械產生
+  的精確刪除結果逐 byte 比對，相關 layout／share shell／helper/API tests 為
+  8 files、66 tests PASS。
+- `npm run build`、Python production Compose test、base／production／smoke
+  Compose target／stage isolation assertions、修改過的 JS syntax、runtime probe
+  argument parsing、dead-reference scan、worker image import／dependency assertions
+  與 control-plane container health 均通過。
+- 完整 diff 以 `5dff4d5` 為 fixed point 完成 Standards／Spec 雙軸 review；補齊
+  viewport render 證據後兩軸 re-review 均為 0 findings。
+- in-app browser control 本次不可用，因此改以本機 Chromium DevTools Protocol
+  渲染並人工檢查 dashboard `1440x1200`／`390x844` 與 admin login
+  `1440x1000`／`390x844`；四個畫面的標題、卡片、表單、按鈕、間距與響應式
+  排版完整，document `scrollWidth` 等於 `clientWidth`，沒有水平 overflow。
+- 只重建本機 image tags，沒有 recreate 或 deploy。現有四個 live app
+  containers 仍使用舊 image IDs `6a4fe3cb31b9`、`0a82c67821ca`、
+  `ec30ed8fff8d`、`07aaeee2b57d`。
+
 ### Done（截至 2026-07-31 的實作 checkpoint；非目前 WIP 驗證）
 
 - 共用 `azure_openai_responses.py` 承接摘要 request/response/usage 契約；沒有

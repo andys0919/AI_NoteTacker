@@ -47,7 +47,9 @@ describe('responsive console styles', () => {
 
   it('keeps the summary navigation sticky in the page without a nested scrollbar', () => {
     const css = readFileSync(resolve(import.meta.dirname, '../public/styles.css'), 'utf-8');
-    const rule = css.match(/\.summary-toc\s*\{([^}]*)\}/)?.[1] ?? '';
+    const rule = [...css.matchAll(/\.summary-toc\s*\{([^}]*)\}/g)]
+      .map((match) => match[1])
+      .join('\n');
 
     expect(rule).toMatch(/position:\s*sticky;/);
     expect(rule).toMatch(/top:\s*[^;]+;/);

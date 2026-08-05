@@ -28,8 +28,7 @@ describe('dashboard copy helpers', () => {
       badgeLabel: '錄製中',
       statusSummary: '系統正在擷取會議內容，完成後會自動產出逐字稿與摘要。',
       progressLabel: '錄製會議中',
-      showProgress: true,
-      showHistory: false
+      showProgress: true
     });
   });
 
@@ -98,11 +97,8 @@ describe('dashboard copy helpers', () => {
       statusSummary: '逐字稿與摘要已完成，可直接查看或匯出。',
       durationLabel: '時長',
       durationValue: '1:46:47',
-      totalCostLabel: '總費用',
-      totalCostValue: 'NT$3.93',
       progressLabel: '已完成',
-      showProgress: false,
-      showHistory: false
+      showProgress: false
     });
     expect(model.costItems).toEqual([{ label: '總費用', value: 'NT$3.93' }]);
     expect(model).not.toHaveProperty('transcriptionCostLabel');
@@ -127,10 +123,6 @@ describe('dashboard copy helpers', () => {
       updatedAt: '2026-07-15T09:08:00.000Z'
     });
 
-    expect(model).toMatchObject({
-      totalCostLabel: '總費用',
-      totalCostValue: 'NT$3.83（含未定價用量）'
-    });
     expect(model.costItems).toEqual([
       { label: '總費用', value: 'NT$3.83（含未定價用量）' }
     ]);
@@ -154,8 +146,6 @@ describe('dashboard copy helpers', () => {
       updatedAt: '2026-07-15T09:08:00.000Z'
     });
 
-    expect(model.totalCostLabel).toBe('總費用');
-    expect(model.totalCostValue).toBe('未定價');
     expect(model.costItems).toEqual([{ label: '總費用', value: '未定價' }]);
   });
 

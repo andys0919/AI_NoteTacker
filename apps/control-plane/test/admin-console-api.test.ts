@@ -41,7 +41,6 @@ describe('admin console (username/password) API', () => {
         azureOpenAiApiKey: 'secret'
       }),
       summaryProviderCatalog: createSummaryProviderCatalog({
-        summaryEnabled: true,
         azureOpenAiSummaryEndpoint: 'https://azure-summary.example.test/openai/v1/responses',
         azureOpenAiSummaryApiKey: 'secret'
       })

@@ -20,7 +20,6 @@ export type SummaryProviderCatalog = {
 
 type CatalogInput = {
   defaultProvider?: string;
-  summaryEnabled?: boolean;
   azureOpenAiSummaryEndpoint?: string;
   azureOpenAiSummaryApiKey?: string;
 };
@@ -46,7 +45,6 @@ const isResponsesEndpoint = (value: string | undefined): boolean => {
 export const createSummaryProviderCatalog = (
   input: CatalogInput = {}
 ): SummaryProviderCatalog => {
-  const localReady = input.summaryEnabled ?? true;
   const azureReady =
     isResponsesEndpoint(input.azureOpenAiSummaryEndpoint) &&
     hasValue(input.azureOpenAiSummaryApiKey);
@@ -55,8 +53,7 @@ export const createSummaryProviderCatalog = (
     {
       value: 'local-codex',
       label: getSummaryProviderLabel('local-codex'),
-      ready: localReady,
-      reason: localReady ? undefined : 'SUMMARY_ENABLED must be true.'
+      ready: true
     },
     {
       value: 'azure-openai',
@@ -88,7 +85,6 @@ export const createSummaryProviderCatalogFromEnvironment = (
 ): SummaryProviderCatalog =>
   createSummaryProviderCatalog({
     defaultProvider: environment.DEFAULT_SUMMARY_PROVIDER,
-    summaryEnabled: (environment.SUMMARY_ENABLED ?? 'true').toLowerCase() === 'true',
     azureOpenAiSummaryEndpoint: environment.AZURE_OPENAI_SUMMARY_ENDPOINT,
     azureOpenAiSummaryApiKey: environment.AZURE_OPENAI_SUMMARY_API_KEY
   });

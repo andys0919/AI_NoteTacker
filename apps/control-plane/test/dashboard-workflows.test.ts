@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  buildJobSharePayload,
   filterJobsByQuickFilter,
   getArchivePageState,
-  getJobActionSet,
-  getPreferredQuickExportFormat
+  getJobActionSet
 } from '../public/dashboard-workflows.js';
 
 describe('dashboard workflow helpers', () => {
@@ -52,37 +50,6 @@ describe('dashboard workflow helpers', () => {
       visibleJobs: [],
       canLoadMore: true
     });
-  });
-
-  it('builds share-ready summary, key-points, and deep-link payloads', () => {
-    const payload = buildJobSharePayload(
-      {
-        id: 'job_share_1',
-        requestedJoinName: 'Sales NoteTaker',
-        meetingUrl: 'https://meet.google.com/share-demo',
-        summaryArtifact: {
-          text: '## Summary\n- 已確認客戶需求',
-          structured: {
-            summary: '已確認客戶需求',
-            keyPoints: ['客戶希望四月上線', '需要補正式報價'],
-            actionItems: [],
-            decisions: [],
-            risks: [],
-            openQuestions: []
-          }
-        }
-      },
-      'http://localhost:3000'
-    );
-
-    expect(payload.summaryText).toContain('已確認客戶需求');
-    expect(payload.keyPointsText).toContain('客戶希望四月上線');
-    expect(payload.shareUrl).toBe('http://localhost:3000/?jobId=job_share_1');
-  });
-
-  it('prefers the persisted export format when present', () => {
-    expect(getPreferredQuickExportFormat({ preferredExportFormat: 'json' })).toBe('json');
-    expect(getPreferredQuickExportFormat({})).toBe('markdown');
   });
 
   it('reduces terminal job actions to markdown export and delete only', () => {

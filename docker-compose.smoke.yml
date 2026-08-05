@@ -4,7 +4,6 @@ services:
       DEPLOYMENT_MODE: local
       DEFAULT_TRANSCRIPTION_PROVIDER: self-hosted-whisper
       DEFAULT_SUMMARY_PROVIDER: local-codex
-      SUMMARY_ENABLED: "true"
       SUPABASE_URL: ""
       SUPABASE_PUBLISHABLE_KEY: ""
     depends_on:
