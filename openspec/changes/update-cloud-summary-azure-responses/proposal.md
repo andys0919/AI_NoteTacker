@@ -46,6 +46,10 @@ inheriting or guessing a price.
 - Configure the now-published `gpt-5.6-luna` Global Standard rates for the
   verified `2026-07-09` deployment, and configure MAI Transcribe 1.5 against
   the verified Azure Speech Fast Transcription hourly meter.
+- Refresh those exact USD meters plus the exact TWD reference meter at
+  control-plane startup and every 24 hours, accepting only a complete,
+  internally consistent, currently effective Consumption snapshot and
+  otherwise retaining the last verified catalog.
 - Resolve historical unpriced rows from their preserved meter details at read
   time without mutating the immutable usage ledger. Preserve an unpriced flag
   when only a metered lower bound is known.
@@ -69,7 +73,7 @@ inheriting or guessing a price.
   - Azure summary and punctuation callers
   - worker callbacks and stage usage payloads
   - control-plane cloud usage ledger, pricing, settlement, lifecycle handling,
-    migrations, APIs, and reports
+    migrations, Azure retail-price refresh, APIs, and reports
   - related worker and control-plane tests
   - deployment configuration for the explicit Responses endpoint/key and model
 - Operational impact: per-chunk `gpt-5.6-luna` punctuation calls may add

@@ -51,7 +51,7 @@ actual USD cost.
 - **AND** it does not store a partial summary artifact
 
 #### Scenario: Summary JSON is missing its required schema
-- **WHEN** assistant output parses as JSON but does not contain a non-empty string `summary` and string-array `key_points`, `action_items`, `decisions`, `risks`, and `open_questions`
+- **WHEN** assistant output parses as JSON but does not contain a non-empty string `summary`, a valid `topics` array, and string-array `key_points`, `action_items`, `decisions`, `risks`, and `open_questions`
 - **THEN** the summary attempt fails validation
 - **AND** an empty object or mistyped field is not rendered as a successful all-empty summary
 - **AND** any otherwise valid provider usage remains available to the failure callback

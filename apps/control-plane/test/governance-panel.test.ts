@@ -4,7 +4,6 @@ import {
   formatProviderLabel,
   formatSummaryModeLabel,
   formatUsageStageLabel,
-  formatUsd,
   getAdminGovernanceViewModel,
   getAuditEntryViewModels,
   getCloudCostDisplayModel,
@@ -16,16 +15,13 @@ import {
 describe('governance panel helpers', () => {
   it('formats provider labels for transcription and summary routes', () => {
     expect(formatProviderLabel('self-hosted-whisper')).toBe('Whisper 自架');
+    expect(formatProviderLabel('qwen3-asr-1.7b')).toBe('Qwen3-ASR 1.7B');
+    expect(formatProviderLabel('azure-speech-mai-transcribe-1.5')).toBe(
+      'Azure Speech MAI 1.5'
+    );
     expect(formatProviderLabel('azure-openai-gpt-4o-transcribe')).toBe('Azure OpenAI');
     expect(formatSummaryModeLabel('local-codex')).toBe('地端 Codex');
     expect(formatSummaryModeLabel('azure-openai')).toBe('雲端');
-  });
-
-  it('formats usd values with fixed precision', () => {
-    expect(formatUsd(1.23456)).toBe('$1.235');
-    expect(formatUsd(0)).toBe('$0.000');
-    expect(formatUsd(null)).toBe('未定價');
-    expect(formatUsd(undefined)).toBe('未定價');
   });
 
   it('formats known cost separately from unpriced usage', () => {
@@ -37,7 +33,7 @@ describe('governance panel helpers', () => {
       })
     ).toEqual({
       label: '已知費用',
-      value: '$1.250（含未定價用量）'
+      value: 'NT$39.90（含未定價用量）'
     });
     expect(
       getCloudCostDisplayModel({
@@ -57,13 +53,13 @@ describe('governance panel helpers', () => {
       })
     ).toEqual({
       label: '總費用',
-      value: '$1.250'
+      value: 'NT$39.90'
     });
   });
 
   it('adds the punctuation stage label', () => {
     expect(formatUsageStageLabel('transcription')).toBe('轉寫');
-    expect(formatUsageStageLabel('punctuation')).toBe('標點');
+    expect(formatUsageStageLabel('punctuation')).toBe('潤稿');
     expect(formatUsageStageLabel('summary')).toBe('摘要');
   });
 
@@ -91,13 +87,13 @@ describe('governance panel helpers', () => {
             id: 'usage-1',
             stage: 'punctuation',
             pricingStatus: 'unpriced',
-            costUsd: null
+            costUsd: 0.08
           }
         ]
       })
     ).toEqual({
-      totalCostLabel: '$0.120（含未定價用量）',
-      totalCostSummary: '已知費用 $0.120（含未定價用量） / 未定價 2 筆',
+      totalCostLabel: 'NT$3.83（含未定價用量）',
+      totalCostSummary: '已知費用 NT$3.83（含未定價用量） / 未定價 2 筆',
       byModel: [
         {
           model: 'gpt-5.6-luna',
@@ -106,7 +102,7 @@ describe('governance panel helpers', () => {
           totalCostUsd: null,
           hasUnpricedUsage: true,
           unpricedEntryCount: 1,
-          stageLabel: '標點',
+          stageLabel: '潤稿',
           costLabel: '未定價',
           unpricedCountLabel: '未定價 1 筆'
         }
@@ -116,9 +112,9 @@ describe('governance panel helpers', () => {
           id: 'usage-1',
           stage: 'punctuation',
           pricingStatus: 'unpriced',
-          costUsd: null,
-          stageLabel: '標點',
-          costLabel: '未定價'
+          costUsd: 0.08,
+          stageLabel: '潤稿',
+          costLabel: 'NT$2.55（含未定價用量）'
         }
       ]
     });
@@ -248,8 +244,8 @@ describe('governance panel helpers', () => {
       })
     ).toEqual({
       hidden: false,
-      remainingLabel: '$3.250',
-      breakdownText: '已用 $1.250 / 保留 $0.500 / 總額 $5.000'
+      remainingLabel: 'NT$103.73',
+      breakdownText: '已用 NT$39.90 / 保留 NT$15.96 / 總額 NT$159.59'
     });
   });
 
@@ -265,8 +261,8 @@ describe('governance panel helpers', () => {
       })
     ).toEqual({
       hidden: false,
-      remainingLabel: '$3.250（依已知費用計算）',
-      breakdownText: '已知費用 $1.250（含未定價用量） / 保留 $0.500 / 總額 $5.000'
+      remainingLabel: 'NT$103.73（依已知費用計算）',
+      breakdownText: '已知費用 NT$39.90（含未定價用量） / 保留 NT$15.96 / 總額 NT$159.59'
     });
   });
 
@@ -310,11 +306,11 @@ describe('governance panel helpers', () => {
       {
         identityLabel: 'user@example.com',
         submitterId: 'user-1',
-        reservedLabel: '$0.500',
+        reservedLabel: 'NT$15.96',
         consumedTitle: '已用',
-        consumedLabel: '$1.250',
-        remainingLabel: '$3.250',
-        dailyQuotaLabel: '$5.000',
+        consumedLabel: 'NT$39.90',
+        remainingLabel: 'NT$103.73',
+        dailyQuotaLabel: 'NT$159.59',
         entryCountLabel: '2 筆'
       }
     ]);
@@ -336,8 +332,8 @@ describe('governance panel helpers', () => {
       ])[0]
     ).toMatchObject({
       consumedTitle: '已知費用',
-      consumedLabel: '$1.250（含未定價用量）',
-      remainingLabel: '$3.250（依已知費用計算）'
+      consumedLabel: 'NT$39.90（含未定價用量）',
+      remainingLabel: 'NT$103.73（依已知費用計算）'
     });
   });
 });

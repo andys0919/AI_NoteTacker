@@ -44,7 +44,7 @@ class AzureOpenAiTranscriptSummarizer:
         endpoint: str,
         api_key: str,
         model: str,
-        reasoning_effort: str = "max",
+        reasoning_effort: str = "high",
         timeout_seconds: int = 300,
         urlopen=None,
     ) -> None:
@@ -165,7 +165,11 @@ class AzureOpenAiTranscriptSummarizer:
             "reasoning_effort": self._reasoning_effort,
             "text": render_summary_markdown(summary_payload),
             "structured": {
+                "title": summary_payload["title"],
                 "summary": summary_payload["summary"],
+                "topics": summary_payload["topics"],
+                "follow_up_groups": summary_payload["follow_up_groups"],
+                "analysis_notes": summary_payload["analysis_notes"],
                 "key_points": summary_payload["key_points"],
                 "action_items": summary_payload["action_items"],
                 "decisions": summary_payload["decisions"],

@@ -15,9 +15,11 @@ message-history storage, strict status/output/usage handling, finite
 socket-operation timeouts, attempt-aware settlement, and honest unpriced
 reporting.
 
-No official exact price for the Azure deployment named `gpt-5.6-luna` is
-available in the repository's authoritative pricing sources. A price from a
-different OpenAI or Azure model is not evidence for Luna pricing.
+Microsoft now publishes exact Azure Retail Prices API meters for the verified
+`gpt-5.6-luna` Global Standard deployment and the Southeast Asia MAI Fast
+Transcription meter. Those public PAYG meters can change independently from
+OpenAI direct pricing, so the runtime catalog needs a bounded freshness path
+without treating a partial or malformed provider response as authoritative.
 
 The `model` field sent to Azure is a deployment name, not sufficient billing
 identity by itself. A future catalog row must be backed by the deployment's
@@ -41,6 +43,8 @@ actual transcription cost.
 - Preserve provider usage exactly and make each lease attempt idempotent.
 - Represent unknown USD price honestly, including legacy rows whose meter
   identity cannot be reconstructed.
+- Refresh verified Azure public PAYG meters daily without replacing a valid
+  catalog with incomplete, future-dated, or inconsistent data.
 - Make deployment and rollback explicit across code, configuration, runtime
   policy, and the post-migration schema compatibility floor.
 
@@ -49,6 +53,7 @@ actual transcription cost.
 - Add an SDK dependency or enable Responses application-state/message-history
   storage.
 - Invent, scrape, or infer a Luna price.
+- Treat public Azure retail prices as subscription invoice `EffectivePrice`.
 - Reconstruct historical token usage or meter identity that was never stored.
 - Add automatic retries inside the shared Responses transport. The later
   `improve-uploaded-meeting-note-quality` change permits one summary-caller
@@ -94,11 +99,13 @@ Responses usage shape: non-negative integer `input_tokens`, `output_tokens`,
 `total_tokens`, `input_tokens_details.cached_tokens`, and
 `output_tokens_details.reasoning_tokens`. Missing or malformed usage is a failed
 summary attempt; zero is never used as a substitute for a missing required
-field. Its parsed JSON must contain all six configured summary fields: a
-non-empty string `summary` and string-array `key_points`, `action_items`,
-`decisions`, `risks`, and `open_questions`. A JSON object that merely parses but
-omits or mistypes those fields is a failed summary attempt; valid provider usage
-from that failed attempt is still settled.
+field. Its parsed JSON must contain a non-empty string `summary`, a `topics`
+array, and string-array `key_points`, `action_items`, `decisions`, `risks`, and
+`open_questions`. Each topic contains a non-empty `title`, non-empty `points`,
+non-empty `conclusion`, and `confirmed`, `mixed`, or `open` status. A JSON
+object that merely parses but omits or mistypes those fields is a failed
+summary attempt; valid provider usage from that failed attempt is still
+settled.
 
 Punctuation applies the same status/output rules, but any invalid result keeps
 the raw chunk under the existing fidelity guard.
@@ -218,6 +225,19 @@ validation cannot prove that operator-entered Azure billing identity is truthful
 or still current; activating a row still requires the documented
 deployment/Cost Details verification and a new configuration review.
 
+The control-plane refreshes the exact Luna Global Standard short-context USD
+meters and the exact Southeast Asia MAI Fast Transcription USD and TWD meters
+once before listening, then every 24 hours. It uses the platform `fetch`, a
+finite timeout, and no SDK or retry loop. A Luna snapshot is accepted only when
+input, cached input, cache write, and output rows share one currently effective
+date and each meter has one consistent non-negative USD Consumption rate across
+returned regions. The MAI rows must match their verified meter ID, region, SKU,
+unit, requested currency, and currently effective date; their positive ratio is
+the shared TWD display reference. All values update atomically; any HTTP,
+pagination, shape, future-date, missing-meter, or inconsistent-rate failure
+keeps the last verified in-memory catalog/reference and emits a warning. The
+checked-in verified values remain the cold-start fallback.
+
 ### 8. Migrate unverifiable historical cost conservatively
 
 Existing ledger rows do not retain enough deployment/meter identity to prove
@@ -279,17 +299,25 @@ pre-migration abort bundle, never while Responses callers are running.
 
 ### 10. Resolve active-change archive order before archiving
 
-Several active changes overlap these capabilities. Archive the foundational
-summary and governance changes before this change:
+Several active changes overlap these capabilities, and later deltas both modify
+and remove requirements introduced here. Use this semantic archive sequence:
 1. `add-codex-transcript-summaries` establishes the
    `Transcript-derived meeting summaries` requirement.
 2. Rebase and archive `add-cloud-usage-governance` so its MODIFIED summary
    requirement includes the then-current complete requirement and its ledger
    requirements become published truth.
-3. Revalidate this change against those published specs, preserving the full
-   MODIFIED cloud-governance requirements in this delta, then archive this
-   change.
-4. Rebase `add-admin-summary-model-switch` and
+3. Rebase and strictly revalidate this change against those published specs,
+   preserving the full MODIFIED cloud-governance requirements in this delta,
+   then archive this change.
+4. Rebase, strictly validate, and archive
+   `use-mai-luna-transcription-pipeline` against the published Responses and
+   punctuation requirements.
+5. Only after both `update-cloud-summary-azure-responses` and
+   `use-mai-luna-transcription-pipeline` are published, rebase and strictly
+   validate `simplify-mai-transcription-pipeline`, then archive it so its
+   REMOVED punctuation requirements and Luna/high summary contract remain the
+   final published behavior.
+6. Rebase `add-admin-summary-model-switch` and
    `add-operator-productivity-workflows` after the preceding archives so neither
    later MODIFIED delta drops routing, usage, or Responses scenarios.
 
@@ -311,6 +339,9 @@ order conflicts.
   accepted for this rollout and can be separated by a later proposal.
 - Settlement ordering adds control-plane schema and retry complexity.
   Lease-token idempotency and integration tests are required before activation.
+- Azure Retail Prices API availability can delay a refresh. A finite timeout
+  and last-known-good fallback keep accounting available without certifying a
+  partial response.
 
 ## Migration Plan
 
@@ -330,5 +361,5 @@ official price exists.
 ## Open Questions
 
 No unresolved design questions remain for approved plan A. Separate Azure
-credentials for punctuation and a future official Luna price require later
-explicit changes rather than implicit behavior in this rollout.
+credentials for punctuation and subscription-specific invoice reconciliation
+require later explicit changes rather than implicit behavior in this rollout.

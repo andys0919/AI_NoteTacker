@@ -1,4 +1,4 @@
-import request from 'supertest';
+import request, { TEST_ADMIN_CONSOLE_PASSWORD } from './test-request.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createApp } from '../src/app.js';
@@ -13,7 +13,7 @@ describe('admin console (username/password) API', () => {
   const buildAuth = () =>
     createAdminConsoleAuth({
       username: 'admin',
-      password: 'solomonvbuandy',
+      password: TEST_ADMIN_CONSOLE_PASSWORD,
       sessionSecret: 'unit-test-secret'
     });
 
@@ -47,7 +47,10 @@ describe('admin console (username/password) API', () => {
       })
     });
 
-  const login = async (app: ReturnType<typeof buildApp>, password = 'solomonvbuandy') => {
+  const login = async (
+    app: ReturnType<typeof buildApp>,
+    password = TEST_ADMIN_CONSOLE_PASSWORD
+  ) => {
     const response = await request(app)
       .post('/api/admin/login')
       .send({ username: 'admin', password });
@@ -65,6 +68,18 @@ describe('admin console (username/password) API', () => {
     expect(response.body.username).toBe('admin');
   });
 
+  it('fails closed when no dedicated admin password is configured', () => {
+    expect(() => createAdminConsoleAuth()).toThrow(/ADMIN_CONSOLE_PASSWORD/);
+    expect(() => createAdminConsoleAuth({ password: '   ' })).toThrow(
+      /ADMIN_CONSOLE_PASSWORD/
+    );
+    expect(() => createAdminConsoleAuth({ password: '12345' })).toThrow(/at least 6 bytes/);
+    expect(() => createAdminConsoleAuth({ password: 'solomonvbuandy' })).toThrow(
+      /ADMIN_CONSOLE_PASSWORD/
+    );
+    expect(() => createAdminConsoleAuth({ password: '123456' })).not.toThrow();
+  });
+
   it('rejects an incorrect password', async () => {
     const app = buildApp();
 
@@ -72,6 +87,18 @@ describe('admin console (username/password) API', () => {
 
     expect(response.status).toBe(401);
     expect(response.body.error.code).toBe('admin-login-invalid');
+  });
+
+  it('throttles repeated failed admin login attempts from one source', async () => {
+    const app = buildApp();
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect((await login(app, 'wrong-password')).status).toBe(401);
+    }
+
+    const blocked = await login(app);
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error.code).toBe('admin-login-rate-limited');
   });
 
   it('rejects admin endpoints without a token (guest mode)', async () => {
@@ -399,7 +426,8 @@ describe('admin console (username/password) API', () => {
     const deleted = await request(app)
       .delete(`/api/operator/jobs/${job.id}`)
       .send({ submitterId: 'operator-a' });
-    expect(deleted.status).toBe(204);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body.artifactCleanup).toEqual({ status: 'completed', objectCount: 0 });
 
     // The operator (and internal views) no longer see the job.
     const operatorView = await request(app).get(`/recording-jobs/${job.id}`);
@@ -412,5 +440,10 @@ describe('admin console (username/password) API', () => {
     expect(adminView.status).toBe(200);
     expect(adminView.body.id).toBe(job.id);
     expect(adminView.body.state).toBe('failed');
+    expect(
+      adminView.body.jobHistory.some(
+        (entry: { stage: string }) => entry.stage === 'artifact-lifecycle-policy'
+      )
+    ).toBe(true);
   });
 });

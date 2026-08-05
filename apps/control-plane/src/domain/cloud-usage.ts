@@ -39,7 +39,7 @@ export type CloudUsagePricingResult =
   | { costUsd: number; pricingStatus: 'priced' }
   | { costUsd: null; pricingStatus: 'unpriced' };
 
-export const AZURE_RESPONSES_PRICING_CATALOG: AzureResponsesPricingCatalog = [
+export const AZURE_RESPONSES_PRICING_CATALOG: AzureResponsesPricing[] = [
   {
     model: 'gpt-5.6-luna',
     pricingVersion: 'v1',
@@ -57,7 +57,44 @@ export const AZURE_RESPONSES_PRICING_CATALOG: AzureResponsesPricingCatalog = [
   }
 ];
 
-const AZURE_SPEECH_MAI_TRANSCRIBE_1_5_USD_PER_HOUR = 0.36;
+export type AzureRetailPricingSnapshot = {
+  luna: {
+    effectiveDate: string;
+    meterSource: string;
+    inputUsdPerMillionTokens: number;
+    cachedInputUsdPerMillionTokens: number;
+    cacheWriteUsdPerMillionTokens: number;
+    outputUsdPerMillionTokens: number;
+  };
+  mai: {
+    effectiveDate: string;
+    meterSource: string;
+    usdPerHour: number;
+  };
+  twd: {
+    effectiveDate: string;
+    meterSource: string;
+    twdPerHour: number;
+    usdToTwdRate: number;
+    verifiedAt: string;
+  };
+};
+
+let azureSpeechMaiPricing = {
+  effectiveDate: '2024-11-01',
+  meterSource:
+    'https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview&currencyCode=USD&$filter=meterId%20eq%20%27e366297b-9194-5c2f-91f9-2b6472d890b3%27%20and%20armRegionName%20eq%20%27southeastasia%27',
+  usdPerHour: 0.36
+};
+
+let azureTwdPricing = {
+  effectiveDate: '2024-11-01',
+  meterSource:
+    'https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview&currencyCode=TWD&$filter=meterId%20eq%20%27e366297b-9194-5c2f-91f9-2b6472d890b3%27%20and%20armRegionName%20eq%20%27southeastasia%27',
+  twdPerHour: 11.4903,
+  usdToTwdRate: 31.9175,
+  verifiedAt: '2026-07-31T00:00:00.000Z'
+};
 
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
@@ -95,6 +132,64 @@ const hasAuthoritativePricingProvenance = (
       isValidRate(pricing.cacheWriteUsdPerMillionTokens)) &&
     isValidRate(pricing.outputUsdPerMillionTokens)
   );
+};
+
+export const getAzureRetailPricingSnapshot = (): AzureRetailPricingSnapshot => {
+  const luna = AZURE_RESPONSES_PRICING_CATALOG.find(
+    (candidate) =>
+      candidate.model === 'gpt-5.6-luna' && candidate.pricingVersion === 'v1'
+  );
+  if (!luna || !isValidRate(luna.cacheWriteUsdPerMillionTokens)) {
+    throw new Error('verified Luna pricing row is missing');
+  }
+
+  return {
+    luna: {
+      effectiveDate: luna.effectiveDate,
+      meterSource: luna.meterSource,
+      inputUsdPerMillionTokens: luna.inputUsdPerMillionTokens,
+      cachedInputUsdPerMillionTokens: luna.cachedInputUsdPerMillionTokens,
+      cacheWriteUsdPerMillionTokens: luna.cacheWriteUsdPerMillionTokens,
+      outputUsdPerMillionTokens: luna.outputUsdPerMillionTokens
+    },
+    mai: { ...azureSpeechMaiPricing },
+    twd: { ...azureTwdPricing }
+  };
+};
+
+export const applyAzureRetailPricingSnapshot = (
+  snapshot: AzureRetailPricingSnapshot
+): void => {
+  const lunaIndex = AZURE_RESPONSES_PRICING_CATALOG.findIndex(
+    (candidate) =>
+      candidate.model === 'gpt-5.6-luna' && candidate.pricingVersion === 'v1'
+  );
+  const currentLuna = AZURE_RESPONSES_PRICING_CATALOG[lunaIndex];
+  const nextLuna = currentLuna ? { ...currentLuna, ...snapshot.luna } : undefined;
+  if (
+    !nextLuna ||
+    !hasAuthoritativePricingProvenance(nextLuna) ||
+    !isValidRate(nextLuna.cacheWriteUsdPerMillionTokens) ||
+    !isValidIsoDate(snapshot.mai.effectiveDate) ||
+    !isNonEmptyString(snapshot.mai.meterSource) ||
+    !isValidRate(snapshot.mai.usdPerHour) ||
+    !isValidIsoDate(snapshot.twd.effectiveDate) ||
+    !isNonEmptyString(snapshot.twd.meterSource) ||
+    !isValidRate(snapshot.twd.twdPerHour) ||
+    !isValidRate(snapshot.twd.usdToTwdRate) ||
+    snapshot.twd.usdToTwdRate === 0 ||
+    typeof snapshot.twd.verifiedAt !== 'string' ||
+    Number.isNaN(Date.parse(snapshot.twd.verifiedAt)) ||
+    snapshot.luna.effectiveDate < currentLuna.effectiveDate ||
+    snapshot.mai.effectiveDate < azureSpeechMaiPricing.effectiveDate ||
+    snapshot.twd.effectiveDate < azureTwdPricing.effectiveDate
+  ) {
+    throw new Error('Azure retail pricing snapshot is invalid');
+  }
+
+  AZURE_RESPONSES_PRICING_CATALOG.splice(lunaIndex, 1, nextLuna);
+  azureSpeechMaiPricing = { ...snapshot.mai };
+  azureTwdPricing = { ...snapshot.twd };
 };
 
 export const roundUsd = (value: number): number => Math.round(value * 1_000_000) / 1_000_000;
@@ -297,7 +392,7 @@ export const calculateAzureTranscriptionActualCost = (usage: {
   usage.audioMs >= 0
     ? {
         costUsd: roundUsd(
-          (usage.audioMs / 3_600_000) * AZURE_SPEECH_MAI_TRANSCRIBE_1_5_USD_PER_HOUR
+          (usage.audioMs / 3_600_000) * azureSpeechMaiPricing.usdPerHour
         ),
         pricingStatus: 'priced'
       }

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildJobSharePayload,
   filterJobsByQuickFilter,
+  getArchivePageState,
   getJobActionSet,
   getPreferredQuickExportFormat
 } from '../public/dashboard-workflows.js';
@@ -37,6 +38,20 @@ describe('dashboard workflow helpers', () => {
       jobs[0],
       jobs[1]
     ]);
+  });
+
+  it('keeps pagination available when the loaded page has no quick-filter match', () => {
+    expect(
+      getArchivePageState(
+        [{ id: 'job_failed', state: 'failed', createdAt: '2026-04-08T10:00:00.000Z' }],
+        'completed',
+        true,
+        ''
+      )
+    ).toEqual({
+      visibleJobs: [],
+      canLoadMore: true
+    });
   });
 
   it('builds share-ready summary, key-points, and deep-link payloads', () => {
@@ -76,6 +91,21 @@ describe('dashboard workflow helpers', () => {
         {
           state: 'completed',
           inputSource: 'uploaded-audio',
+          transcriptArtifact: { storageKey: 'x' }
+        },
+        'completed'
+      )
+    ).toEqual(['delete-history', 'export-markdown']);
+  });
+
+  it('keeps heavy detail loading out of archive-card actions', () => {
+    expect(
+      getJobActionSet(
+        {
+          state: 'completed',
+          inputSource: 'uploaded-audio',
+          hasTranscript: true,
+          hasSummary: true,
           transcriptArtifact: { storageKey: 'x' }
         },
         'completed'

@@ -136,7 +136,19 @@ def run_summary_worker_iteration(
                 "reasoningEffort": summary_result["reasoning_effort"],
                 "text": summary_result["text"],
                 "structured": {
+                    **(
+                        {"title": summary_result["structured"]["title"]}
+                        if summary_result["structured"].get("title")
+                        else {}
+                    ),
                     "summary": summary_result["structured"]["summary"],
+                    "topics": summary_result["structured"].get("topics", []),
+                    "followUpGroups": summary_result["structured"].get(
+                        "follow_up_groups", []
+                    ),
+                    "analysisNotes": summary_result["structured"].get(
+                        "analysis_notes", []
+                    ),
                     "keyPoints": summary_result["structured"]["key_points"],
                     "actionItems": summary_result["structured"]["action_items"],
                     "decisions": summary_result["structured"]["decisions"],

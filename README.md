@@ -30,12 +30,9 @@ This project lets an operator:
 - Submission-time AI policy snapshots for future jobs
 - Cloud reservation estimates and daily usage reporting without submission blocking
 - Cloud usage ledger and admin audit history for governance changes
-- Codex or Azure OpenAI summary generation with content-derived topics,
-  explicit confirmed/mixed/open status, and structured sections:
-  - Action Items
-  - Decisions
-  - Risks
-  - Open Questions
+- Codex or Azure OpenAI summary generation with a content-derived title,
+  confirmed/mixed/open topics, topic subtopics, grouped follow-ups, decisions,
+  risks, open questions, and evidence-backed analysis notes
 - Archive search, history timeline, and export
 - On-demand long-form reader with summary navigation and separate transcript
   timestamp and wording fields
@@ -78,7 +75,7 @@ Use the deploy helper — it always brings up the correct file set:
 This is equivalent to:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.screenapp.yml up -d --build --remove-orphans
 ```
 
 > [!IMPORTANT]
@@ -102,6 +99,13 @@ docker compose up -d --build   # recording-worker runs in stub mode by design
 After the first successful `up -d`, the long-running services use Docker's
 `restart: unless-stopped` policy, so they come back automatically after a host
 reboot as long as the Docker service starts on boot.
+
+The control-plane does not mount the host Docker socket. `Exit Meeting` calls an
+authenticated private endpoint inside the meeting-bot container, which can stop
+only that process; Docker's restart policy then recreates its runtime. Third-party
+runtime images and directly installed worker dependencies are pinned for repeatable
+rebuilds. PostgreSQL schema setup is recorded in `schema_migrations` and serialized
+with an advisory transaction lock during control-plane startup.
 
 Open:
 
@@ -151,6 +155,10 @@ Notes:
 Notes:
 - Meeting-link jobs are effectively single-slot because there is one shared meeting-bot runtime.
 - Additional meeting-link submissions wait in a bounded queue controlled by `MAX_MEETING_JOB_BACKLOG`.
+- Deleting one completed/failed history item, or clearing history, first deletes
+  its uploaded/recording object keys from S3/MinIO. The hidden database row keeps
+  transcript and summary evidence for administrator audit. If object cleanup
+  fails, the history item stays visible so the operator can retry.
 - `Exit Meeting` now asks the bot to finalize the current recording before transcription when possible.
 - For a platform-by-platform acceptance checklist that separates local self-verification from real host-admission proof, see [`docs/operations/meeting-platform-verification.md`](docs/operations/meeting-platform-verification.md).
 
@@ -197,9 +205,9 @@ Important:
 - local execution does not consume cloud quota
 - jobs snapshot their AI routing policy at submission time, so later admin changes affect only later jobs
 - usage whose model/version has no authoritative pricing-catalog entry is shown as
-  `unpriced`, not `$0`; the known priced subtotal remains a lower bound until a rate is supplied
+  `unpriced`, not `NT$0.00`; the known priced subtotal remains a lower bound until a rate is supplied
 
-As of 2026-07-30, pricing catalog `v1` includes the verified
+As of 2026-07-31, pricing catalog `v1` includes the verified
 `gpt-5.6-luna` Global Standard rates and the Azure Speech Fast Transcription rate
 used by `mai-transcribe-1.5`. Azure does not return Luna cache-write token
 quantity in the Responses usage payload, so the UI shows the calculable
@@ -208,13 +216,22 @@ known amount. Historical `gpt-4o-transcribe-diarize` rows that preserve only
 audio duration also remain unpriced because that model is billed through
 separate token meters.
 
+The ledger, quota enforcement, and APIs remain in USD. Operator and admin
+screens display TWD through one reference conversion verified against the
+Azure Retail Prices API on 2026-07-31: USD 0.36/hour and TWD 11.4903/hour for
+the exact MAI meter, equivalent to `1 USD = NT$31.9175`. This is a public retail
+estimate, not the subscription invoice effective price. Admin quota fields are
+entered in TWD and converted back to the existing USD API precision on save.
+
 ### Read Results
 
 Completed jobs can show:
 - Full Transcript
 - Codex or Azure OpenAI Summary
-- topic-based meeting notes with confirmed, mixed, or open status
-- only the non-empty follow-up, decision, risk, and open-question sections
+- a content-derived meeting title and topic/subtopic notes with confirmed,
+  mixed, or open status
+- only the non-empty grouped follow-up, decision, risk, open-question, and
+  analysis-note sections
 - Job Timeline
 - export buttons
 
@@ -236,9 +253,9 @@ Important defaults from [`.env.example`](.env.example):
 - `DEFAULT_TRANSCRIPTION_PROVIDER=azure-speech-mai-transcribe-1.5`
 - `DEFAULT_SUMMARY_PROVIDER=azure-openai`
 - `SUMMARY_MODEL=gpt-5.6-luna`
-- `SUMMARY_REASONING_EFFORT=max`
+- `SUMMARY_REASONING_EFFORT=high`
 - `SUMMARY_ENABLED=true` (control-plane summary-provider readiness)
-- `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS=300`
+- `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS=900`
 - `MAX_CONCURRENT_TRANSCRIPTION_JOBS=1`
 - `MAX_MEETING_JOB_BACKLOG=2`
 - `MAX_TRANSCRIPTION_JOB_BACKLOG=10`
@@ -293,10 +310,14 @@ Historical speaker metadata remains schema-compatible, but the reader, summary
 prompt, admin transcript, and text exports do not present it.
 
 The generic summary prompt is coverage-first: it reviews the beginning, middle,
-and final third, groups repeated discussion into content-derived topics, keeps
-distinct process/requirement/exception/dependency/scope/schedule outcomes
-separate, and classifies only explicit actions, decisions, risks, and open
-questions. It contains no PLAUD answer or meeting-specific topic list.
+and final third, derives a specific meeting title, groups repeated discussion
+into content-derived topics and subtopics, keeps distinct process, requirement,
+exception, dependency, scope, schedule, and outcome discussions separate, and
+classifies only explicit grouped follow-ups, decisions, risks, and open
+questions. Evidence-backed analysis notes are optional. Compatibility
+`keyPoints` and `actionItems` are derived from the hierarchy without a second
+model request. The prompt contains no PLAUD answer or meeting-specific topic
+list.
 
 Azure hosted summary requires explicit Responses API configuration on the
 control-plane and summary worker:
@@ -304,8 +325,8 @@ control-plane and summary worker:
 - `AZURE_OPENAI_SUMMARY_ENDPOINT` — HTTPS URL whose normalized path is exactly `/openai/v1/responses`
 - `AZURE_OPENAI_SUMMARY_API_KEY`
 - `SUMMARY_MODEL`
-- `SUMMARY_REASONING_EFFORT=max`
-- optional `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS` (default `300`)
+- `SUMMARY_REASONING_EFFORT=high`
+- optional `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS` (default `900`)
 
 Python transcription/summary worker GET/POST/heartbeat calls use
 `CONTROL_PLANE_TIMEOUT_SECONDS` (default `30`).

@@ -38,6 +38,8 @@
 - [x] 5.6 Add the verified Luna Global Standard and MAI Transcribe Fast Transcription catalog rows.
 - [x] 5.7 Reprice fully metered historical rows in reporting without mutating the immutable ledger, and expose partial metered costs only as lower bounds.
 - [x] 5.8 Re-verify the Luna catalog against Azure Retail Prices API on 2026-07-31 and forbid substituting OpenAI direct pricing for the live Azure deployment.
+- [x] 5.9 Refresh the exact Luna USD and MAI USD/TWD Azure Retail Prices API meters at startup and every 24 hours with a finite timeout and no dependency.
+- [x] 5.10 Apply only a complete, consistent, currently effective Consumption snapshot and retain the last verified catalog/reference on every failure.
 
 ## 6. Verification and deployment
 - [x] 6.1 Run the pre-hardening Responses unit baseline (7 targeted worker tests pass on 2026-07-15).
@@ -45,8 +47,15 @@
 - [x] 6.3 Add worker regression tests for explicit config, `store: false`, completed status, ordered output, strict usage, socket-operation timeout, and no hidden provider retry.
 - [x] 6.4 Add control-plane migration and integration tests for punctuation-stage accounting, lease-token idempotency, settlement-before-lifecycle, unmetered request counts, conservative legacy migration, and unpriced reporting.
 - [x] 6.5 Run the complete worker and control-plane suites after the final corrective implementation (393 tests pass on 2026-07-15: control-plane 282, recording worker 13, external Python package 2, transcription worker 96; build also passes).
-- [ ] 6.6 Deploy in the design order and capture durable redacted evidence for separate summary/punctuation attempts, runtime config, zero duplicate settlements, and unpriced Luna output.
+- [ ] 6.6 Deploy the current release in the design order and capture durable
+  redacted evidence for summary attempts, absence of new punctuation provider
+  calls, readability of historical punctuation settlements, runtime config,
+  zero duplicate settlements, and Luna pricing output; dated component
+  deployments in `HANDOFF.md` are historical observations and do not satisfy
+  this gate.
 - [ ] 6.7 Exercise pre-migration abort and post-migration feature rollback with the schema-aware control-plane; do not mix a chat endpoint with Responses callers or restore unverified previous binaries.
 - [ ] 6.8 Resolve and rebase the active-change archive order documented in `design.md` before archiving.
 - [x] 6.9 Run `openspec validate update-cloud-summary-azure-responses --strict --no-interactive` after the OpenSpec artifact update; rerun it after implementation changes.
 - [x] 6.10 Add configurable socket-operation timeouts for Azure transcription and transcription/summary worker-to-control-plane HTTP calls, with regression tests.
+- [x] 6.11 Add focused refresh regressions and, on 2026-07-31, rebuild the control-plane and prove that deployment loaded the USD catalog and TWD reference from the live Azure API.
+- [x] 6.12 Reconcile the 900-second summary timeout, hierarchical summary schema, and dated deployment evidence in operator/handoff documentation while leaving current-release tasks 6.6-6.8 open.

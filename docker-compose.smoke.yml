@@ -34,7 +34,7 @@ services:
       CODEX_HOME: /codex-home
 
   stub-artifact-server:
-    image: python:3.12-slim
+    image: python:3.12-slim@sha256:ccc7089399c8bb65dd1fb3ed6d55efa538a3f5e7fca3f5988ac3b5b87e593bf0
     restart: unless-stopped
     working_dir: /srv
     command: ["python", "/srv/stub_artifact_server.py"]
@@ -42,7 +42,7 @@ services:
       - ./ops/smoke/stub_artifact_server.py:/srv/stub_artifact_server.py:ro
 
   minio-bucket-init:
-    image: minio/mc:latest
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     depends_on:
       minio:
         condition: service_started

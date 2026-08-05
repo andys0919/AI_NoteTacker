@@ -1,3 +1,5 @@
+import { formatTwdFromUsd } from './currency-display.js';
+
 export const formatProviderLabel = (value) => {
   if (value === 'azure-openai-gpt-4o-transcribe' || value === 'azure-openai') {
     return 'Azure OpenAI';
@@ -7,14 +9,19 @@ export const formatProviderLabel = (value) => {
     return 'Local Codex';
   }
 
+  if (value === 'qwen3-asr-1.7b') {
+    return 'Qwen3-ASR 1.7B';
+  }
+
+  if (value === 'azure-speech-mai-transcribe-1.5') {
+    return 'Azure Speech MAI 1.5';
+  }
+
   return 'Whisper 自架';
 };
 
 export const formatSummaryModeLabel = (value) =>
   value === 'azure-openai' ? '雲端' : '地端 Codex';
-
-export const formatUsd = (value) =>
-  typeof value === 'number' && Number.isFinite(value) ? `$${value.toFixed(3)}` : '未定價';
 
 export const getCloudCostDisplayModel = ({
   totalCostUsd,
@@ -24,14 +31,14 @@ export const getCloudCostDisplayModel = ({
   if (!hasUnpricedUsage) {
     return {
       label: '總費用',
-      value: formatUsd(totalCostUsd)
+      value: formatTwdFromUsd(totalCostUsd)
     };
   }
 
   if (typeof pricedCostUsd === 'number' && Number.isFinite(pricedCostUsd) && pricedCostUsd > 0) {
     return {
       label: '已知費用',
-      value: `${formatUsd(pricedCostUsd)}（含未定價用量）`
+      value: `${formatTwdFromUsd(pricedCostUsd)}（含未定價用量）`
     };
   }
 
@@ -47,7 +54,7 @@ export const formatUsageStageLabel = (stage) => {
   }
 
   if (stage === 'punctuation') {
-    return '標點';
+    return '潤稿';
   }
 
   return stage === 'summary' ? '摘要' : stage;
@@ -88,8 +95,10 @@ export const getUsageHistoryCostViewModel = (payload = {}) => {
       stageLabel: formatUsageStageLabel(entry.stage),
       costLabel:
         entry.pricingStatus === 'unpriced'
-          ? '未定價'
-          : formatUsd(entry.costUsd)
+          ? typeof entry.costUsd === 'number' && entry.costUsd > 0
+            ? `${formatTwdFromUsd(entry.costUsd)}（含未定價用量）`
+            : '未定價'
+          : formatTwdFromUsd(entry.costUsd)
     }))
   };
 };
@@ -170,10 +179,10 @@ export const getQuotaDisplayModel = (payload) => {
 
   return {
     hidden: false,
-    remainingLabel: `${formatUsd(payload.remainingUsd)}${
+    remainingLabel: `${formatTwdFromUsd(payload.remainingUsd)}${
       payload.hasUnpricedUsage ? '（依已知費用計算）' : ''
     }`,
-    breakdownText: `${payload.hasUnpricedUsage ? consumed.label : '已用'} ${consumed.value} / 保留 ${formatUsd(payload.reservedUsd)} / 總額 ${formatUsd(payload.dailyQuotaUsd)}`
+    breakdownText: `${payload.hasUnpricedUsage ? consumed.label : '已用'} ${consumed.value} / 保留 ${formatTwdFromUsd(payload.reservedUsd)} / 總額 ${formatTwdFromUsd(payload.dailyQuotaUsd)}`
   };
 };
 
@@ -195,13 +204,13 @@ export const getUsageReportRowViewModels = (rows = []) =>
     return {
       identityLabel: row.email || row.submitterId,
       submitterId: row.submitterId,
-      reservedLabel: formatUsd(row.reservedUsd),
+      reservedLabel: formatTwdFromUsd(row.reservedUsd),
       consumedTitle: row.hasUnpricedUsage ? consumed.label : '已用',
       consumedLabel: consumed.value,
-      remainingLabel: `${formatUsd(row.remainingUsd)}${
+      remainingLabel: `${formatTwdFromUsd(row.remainingUsd)}${
         row.hasUnpricedUsage ? '（依已知費用計算）' : ''
       }`,
-      dailyQuotaLabel: formatUsd(row.dailyQuotaUsd),
+      dailyQuotaLabel: formatTwdFromUsd(row.dailyQuotaUsd),
       entryCountLabel: `${row.entries?.length ?? 0} 筆`
     };
   });

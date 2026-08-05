@@ -98,19 +98,18 @@ describe('dashboard copy helpers', () => {
       statusSummary: '逐字稿與摘要已完成，可直接查看或匯出。',
       durationLabel: '時長',
       durationValue: '1:46:47',
-      transcriptionCostLabel: '轉文字',
-      transcriptionCostValue: '$0.120',
-      summaryCostLabel: '摘要',
-      summaryCostValue: '$0.003',
-      totalCostLabel: '合計',
-      totalCostValue: '$0.123',
+      totalCostLabel: '總費用',
+      totalCostValue: 'NT$3.93',
       progressLabel: '已完成',
       showProgress: false,
       showHistory: false
     });
+    expect(model.costItems).toEqual([{ label: '總費用', value: 'NT$3.93' }]);
+    expect(model).not.toHaveProperty('transcriptionCostLabel');
+    expect(model).not.toHaveProperty('summaryCostLabel');
   });
 
-  it('shows priced subtotals and unpriced punctuation or summary usage without calling it zero', () => {
+  it('shows only one total while preserving the warning for unpriced usage', () => {
     const model = getJobCardViewModel({
       id: 'job_upload_unpriced',
       inputSource: 'uploaded-audio',
@@ -129,20 +128,11 @@ describe('dashboard copy helpers', () => {
     });
 
     expect(model).toMatchObject({
-      transcriptionCostLabel: '轉文字',
-      transcriptionCostValue: '$0.120',
-      punctuationCostLabel: '標點',
-      punctuationCostValue: '未定價',
-      summaryCostLabel: '摘要',
-      summaryCostValue: '未定價',
-      totalCostLabel: '已知費用',
-      totalCostValue: '$0.120（含未定價用量）'
+      totalCostLabel: '總費用',
+      totalCostValue: 'NT$3.83（含未定價用量）'
     });
     expect(model.costItems).toEqual([
-      { label: '轉文字', value: '$0.120' },
-      { label: '標點', value: '未定價' },
-      { label: '摘要', value: '未定價' },
-      { label: '已知費用', value: '$0.120（含未定價用量）' }
+      { label: '總費用', value: 'NT$3.83（含未定價用量）' }
     ]);
   });
 
@@ -164,14 +154,41 @@ describe('dashboard copy helpers', () => {
       updatedAt: '2026-07-15T09:08:00.000Z'
     });
 
-    expect(model.totalCostLabel).toBe('合計');
+    expect(model.totalCostLabel).toBe('總費用');
     expect(model.totalCostValue).toBe('未定價');
-    expect([
-      model.transcriptionCostValue,
-      model.punctuationCostValue,
-      model.summaryCostValue,
-      model.totalCostValue
-    ]).not.toContain('$0.000');
+    expect(model.costItems).toEqual([{ label: '總費用', value: '未定價' }]);
+  });
+
+  it('omits unsettled zero-value costs and preserves small non-zero amounts', () => {
+    const unsettled = getJobCardViewModel({
+      id: 'job_upload_unsettled',
+      inputSource: 'uploaded-audio',
+      state: 'transcribing',
+      actualTranscriptionCostUsd: 0,
+      actualPunctuationCostUsd: 0,
+      actualSummaryCostUsd: 0,
+      actualCloudCostUsd: 0,
+      hasUnpricedUsage: false,
+      uploadedFileName: 'processing.mp4',
+      createdAt: '2026-07-30T01:07:54.000Z',
+      updatedAt: '2026-07-30T01:12:56.000Z'
+    });
+    const settled = getJobCardViewModel({
+      id: 'job_upload_small_cost',
+      inputSource: 'uploaded-audio',
+      state: 'completed',
+      actualTranscriptionCostUsd: 0.0004,
+      actualCloudCostUsd: 0.0004,
+      hasUnpricedUsage: false,
+      uploadedFileName: 'small.wav',
+      createdAt: '2026-07-30T01:07:54.000Z',
+      updatedAt: '2026-07-30T01:12:56.000Z'
+    });
+
+    expect(unsettled.costItems).toEqual([]);
+    expect(settled.costItems).toEqual([
+      { label: '總費用', value: 'NT$0.01' }
+    ]);
   });
 
   it('falls back to transcript segment length when total progress duration is unavailable', () => {
@@ -199,6 +216,9 @@ describe('dashboard copy helpers', () => {
   });
 
   it('returns a more helpful archive empty-state message while searching', () => {
+    expect(getEmptyStateMessage('')).toBe(
+      '尚無會議筆記。加入會議或上傳錄音後，進度與結果會顯示在這裡。'
+    );
     expect(getEmptyStateMessage('sales')).toBe(
       '找不到符合「sales」的紀錄，請改用會議名稱、連結或摘要關鍵字搜尋。'
     );
@@ -219,6 +239,21 @@ describe('dashboard copy helpers', () => {
         language: 'zh',
         segments: [{ startMs: 0, endMs: 1000, text: 'hello' }]
       }
+    });
+
+    expect(model.statusSummary).toBe('逐字稿已完成，但摘要尚未產生。');
+  });
+
+  it('uses lightweight artifact flags for transcript-only list items', () => {
+    const model = getJobCardViewModel({
+      id: 'job_transcript_only_list_item',
+      inputSource: 'uploaded-audio',
+      state: 'completed',
+      hasTranscript: true,
+      hasSummary: false,
+      uploadedFileName: 'transcript-only.m4a',
+      createdAt: '2026-04-08T09:00:00.000Z',
+      updatedAt: '2026-04-08T09:08:00.000Z'
     });
 
     expect(model.statusSummary).toBe('逐字稿已完成，但摘要尚未產生。');

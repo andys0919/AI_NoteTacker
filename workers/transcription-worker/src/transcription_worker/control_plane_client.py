@@ -52,6 +52,11 @@ class ControlPlaneClient:
         http_request = request.Request(
             f"{self.base_url}/recording-jobs/{job_id}",
             method="GET",
+            headers=(
+                {"x-internal-service-token": self.internal_service_token}
+                if self.internal_service_token
+                else {}
+            ),
         )
 
         with request.urlopen(  # noqa: S310

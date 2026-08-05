@@ -72,25 +72,12 @@ def _read_summary_endpoint(environment: Mapping[str, str | None]) -> str | None:
 
 def read_transcription_worker_config(
     environment: Mapping[str, str | None],
-) -> dict[str, str | int | bool | None]:
+) -> dict[str, str | int | None]:
     whisper_model = environment.get("WHISPER_MODEL")
     deployment_mode = (environment.get("DEPLOYMENT_MODE") or "default").lower()
 
     if not whisper_model:
         raise ValueError("WHISPER_MODEL is required")
-
-    diarization_endpoint = environment.get("AZURE_OPENAI_DIARIZE_ENDPOINT")
-    diarization_deployment = environment.get("AZURE_OPENAI_DIARIZE_MODEL")
-    diarization_api_key = environment.get("AZURE_OPENAI_DIARIZE_API_KEY")
-    if any(
-        (diarization_endpoint, diarization_deployment, diarization_api_key)
-    ) and not all(
-        (diarization_endpoint, diarization_deployment, diarization_api_key)
-    ):
-        raise ValueError(
-            "AZURE_OPENAI_DIARIZE_ENDPOINT, AZURE_OPENAI_DIARIZE_MODEL, and "
-            "AZURE_OPENAI_DIARIZE_API_KEY must be configured together"
-        )
 
     mai_endpoint = environment.get("AZURE_SPEECH_MAI_ENDPOINT")
     mai_model = environment.get("AZURE_SPEECH_MAI_MODEL")
@@ -107,17 +94,11 @@ def read_transcription_worker_config(
     if not whisper_device:
         whisper_device = "cuda" if deployment_mode == "local" else "cpu"
 
-    summary_model = environment.get("SUMMARY_MODEL")
-    if not summary_model:
-        summary_model = "gpt-5.6-luna"
-
     return {
         **_read_worker_config(environment),
         "whisper_model": whisper_model,
         "whisper_device": whisper_device,
         "whisper_compute_type": environment.get("WHISPER_COMPUTE_TYPE") or "int8",
-        "azure_openai_summary_endpoint": _read_summary_endpoint(environment),
-        "azure_openai_summary_api_key": environment.get("AZURE_OPENAI_SUMMARY_API_KEY"),
         "azure_openai_endpoint": environment.get("AZURE_OPENAI_ENDPOINT"),
         "azure_openai_deployment": environment.get("AZURE_OPENAI_DEPLOYMENT"),
         "azure_openai_api_key": environment.get("AZURE_OPENAI_API_KEY"),
@@ -145,31 +126,6 @@ def read_transcription_worker_config(
         "azure_speech_mai_timeout_seconds": _read_positive_int(
             environment, "AZURE_SPEECH_MAI_TIMEOUT_SECONDS", 300
         ),
-        "azure_openai_diarize_endpoint": diarization_endpoint,
-        "azure_openai_diarize_model": diarization_deployment,
-        "azure_openai_diarize_api_key": diarization_api_key,
-        "azure_openai_diarize_api_version": environment.get(
-            "AZURE_OPENAI_DIARIZE_API_VERSION"
-        )
-        or "2025-04-01-preview",
-        "azure_openai_diarize_timeout_seconds": _read_positive_int(
-            environment, "AZURE_OPENAI_DIARIZE_TIMEOUT_SECONDS", 300
-        ),
-        "azure_openai_diarize_max_workers": _read_positive_int(
-            environment, "AZURE_OPENAI_DIARIZE_MAX_WORKERS", 3
-        ),
-        "transcript_punctuation_enabled": (
-            environment.get("TRANSCRIPT_PUNCTUATION_ENABLED") or "true"
-        ).lower()
-        == "true",
-        "transcript_punctuation_model": environment.get("AZURE_OPENAI_PUNCTUATION_MODEL")
-        or summary_model,
-        "transcript_polishing_reasoning_effort": _read_reasoning_effort(
-            environment, "TRANSCRIPT_POLISHING_REASONING_EFFORT", "max"
-        ),
-        "azure_openai_punctuation_timeout_seconds": _read_positive_int(
-            environment, "AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS", 300
-        ),
     }
 
 
@@ -180,12 +136,12 @@ def read_summary_worker_config(
         **_read_worker_config(environment),
         "summary_model": environment.get("SUMMARY_MODEL") or "gpt-5.6-luna",
         "summary_reasoning_effort": _read_reasoning_effort(
-            environment, "SUMMARY_REASONING_EFFORT", "max"
+            environment, "SUMMARY_REASONING_EFFORT", "high"
         ),
         "codex_cli_path": environment.get("CODEX_CLI_PATH") or "codex",
         "azure_openai_summary_endpoint": _read_summary_endpoint(environment),
         "azure_openai_summary_api_key": environment.get("AZURE_OPENAI_SUMMARY_API_KEY"),
         "azure_openai_summary_timeout_seconds": _read_positive_int(
-            environment, "AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS", 300
+            environment, "AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS", 900
         ),
     }

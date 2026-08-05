@@ -1,10 +1,16 @@
 import { formatJobTimestamp } from '/dashboard-copy.js';
+import {
+  applyTwdPricingReference,
+  formatTwdFromUsd,
+  formatTwdInputFromUsd,
+  getTwdPricingReferenceText,
+  twdQuotaToUsd
+} from '/currency-display.js';
 import { escapeHtml } from '/escape-html.js';
 import {
   formatProviderLabel,
   formatSummaryModeLabel,
   formatUsageStageLabel,
-  formatUsd,
   getAdminGovernanceViewModel,
   getAuditEntryViewModels,
   getCloudCostDisplayModel,
@@ -12,17 +18,22 @@ import {
   getUsageReportRowViewModels
 } from '/governance-panel.js';
 import { getRuntimeHealthViewModel } from '/runtime-health-panel.js';
+import {
+  getReadableTranscriptText,
+  sanitizeAnonymousSpeakerLabels
+} from '/artifact-reader.js';
 
 const TOKEN_STORAGE_KEY = 'solomon-notetaker-admin-token';
 
 const elements = {
+  skipLink: document.querySelector('#admin-skip-link'),
+  sessionStatus: document.querySelector('#admin-session-status'),
   loginOverlay: document.querySelector('#admin-login-overlay'),
   adminShell: document.querySelector('#admin-shell'),
   loginForm: document.querySelector('#admin-login-form'),
   loginUsername: document.querySelector('#admin-login-username'),
   loginPassword: document.querySelector('#admin-login-password'),
   loginPasswordToggle: document.querySelector('#admin-login-password-toggle'),
-  loginButton: document.querySelector('#admin-login-button'),
   loginStatus: document.querySelector('#admin-login-status'),
   adminContent: document.querySelector('#admin-content'),
   sessionEmail: document.querySelector('#session-email'),
@@ -34,7 +45,9 @@ const elements = {
   usageHistoryRows: document.querySelector('#admin-usage-history-rows'),
   usageHistoryTotalTokens: document.querySelector('#admin-usage-history-total-tokens'),
   usageHistoryTotalCost: document.querySelector('#admin-usage-history-total-cost'),
+  currencyReference: document.querySelector('#admin-currency-reference'),
   jobModal: document.querySelector('#admin-job-modal'),
+  jobModalCard: document.querySelector('#admin-job-modal-card'),
   jobModalTitle: document.querySelector('#admin-job-modal-title'),
   jobModalBody: document.querySelector('#admin-job-modal-body'),
   jobModalClose: document.querySelector('#admin-job-modal-close'),
@@ -72,6 +85,7 @@ const elements = {
 let adminToken = window.localStorage.getItem(TOKEN_STORAGE_KEY);
 let adminUsername = null;
 let adminProviderState = null;
+let modalReturnFocus = null;
 
 const tokenFormatter = new Intl.NumberFormat('en-US');
 const formatTokens = (value) => tokenFormatter.format(Math.round(Number(value) || 0));
@@ -107,6 +121,24 @@ const setLoginStatus = (message, tone) => {
   }
 };
 
+const setFormBusy = (form, busy) => {
+  form.setAttribute('aria-busy', String(busy));
+  const submitButton = form.querySelector('button[type="submit"]');
+
+  if (!submitButton) {
+    return;
+  }
+
+  if (busy) {
+    submitButton.dataset.disabledBeforeBusy = String(submitButton.disabled);
+    submitButton.disabled = true;
+    return;
+  }
+
+  submitButton.disabled = submitButton.dataset.disabledBeforeBusy === 'true';
+  delete submitButton.dataset.disabledBeforeBusy;
+};
+
 const setBanner = (message) => {
   if (elements.adminProviderStatus) {
     elements.adminProviderStatus.textContent = message ?? '';
@@ -114,6 +146,9 @@ const setBanner = (message) => {
 };
 
 const showLoginView = () => {
+  elements.sessionStatus.hidden = true;
+  elements.skipLink.href = '#auth-panel';
+  elements.skipLink.textContent = '跳至登入';
   elements.loginOverlay.hidden = false;
   elements.adminShell.hidden = true;
   elements.adminContent.hidden = true;
@@ -121,6 +156,9 @@ const showLoginView = () => {
 };
 
 const showAdminView = () => {
+  elements.sessionStatus.hidden = true;
+  elements.skipLink.href = '#admin-content';
+  elements.skipLink.textContent = '跳至治理內容';
   elements.loginOverlay.hidden = true;
   elements.adminShell.hidden = false;
   elements.adminContent.hidden = false;
@@ -164,7 +202,7 @@ const renderUsageReport = (payload) => {
     : '';
   elements.adminUsageReportSummary.textContent = `${payload.quotaDayKey} / ${
     payload.totals.hasUnpricedUsage ? consumed.label : '已用'
-  } ${consumed.value}${unpricedCountText} / 保留 ${formatUsd(payload.totals.reservedUsd)}`;
+  } ${consumed.value}${unpricedCountText} / 保留 ${formatTwdFromUsd(payload.totals.reservedUsd)}`;
   elements.adminUsageReportList.replaceChildren(
     ...getUsageReportRowViewModels(payload.rows).map((row) => {
       const node = document.createElement('article');
@@ -272,8 +310,12 @@ const renderUsageHistory = (payload) => {
 };
 
 const closeJobModal = () => {
-  elements.jobModal.hidden = true;
+  if (elements.jobModal.open) {
+    elements.jobModal.close();
+  }
   elements.jobModalBody.replaceChildren();
+  modalReturnFocus?.focus();
+  modalReturnFocus = null;
 };
 
 const buildModalSection = (title, contentNode) => {
@@ -322,7 +364,11 @@ const renderJobModal = (job) => {
           ? `輸入 ${formatTokens(entry.inputTokens)} / 輸出 ${formatTokens(entry.outputTokens)} tokens`
           : `${formatTokens(Math.round((entry.audioMs || 0) / 1000))} 秒音訊`;
       const costLabel =
-        entry.pricingStatus === 'unpriced' ? '未定價' : formatUsd(entry.costUsd);
+        entry.pricingStatus === 'unpriced'
+          ? typeof entry.costUsd === 'number' && entry.costUsd > 0
+            ? `${formatTwdFromUsd(entry.costUsd)}（含未定價用量）`
+            : '未定價'
+          : formatTwdFromUsd(entry.costUsd);
       item.textContent = `${formatUsageStageLabel(entry.stage)}（${entry.model}）：${tokenPart}，費用 ${costLabel}`;
       list.append(item);
     }
@@ -331,7 +377,7 @@ const renderJobModal = (job) => {
 
   if (job.summaryArtifact?.text) {
     const pre = document.createElement('pre');
-    pre.textContent = job.summaryArtifact.text;
+    pre.textContent = sanitizeAnonymousSpeakerLabels(job.summaryArtifact.text);
     children.push(buildModalSection('AI 摘要（輸出內容）', pre));
 
     const structured = job.summaryArtifact.structured;
@@ -348,7 +394,7 @@ const renderJobModal = (job) => {
           const list = document.createElement('ul');
           for (const value of items) {
             const item = document.createElement('li');
-            item.textContent = value;
+            item.textContent = sanitizeAnonymousSpeakerLabels(value);
             list.append(item);
           }
           children.push(buildModalSection(title, list));
@@ -359,7 +405,9 @@ const renderJobModal = (job) => {
 
   if (job.transcriptArtifact?.segments?.length) {
     const pre = document.createElement('pre');
-    pre.textContent = job.transcriptArtifact.segments.map((segment) => segment.text).join('\n');
+    pre.textContent = job.transcriptArtifact.segments
+      .map(getReadableTranscriptText)
+      .join('\n');
     children.push(buildModalSection('逐字稿（輸入內容）', pre));
   }
 
@@ -373,13 +421,17 @@ const renderJobModal = (job) => {
   elements.jobModalBody.replaceChildren(...children);
 };
 
-const openJobModal = async (jobId) => {
-  elements.jobModal.hidden = false;
+const openJobModal = async (jobId, trigger) => {
+  modalReturnFocus = trigger;
+  if (!elements.jobModal.open) {
+    elements.jobModal.showModal();
+  }
   elements.jobModalTitle.textContent = '工作內容';
   const loading = document.createElement('p');
   loading.className = 'admin-provider-status';
   loading.textContent = '正在載入...';
   elements.jobModalBody.replaceChildren(loading);
+  elements.jobModalCard.focus();
 
   try {
     const response = await apiFetch(`/api/admin/jobs/${encodeURIComponent(jobId)}`);
@@ -521,8 +573,12 @@ const renderAdminPanel = (
   elements.adminTranscriptionModelInput.value = payload.transcriptionModel ?? '';
   elements.adminSummaryModelInput.value = payload.summaryModel ?? '';
   elements.adminPricingVersionInput.value = payload.pricingVersion ?? 'v1';
-  elements.adminDefaultQuotaInput.value = payload.defaultDailyCloudQuotaUsd ?? 0;
-  elements.adminLiveMeetingCapInput.value = payload.liveMeetingReservationCapUsd ?? 0;
+  elements.adminDefaultQuotaInput.value = formatTwdInputFromUsd(
+    payload.defaultDailyCloudQuotaUsd ?? 0
+  );
+  elements.adminLiveMeetingCapInput.value = formatTwdInputFromUsd(
+    payload.liveMeetingReservationCapUsd ?? 0
+  );
   elements.adminLocalTranscriptionInput.value = payload.concurrencyPools?.localTranscription ?? 1;
   elements.adminCloudTranscriptionInput.value = payload.concurrencyPools?.cloudTranscription ?? 1;
   elements.adminLocalSummaryInput.value = payload.concurrencyPools?.localSummary ?? 1;
@@ -613,7 +669,7 @@ elements.loginForm.addEventListener('submit', async (event) => {
   event.preventDefault();
 
   try {
-    elements.loginButton.disabled = true;
+    setFormBusy(elements.loginForm, true);
     setLoginStatus('正在登入...', 'loading');
     const response = await fetch('/api/admin/login', {
       method: 'POST',
@@ -637,7 +693,7 @@ elements.loginForm.addEventListener('submit', async (event) => {
   } catch (error) {
     setLoginStatus(error instanceof Error ? error.message : String(error), 'error');
   } finally {
-    elements.loginButton.disabled = false;
+    setFormBusy(elements.loginForm, false);
   }
 });
 
@@ -658,33 +714,35 @@ elements.usageHistoryForm?.addEventListener('submit', async (event) => {
   event.preventDefault();
 
   try {
+    setFormBusy(elements.usageHistoryForm, true);
     elements.usageHistorySummary.textContent = '正在讀取歷史使用紀錄...';
     await fetchUsageHistory();
   } catch (error) {
     elements.usageHistorySummary.textContent =
       error instanceof Error ? error.message : String(error);
+  } finally {
+    setFormBusy(elements.usageHistoryForm, false);
   }
 });
 
 elements.usageHistoryRows?.addEventListener('click', (event) => {
   const button = event.target.closest('[data-job-id]');
   if (button?.dataset.jobId) {
-    openJobModal(button.dataset.jobId);
+    openJobModal(button.dataset.jobId, button);
   }
 });
 
 elements.jobModal?.addEventListener('click', (event) => {
-  if (event.target.dataset?.close === 'true') {
+  if (event.target === elements.jobModal) {
     closeJobModal();
   }
 });
 
 elements.jobModalClose?.addEventListener('click', closeJobModal);
 
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && elements.jobModal && !elements.jobModal.hidden) {
-    closeJobModal();
-  }
+elements.jobModal?.addEventListener('cancel', (event) => {
+  event.preventDefault();
+  closeJobModal();
 });
 
 [
@@ -714,6 +772,7 @@ elements.adminProviderForm.addEventListener('submit', async (event) => {
   }
 
   try {
+    setFormBusy(elements.adminProviderForm, true);
     setBanner('正在更新模型與治理設定...');
     const response = await apiFetch('/api/admin/ai-policy', {
       method: 'PUT',
@@ -729,8 +788,10 @@ elements.adminProviderForm.addEventListener('submit', async (event) => {
             ? adminProviderState.summaryModel || 'gpt-5-mini'
             : elements.adminSummaryModelInput.value.trim(),
         pricingVersion: elements.adminPricingVersionInput.value.trim(),
-        defaultDailyCloudQuotaUsd: Number(elements.adminDefaultQuotaInput.value),
-        liveMeetingReservationCapUsd: Number(elements.adminLiveMeetingCapInput.value),
+        defaultDailyCloudQuotaUsd: twdQuotaToUsd(elements.adminDefaultQuotaInput.value),
+        liveMeetingReservationCapUsd: twdQuotaToUsd(
+          elements.adminLiveMeetingCapInput.value
+        ),
         concurrencyPools: {
           localTranscription: Number(elements.adminLocalTranscriptionInput.value),
           cloudTranscription: Number(elements.adminCloudTranscriptionInput.value),
@@ -749,6 +810,8 @@ elements.adminProviderForm.addEventListener('submit', async (event) => {
     setBanner('模型與治理設定已更新。');
   } catch (error) {
     setBanner(error instanceof Error ? error.message : String(error));
+  } finally {
+    setFormBusy(elements.adminProviderForm, false);
   }
 });
 
@@ -760,6 +823,8 @@ elements.adminOverrideForm.addEventListener('submit', async (event) => {
   }
 
   try {
+    setFormBusy(elements.adminOverrideForm, true);
+    elements.adminSummaryModelStatus.textContent = '正在更新個人額度...';
     const response = await apiFetch('/api/admin/cloud-quota/overrides', {
       method: 'PUT',
       headers: {
@@ -767,7 +832,7 @@ elements.adminOverrideForm.addEventListener('submit', async (event) => {
       },
       body: JSON.stringify({
         submitterId: elements.adminOverrideSubmitterId.value.trim(),
-        dailyQuotaUsd: Number(elements.adminOverrideQuotaInput.value)
+        dailyQuotaUsd: twdQuotaToUsd(elements.adminOverrideQuotaInput.value)
       })
     });
     const payload = await response.json().catch(() => ({}));
@@ -777,8 +842,12 @@ elements.adminOverrideForm.addEventListener('submit', async (event) => {
     }
 
     await fetchAdminPanel();
+    elements.adminSummaryModelStatus.textContent = '個人額度已更新。';
   } catch (error) {
-    setBanner(error instanceof Error ? error.message : String(error));
+    elements.adminSummaryModelStatus.textContent =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    setFormBusy(elements.adminOverrideForm, false);
   }
 });
 
@@ -791,6 +860,16 @@ elements.signOutButton.addEventListener('click', () => {
 });
 
 const boot = async () => {
+  try {
+    const pricingResponse = await fetch('/api/operator/config');
+    if (pricingResponse.ok) {
+      applyTwdPricingReference((await pricingResponse.json()).pricingReference);
+    }
+  } catch {
+    // Keep the verified bundled fallback when the reference endpoint is unavailable.
+  }
+  elements.currencyReference.textContent = getTwdPricingReferenceText();
+
   if (!adminToken) {
     showLoginView();
     return;

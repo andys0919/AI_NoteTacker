@@ -12,7 +12,10 @@ Without that work, the current runtime can process jobs correctly under the decl
 - add durable runtime health metrics and machine-readable reporting for queue depth, lease churn, stage latency, throughput, failure rates, and capacity saturation
 - add a privileged runtime health dashboard surface without exposing system-wide data to ordinary operators
 - extend deployment readiness guidance with replica-safe multi-instance deployment, rolling-upgrade procedures, and capacity-evolution guidance beyond the first fixed-capacity profile
+- reclaim expired summary leases without counting stale owners against summary capacity
+- remove the control-plane Docker socket and use an authenticated, meeting-bot-only stop interface
+- serialize and version startup schema migrations, pin runtime image/dependency inputs, and throttle repeated admin login failures
 
 ## Impact
-- Affected specs: `job-progress-tracking`, `deployment-readiness`, `operator-dashboard`, `artifact-lifecycle`, `runtime-observability`
+- Affected specs: `job-progress-tracking`, `deployment-readiness`, `operator-dashboard`, `artifact-lifecycle`, `runtime-observability`, `internal-service-security`
 - Affected code: control-plane lease persistence and reclaim logic, worker heartbeat reporting, object-storage cleanup paths, operator/admin runtime APIs, dashboard admin views, deployment docs and operational runbooks

@@ -71,9 +71,6 @@ def _to_artifact_segment(segment: dict) -> dict:
         ("language", "language"),
         ("language_confidence", "languageConfidence"),
         ("timing_source", "timingSource"),
-        ("speaker", "speaker"),
-        ("speaker_source", "speakerSource"),
-        ("speaker_alignment_score", "speakerAlignmentScore"),
     ):
         if source in segment:
             result[target] = segment[source]
@@ -82,29 +79,6 @@ def _to_artifact_segment(segment: dict) -> dict:
             _to_artifact_review_flag(flag) for flag in segment["review_flags"]
         ]
     return result
-
-
-def _to_artifact_speaker_attribution(diarization: dict) -> dict:
-    return {
-        "provider": diarization["provider"],
-        "model": diarization["model"],
-        "status": diarization["status"],
-        "referenceCount": diarization["reference_count"],
-        "attributedSegmentCount": diarization["attributed_segment_count"],
-        "totalSegmentCount": diarization["total_segment_count"],
-        "failedChunkCount": diarization["failed_chunk_count"],
-    }
-
-
-def _to_artifact_diarization_usage(diarization: dict) -> dict:
-    return {
-        "provider": diarization["provider"],
-        "model": diarization["model"],
-        "audioMs": diarization["audio_ms"],
-        "requestCount": diarization["request_count"],
-        "unmeteredRequestCount": diarization["unmetered_request_count"],
-        "failedChunkCount": diarization["failed_chunk_count"],
-    }
 
 
 def run_transcription_worker_iteration(
@@ -131,8 +105,6 @@ def run_transcription_worker_iteration(
 
     prepared_audio = None
     local_media_path = None
-    punctuation_usage = None
-    diarization_usage = None
     transcription_audio_ms = 0
     transcription_completed = False
 
@@ -183,37 +155,6 @@ def run_transcription_worker_iteration(
         )
         last_reported_percent = None
 
-        def report_punctuation_usage(update):
-            nonlocal punctuation_usage
-
-            if punctuation_usage is None:
-                punctuation_usage = {
-                    "provider": "azure-openai",
-                    "model": update["model"],
-                    "inputTokens": 0,
-                    "cachedInputTokens": 0,
-                    "outputTokens": 0,
-                    "reasoningOutputTokens": 0,
-                    "totalTokens": 0,
-                    "requestCount": 0,
-                    "acceptedChunkCount": 0,
-                    "fallbackChunkCount": 0,
-                    "unmeteredRequestCount": 0,
-                }
-
-            for target, source in (
-                ("inputTokens", "input_tokens"),
-                ("cachedInputTokens", "cached_input_tokens"),
-                ("outputTokens", "output_tokens"),
-                ("reasoningOutputTokens", "reasoning_output_tokens"),
-                ("totalTokens", "total_tokens"),
-                ("requestCount", "request_count"),
-                ("acceptedChunkCount", "accepted_chunk_count"),
-                ("fallbackChunkCount", "fallback_chunk_count"),
-                ("unmeteredRequestCount", "unmetered_request_count"),
-            ):
-                punctuation_usage[target] += update[source]
-
         def report_transcription_progress(update):
             nonlocal last_reported_percent
 
@@ -243,12 +184,7 @@ def run_transcription_worker_iteration(
                 raise JobCancelledError("job cancelled by operator")
 
         def report_transcription_usage(update):
-            nonlocal diarization_usage, transcription_audio_ms
-            if update.get("diarization") is not None:
-                diarization_usage = _to_artifact_diarization_usage(
-                    update["diarization"]
-                )
-                return
+            nonlocal transcription_audio_ms
             transcription_audio_ms += update["audio_ms"]
 
         if transcription_provider in {
@@ -259,7 +195,6 @@ def run_transcription_worker_iteration(
             transcript_result = selected_transcriber.transcribe(
                 prepared_audio["local_audio_path"],
                 on_progress=report_transcription_progress,
-                on_punctuation_usage=report_punctuation_usage,
                 on_transcription_usage=report_transcription_usage,
                 workflow_context={
                     "template_id": claimed_job.get("submissionTemplateId") or "general",
@@ -285,10 +220,6 @@ def run_transcription_worker_iteration(
         }
         if any("rawText" in segment for segment in artifact_segments):
             transcript_artifact["schemaVersion"] = 2
-        if transcript_result.get("diarization"):
-            transcript_artifact["speakerAttribution"] = (
-                _to_artifact_speaker_attribution(transcript_result["diarization"])
-            )
 
         transcript_event = {
             "type": "transcript-artifact-stored",
@@ -298,14 +229,6 @@ def run_transcription_worker_iteration(
         audio_ms = transcription_audio_ms or transcript_result.get("usage", {}).get("audio_ms")
         if audio_ms is not None:
             event_usage["audioMs"] = audio_ms
-        if punctuation_usage and punctuation_usage["requestCount"] > 0:
-            event_usage["punctuation"] = punctuation_usage
-        if diarization_usage:
-            event_usage["diarization"] = diarization_usage
-        elif transcript_result.get("diarization", {}).get("request_count", 0) > 0:
-            event_usage["diarization"] = _to_artifact_diarization_usage(
-                transcript_result["diarization"]
-            )
         if event_usage:
             transcript_event["usage"] = event_usage
         _post_terminal_event(
@@ -320,10 +243,6 @@ def run_transcription_worker_iteration(
         event_usage = {}
         if transcription_audio_ms > 0:
             event_usage["audioMs"] = transcription_audio_ms
-        if punctuation_usage and punctuation_usage["requestCount"] > 0:
-            event_usage["punctuation"] = punctuation_usage
-        if diarization_usage:
-            event_usage["diarization"] = diarization_usage
         if event_usage:
             _post_terminal_event(
                 client,
@@ -353,10 +272,6 @@ def run_transcription_worker_iteration(
         event_usage = {}
         if transcription_audio_ms > 0:
             event_usage["audioMs"] = transcription_audio_ms
-        if punctuation_usage and punctuation_usage["requestCount"] > 0:
-            event_usage["punctuation"] = punctuation_usage
-        if diarization_usage:
-            event_usage["diarization"] = diarization_usage
         if event_usage:
             failure_event["usage"] = event_usage
         _post_terminal_event(

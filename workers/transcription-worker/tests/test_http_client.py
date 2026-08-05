@@ -130,13 +130,23 @@ class ControlPlaneClientTests(unittest.TestCase):
         )
 
     def test_applies_configured_timeout_to_get_post_and_heartbeat(self) -> None:
-        captured_timeouts = []
+        captured_requests = []
 
         def capture_timeout(http_request, timeout=None):
-            captured_timeouts.append((http_request.get_method(), timeout))
+            captured_requests.append(
+                (
+                    http_request.get_method(),
+                    timeout,
+                    http_request.get_header("X-internal-service-token"),
+                )
+            )
             return _StubResponse()
 
-        client = ControlPlaneClient(self.base_url, timeout_seconds=17)
+        client = ControlPlaneClient(
+            self.base_url,
+            internal_service_token="internal-secret",
+            timeout_seconds=17,
+        )
 
         with patch(
             "transcription_worker.control_plane_client.request.urlopen",
@@ -147,8 +157,12 @@ class ControlPlaneClientTests(unittest.TestCase):
             client.post_lease_heartbeat("job_http", "transcription", "lease_http")
 
         self.assertEqual(
-            captured_timeouts,
-            [("GET", 17), ("POST", 17), ("POST", 17)],
+            captured_requests,
+            [
+                ("GET", 17, "internal-secret"),
+                ("POST", 17, "internal-secret"),
+                ("POST", 17, "internal-secret"),
+            ],
         )
 
 

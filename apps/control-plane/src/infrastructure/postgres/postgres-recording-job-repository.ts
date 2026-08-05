@@ -6,6 +6,7 @@ import type {
   SummaryArtifact,
   TranscriptArtifact
 } from '../../domain/recording-job.js';
+import type { MeetingShareLink } from '../../domain/meeting-share.js';
 import {
   buildSummaryPreview,
   buildTranscriptPreview,
@@ -20,7 +21,8 @@ import type {
 import {
   assignRecordingJobToWorker,
   assignSummaryJobToWorker,
-  assignTranscriptionJobToWorker
+  assignTranscriptionJobToWorker,
+  isSummaryLeaseExpired
 } from '../../domain/recording-job.js';
 import type {
   RecordingJobPage,
@@ -98,6 +100,81 @@ type RecordingJobRow = {
   terminal_notification_sent_at: Date | string | null;
   terminal_notification_target: string | null;
   terminal_notification_state: RecordingJob['state'] | null;
+};
+
+type RecordingJobListRow = Omit<
+  RecordingJobRow,
+  | 'meeting_passcode'
+  | 'transcription_glossary'
+  | 'recording_lease_acquired_at'
+  | 'recording_lease_heartbeat_at'
+  | 'recording_lease_expires_at'
+  | 'transcription_lease_acquired_at'
+  | 'transcription_lease_heartbeat_at'
+  | 'transcription_lease_expires_at'
+  | 'summary_lease_acquired_at'
+  | 'summary_lease_heartbeat_at'
+  | 'summary_lease_expires_at'
+  | 'issued_transcription_lease_tokens'
+  | 'issued_summary_lease_tokens'
+  | 'recording_lease_token'
+  | 'transcription_lease_token'
+  | 'summary_lease_token'
+  | 'recording_artifact'
+  | 'transcript_artifact'
+  | 'summary_artifact'
+  | 'job_history'
+>;
+
+const recordingJobListProjectionSql = `
+  id,
+  meeting_url,
+  platform,
+  input_source,
+  submitter_id,
+  requested_join_name,
+  submission_template_id,
+  summary_profile,
+  preferred_export_format,
+  uploaded_file_name,
+  state,
+  processing_stage,
+  processing_message,
+  progress_percent,
+  progress_processed_ms,
+  progress_total_ms,
+  assigned_worker_id,
+  assigned_transcription_worker_id,
+  assigned_summary_worker_id,
+  transcription_provider,
+  transcription_model,
+  summary_provider,
+  summary_model,
+  summary_requested,
+  pricing_version,
+  estimated_cloud_reservation_usd,
+  reserved_cloud_quota_usd,
+  quota_day_key,
+  transcription_attempt_count,
+  created_at,
+  updated_at,
+  failure_code,
+  failure_message,
+  transcript_preview,
+  summary_preview,
+  has_transcript_artifact,
+  has_summary_artifact,
+  terminal_notification_sent_at,
+  terminal_notification_target,
+  terminal_notification_state
+`;
+
+type MeetingShareLinkRow = {
+  job_id: string;
+  share_id: string;
+  created_at: Date | string;
+  expires_at: Date | string;
+  revoked_at: Date | string | null;
 };
 
 const recordingJobSchemaSql = `
@@ -262,6 +339,14 @@ const recordingJobSchemaSql = `
   ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS operator_hidden_at TIMESTAMPTZ;
 
+  CREATE TABLE IF NOT EXISTS meeting_share_links (
+    job_id TEXT PRIMARY KEY REFERENCES recording_jobs(id) ON DELETE CASCADE,
+    share_id TEXT NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ
+  );
+
   CREATE INDEX IF NOT EXISTS recording_jobs_submitter_archive_idx
   ON recording_jobs (submitter_id, created_at DESC, id DESC);
 
@@ -317,6 +402,14 @@ const recordingJobSchemaSql = `
 
 const toIsoString = (value: Date | string): string =>
   value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+
+const mapRowToMeetingShareLink = (row: MeetingShareLinkRow): MeetingShareLink => ({
+  jobId: row.job_id,
+  shareId: row.share_id,
+  createdAt: toIsoString(row.created_at),
+  expiresAt: toIsoString(row.expires_at),
+  ...(row.revoked_at ? { revokedAt: toIsoString(row.revoked_at) } : {})
+});
 
 const includeActiveLeaseToken = (tokens: string[] | null, activeToken: string | null): string[] => [
   ...new Set([...(tokens ?? []), ...(activeToken ? [activeToken] : [])])
@@ -413,7 +506,7 @@ const mapRowToRecordingJob = (row: RecordingJobRow): RecordingJob => ({
   terminalNotificationState: row.terminal_notification_state ?? undefined
 });
 
-const mapRowToRecordingJobListItem = (row: RecordingJobRow): RecordingJobListItem => ({
+const mapRowToRecordingJobListItem = (row: RecordingJobListRow): RecordingJobListItem => ({
   id: row.id,
   meetingUrl: row.meeting_url,
   platform: row.platform,
@@ -433,36 +526,6 @@ const mapRowToRecordingJobListItem = (row: RecordingJobRow): RecordingJobListIte
   assignedWorkerId: row.assigned_worker_id ?? undefined,
   assignedTranscriptionWorkerId: row.assigned_transcription_worker_id ?? undefined,
   assignedSummaryWorkerId: row.assigned_summary_worker_id ?? undefined,
-  recordingLeaseToken: row.recording_lease_token ?? undefined,
-  recordingLeaseAcquiredAt: row.recording_lease_acquired_at
-    ? toIsoString(row.recording_lease_acquired_at)
-    : undefined,
-  recordingLeaseHeartbeatAt: row.recording_lease_heartbeat_at
-    ? toIsoString(row.recording_lease_heartbeat_at)
-    : undefined,
-  recordingLeaseExpiresAt: row.recording_lease_expires_at
-    ? toIsoString(row.recording_lease_expires_at)
-    : undefined,
-  transcriptionLeaseToken: row.transcription_lease_token ?? undefined,
-  transcriptionLeaseAcquiredAt: row.transcription_lease_acquired_at
-    ? toIsoString(row.transcription_lease_acquired_at)
-    : undefined,
-  transcriptionLeaseHeartbeatAt: row.transcription_lease_heartbeat_at
-    ? toIsoString(row.transcription_lease_heartbeat_at)
-    : undefined,
-  transcriptionLeaseExpiresAt: row.transcription_lease_expires_at
-    ? toIsoString(row.transcription_lease_expires_at)
-    : undefined,
-  summaryLeaseToken: row.summary_lease_token ?? undefined,
-  summaryLeaseAcquiredAt: row.summary_lease_acquired_at
-    ? toIsoString(row.summary_lease_acquired_at)
-    : undefined,
-  summaryLeaseHeartbeatAt: row.summary_lease_heartbeat_at
-    ? toIsoString(row.summary_lease_heartbeat_at)
-    : undefined,
-  summaryLeaseExpiresAt: row.summary_lease_expires_at
-    ? toIsoString(row.summary_lease_expires_at)
-    : undefined,
   transcriptionProvider: row.transcription_provider ?? undefined,
   transcriptionModel: row.transcription_model ?? undefined,
   summaryProvider: row.summary_provider ?? undefined,
@@ -483,9 +546,6 @@ const mapRowToRecordingJobListItem = (row: RecordingJobRow): RecordingJobListIte
   updatedAt: toIsoString(row.updated_at),
   failureCode: row.failure_code ?? undefined,
   failureMessage: row.failure_message ?? undefined,
-  recordingArtifact: row.recording_artifact ?? undefined,
-  transcriptArtifact: row.transcript_artifact ?? undefined,
-  summaryArtifact: row.summary_artifact ?? undefined,
   terminalNotificationSentAt: row.terminal_notification_sent_at
     ? toIsoString(row.terminal_notification_sent_at)
     : undefined,
@@ -493,9 +553,69 @@ const mapRowToRecordingJobListItem = (row: RecordingJobRow): RecordingJobListIte
   terminalNotificationState: row.terminal_notification_state ?? undefined,
   hasTranscript: row.has_transcript_artifact ?? false,
   hasSummary: row.has_summary_artifact ?? false,
-  transcriptPreview: row.transcript_preview ?? undefined,
-  summaryPreview: row.summary_preview ?? undefined
+  transcriptPreview: row.transcript_preview || undefined,
+  summaryPreview: row.summary_preview || undefined
 });
+
+type RecordingJobPreviewBackfillRow = Pick<
+  RecordingJobRow,
+  'id' | 'transcript_artifact' | 'summary_artifact'
+>;
+
+export const backfillRecordingJobListPreviews = async (database: Queryable): Promise<void> => {
+  // ponytail: startup batches avoid a second migration system; move offline when archive size affects boot time.
+  let afterId = '';
+
+  while (true) {
+    const result = await database.query<RecordingJobPreviewBackfillRow>(
+      `
+        SELECT id, transcript_artifact, summary_artifact
+        FROM recording_jobs
+        WHERE id > $1
+          AND (
+            (transcript_artifact IS NOT NULL AND transcript_preview IS NULL)
+            OR (summary_artifact IS NOT NULL AND summary_preview IS NULL)
+          )
+        ORDER BY id
+        LIMIT 100
+      `,
+      [afterId]
+    );
+
+    for (const row of result.rows) {
+      await database.query(
+        `
+          UPDATE recording_jobs
+          SET
+            transcript_preview = CASE
+              WHEN transcript_artifact IS NOT NULL AND transcript_preview IS NULL THEN $2
+              ELSE transcript_preview
+            END,
+            summary_preview = CASE
+              WHEN summary_artifact IS NOT NULL AND summary_preview IS NULL THEN $3
+              ELSE summary_preview
+            END
+          WHERE id = $1
+            AND (
+              (transcript_artifact IS NOT NULL AND transcript_preview IS NULL)
+              OR (summary_artifact IS NOT NULL AND summary_preview IS NULL)
+            )
+        `,
+        [
+          row.id,
+          buildTranscriptPreview(row.transcript_artifact ?? undefined) ?? '',
+          buildSummaryPreview(row.summary_artifact?.text) ?? ''
+        ]
+      );
+    }
+
+    if (result.rows.length < 100) {
+      return;
+    }
+
+    afterId = result.rows.at(-1)?.id ?? afterId;
+  }
+};
 
 export const backfillActiveLeaseTokenHistory = async (database: Queryable): Promise<void> => {
   await database.query(
@@ -520,6 +640,7 @@ export const backfillActiveLeaseTokenHistory = async (database: Queryable): Prom
 export const ensureRecordingJobSchema = async (database: Queryable): Promise<void> => {
   await database.query(recordingJobSchemaSql);
   await backfillActiveLeaseTokenHistory(database);
+  await backfillRecordingJobListPreviews(database);
   // Backfill the denormalized presence flags. The `AND ... = FALSE` guards keep this
   // idempotent so a restart only touches rows that still need it, instead of locking and
   // rewriting every already-backfilled row on every boot.
@@ -933,19 +1054,146 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
     return mapRowToRecordingJob(result.rows[0]);
   }
 
-  async listBySubmitter(submitterId: string): Promise<RecordingJob[]> {
-    const result = await this.database.query<RecordingJobRow>(
+  async getMeetingShareLinkByJobId(jobId: string): Promise<MeetingShareLink | undefined> {
+    const result = await this.database.query<MeetingShareLinkRow>(
       `
         SELECT *
+        FROM meeting_share_links
+        WHERE job_id = $1
+      `,
+      [jobId]
+    );
+
+    return result.rows[0] ? mapRowToMeetingShareLink(result.rows[0]) : undefined;
+  }
+
+  async getMeetingShareLinkByShareId(shareId: string): Promise<MeetingShareLink | undefined> {
+    const result = await this.database.query<MeetingShareLinkRow>(
+      `
+        SELECT *
+        FROM meeting_share_links
+        WHERE share_id = $1
+      `,
+      [shareId]
+    );
+
+    return result.rows[0] ? mapRowToMeetingShareLink(result.rows[0]) : undefined;
+  }
+
+  async getOrCreateMeetingShareLink(link: MeetingShareLink): Promise<MeetingShareLink> {
+    const result = await this.database.query<MeetingShareLinkRow>(
+      `
+        INSERT INTO meeting_share_links (
+          job_id,
+          share_id,
+          created_at,
+          expires_at,
+          revoked_at
+        )
+        VALUES ($1, $2, $3::timestamptz, $4::timestamptz, NULL)
+        ON CONFLICT (job_id) DO UPDATE SET
+          share_id = CASE
+            WHEN meeting_share_links.revoked_at IS NOT NULL
+              OR meeting_share_links.expires_at <= EXCLUDED.created_at
+            THEN EXCLUDED.share_id
+            ELSE meeting_share_links.share_id
+          END,
+          created_at = CASE
+            WHEN meeting_share_links.revoked_at IS NOT NULL
+              OR meeting_share_links.expires_at <= EXCLUDED.created_at
+            THEN EXCLUDED.created_at
+            ELSE meeting_share_links.created_at
+          END,
+          expires_at = CASE
+            WHEN meeting_share_links.revoked_at IS NOT NULL
+              OR meeting_share_links.expires_at <= EXCLUDED.created_at
+            THEN EXCLUDED.expires_at
+            ELSE meeting_share_links.expires_at
+          END,
+          revoked_at = CASE
+            WHEN meeting_share_links.revoked_at IS NOT NULL
+              OR meeting_share_links.expires_at <= EXCLUDED.created_at
+            THEN NULL
+            ELSE meeting_share_links.revoked_at
+          END
+        RETURNING *
+      `,
+      [link.jobId, link.shareId, link.createdAt, link.expiresAt]
+    );
+
+    return mapRowToMeetingShareLink(result.rows[0]);
+  }
+
+  async rotateMeetingShareLink(link: MeetingShareLink): Promise<MeetingShareLink> {
+    const result = await this.database.query<MeetingShareLinkRow>(
+      `
+        INSERT INTO meeting_share_links (
+          job_id,
+          share_id,
+          created_at,
+          expires_at,
+          revoked_at
+        )
+        VALUES ($1, $2, $3::timestamptz, $4::timestamptz, NULL)
+        ON CONFLICT (job_id) DO UPDATE SET
+          share_id = EXCLUDED.share_id,
+          created_at = EXCLUDED.created_at,
+          expires_at = EXCLUDED.expires_at,
+          revoked_at = NULL
+        RETURNING *
+      `,
+      [link.jobId, link.shareId, link.createdAt, link.expiresAt]
+    );
+
+    return mapRowToMeetingShareLink(result.rows[0]);
+  }
+
+  async revokeMeetingShareLink(jobId: string, revokedAt: string): Promise<boolean> {
+    const result = await this.database.query<{ job_id: string }>(
+      `
+        UPDATE meeting_share_links
+        SET revoked_at = $2::timestamptz
+        WHERE job_id = $1
+        RETURNING job_id
+      `,
+      [jobId, revokedAt]
+    );
+
+    return result.rows.length > 0;
+  }
+
+  async listBySubmitter(
+    submitterId: string,
+    searchQuery?: string
+  ): Promise<RecordingJobListItem[]> {
+    const normalizedSearchQuery = searchQuery?.trim();
+    const searchClause = normalizedSearchQuery
+      ? `
+          AND (
+            meeting_url ILIKE $2
+            OR requested_join_name ILIKE $2
+            OR uploaded_file_name ILIKE $2
+            OR failure_message ILIKE $2
+            OR CAST(summary_artifact AS TEXT) ILIKE $2
+            OR CAST(transcript_artifact AS TEXT) ILIKE $2
+          )
+        `
+      : '';
+    const result = await this.database.query<RecordingJobListRow>(
+      `
+        SELECT ${recordingJobListProjectionSql}
         FROM recording_jobs
         WHERE submitter_id = $1
           AND operator_hidden_at IS NULL
-        ORDER BY created_at DESC
+        ${searchClause}
+        ORDER BY created_at DESC, id DESC
       `,
-      [submitterId]
+      normalizedSearchQuery
+        ? [submitterId, `%${normalizedSearchQuery}%`]
+        : [submitterId]
     );
 
-    return result.rows.map(mapRowToRecordingJob);
+    return result.rows.map(mapRowToRecordingJobListItem);
   }
 
   async listBySubmitterPage(
@@ -964,55 +1212,9 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
       ? [submitterId, input.cursor.createdAt, input.cursor.id, input.limit + 1]
       : [submitterId, input.limit + 1];
     const limitPlaceholder = input.cursor ? '$4' : '$2';
-    const result = await this.database.query<RecordingJobRow>(
+    const result = await this.database.query<RecordingJobListRow>(
       `
-        SELECT
-          id,
-          meeting_url,
-          platform,
-          input_source,
-          submitter_id,
-          requested_join_name,
-          submission_template_id,
-          summary_profile,
-          preferred_export_format,
-          uploaded_file_name,
-          state,
-          processing_stage,
-          processing_message,
-          progress_percent,
-          progress_processed_ms,
-          progress_total_ms,
-          assigned_worker_id,
-          assigned_transcription_worker_id,
-          assigned_summary_worker_id,
-          recording_lease_token,
-          transcription_lease_token,
-          summary_lease_token,
-          transcription_provider,
-          transcription_model,
-          summary_provider,
-          summary_model,
-          summary_requested,
-          pricing_version,
-          estimated_cloud_reservation_usd,
-          reserved_cloud_quota_usd,
-          quota_day_key,
-          transcription_attempt_count,
-          created_at,
-          updated_at,
-          failure_code,
-          failure_message,
-          recording_artifact,
-          transcript_artifact,
-          summary_artifact,
-          transcript_preview,
-          summary_preview,
-          has_transcript_artifact,
-          has_summary_artifact,
-          terminal_notification_sent_at,
-          terminal_notification_target,
-          terminal_notification_state
+        SELECT ${recordingJobListProjectionSql}
         FROM recording_jobs
         WHERE submitter_id = $1
           AND operator_hidden_at IS NULL
@@ -1138,13 +1340,21 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
     // transcript / summary content) so the admin console can still audit it.
     const result = await this.database.query<{ id: string }>(
       `
-        UPDATE recording_jobs
-        SET operator_hidden_at = now()
-        WHERE id = $1
-          AND submitter_id = $2
-          AND state IN ('failed', 'completed')
-          AND operator_hidden_at IS NULL
-        RETURNING id
+        WITH hidden AS (
+          UPDATE recording_jobs
+          SET operator_hidden_at = now()
+          WHERE id = $1
+            AND submitter_id = $2
+            AND state IN ('failed', 'completed')
+            AND operator_hidden_at IS NULL
+          RETURNING id, operator_hidden_at
+        ), revoked AS (
+          UPDATE meeting_share_links
+          SET revoked_at = hidden.operator_hidden_at
+          FROM hidden
+          WHERE meeting_share_links.job_id = hidden.id
+        )
+        SELECT id FROM hidden
       `,
       [id, submitterId]
     );
@@ -1157,12 +1367,20 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
     // preserving the content for admin auditing.
     const result = await this.database.query<{ id: string }>(
       `
-        UPDATE recording_jobs
-        SET operator_hidden_at = now()
-        WHERE submitter_id = $1
-          AND state IN ('failed', 'completed')
-          AND operator_hidden_at IS NULL
-        RETURNING id
+        WITH hidden AS (
+          UPDATE recording_jobs
+          SET operator_hidden_at = now()
+          WHERE submitter_id = $1
+            AND state IN ('failed', 'completed')
+            AND operator_hidden_at IS NULL
+          RETURNING id, operator_hidden_at
+        ), revoked AS (
+          UPDATE meeting_share_links
+          SET revoked_at = hidden.operator_hidden_at
+          FROM hidden
+          WHERE meeting_share_links.job_id = hidden.id
+        )
+        SELECT id FROM hidden
       `,
       [submitterId]
     );
@@ -1193,7 +1411,7 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
       `
     );
 
-    return result.rows.map(mapRowToRecordingJob);
+    return result.rows.map(mapRowToRecordingJob).filter((job) => !isSummaryLeaseExpired(job));
   }
 
   private async attemptRecordingClaim(
@@ -1346,9 +1564,26 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           AND summary_requested = TRUE
           AND transcript_artifact IS NOT NULL
           AND summary_artifact IS NULL
-          AND assigned_summary_worker_id IS NULL
-          AND processing_stage = 'summary-pending'
           AND issued_summary_lease_tokens = $13::jsonb
+          AND (
+            (
+              assigned_summary_worker_id IS NULL
+              AND processing_stage = 'summary-pending'
+              AND $14::text IS NULL
+            )
+            OR (
+              assigned_summary_worker_id = $14
+              AND processing_stage = 'generating-summary'
+              AND (
+                (summary_lease_token IS NULL AND $15::text IS NULL)
+                OR summary_lease_token = $15
+              )
+              AND (
+                (summary_lease_expires_at IS NULL AND $16::timestamptz IS NULL)
+                OR summary_lease_expires_at = $16::timestamptz
+              )
+            )
+          )
         RETURNING *
       `,
       [
@@ -1364,7 +1599,10 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
         claimedJob.updatedAt,
         JSON.stringify(claimedJob.jobHistory ?? []),
         JSON.stringify(claimedJob.issuedSummaryLeaseTokens ?? []),
-        JSON.stringify(candidate.issuedSummaryLeaseTokens ?? [])
+        JSON.stringify(candidate.issuedSummaryLeaseTokens ?? []),
+        candidate.assignedSummaryWorkerId ?? null,
+        candidate.summaryLeaseToken ?? null,
+        candidate.summaryLeaseExpiresAt ?? null
       ]
     );
 
@@ -1461,8 +1699,10 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
           AND summary_requested = TRUE
           AND transcript_artifact IS NOT NULL
           AND summary_artifact IS NULL
-          AND assigned_summary_worker_id IS NULL
-          AND processing_stage = 'summary-pending'
+          AND (
+            (assigned_summary_worker_id IS NULL AND processing_stage = 'summary-pending')
+            OR (assigned_summary_worker_id IS NOT NULL AND processing_stage = 'generating-summary')
+          )
         ORDER BY updated_at ASC
       `
     );
@@ -1471,7 +1711,13 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
       return undefined;
     }
 
-    for (const candidate of result.rows.map(mapRowToRecordingJob)) {
+    for (const candidate of result.rows
+      .map(mapRowToRecordingJob)
+      .filter(
+        (job) =>
+          (!job.assignedSummaryWorkerId && job.processingStage === 'summary-pending') ||
+          (Boolean(job.assignedSummaryWorkerId) && isSummaryLeaseExpired(job))
+      )) {
       if (
         normalizedProviders?.length &&
         !normalizedProviders.includes(candidate.summaryProvider ?? 'local-codex')

@@ -1,26 +1,18 @@
 import { createServer } from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import type { AddressInfo } from 'node:net';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { DockerSocketMeetingBotController } from '../src/infrastructure/meeting-bot-runtime.js';
+import { HttpMeetingBotController } from '../src/infrastructure/meeting-bot-runtime.js';
 
 describe('meeting bot runtime controller', () => {
-  let socketDir: string | undefined;
-
-  afterEach(async () => {
-    if (socketDir) {
-      await rm(socketDir, { recursive: true, force: true });
-      socketDir = undefined;
-    }
-  });
-
-  it('stops the current bot by restarting the meeting-bot container with a graceful timeout', async () => {
-    socketDir = await mkdtemp(join(tmpdir(), 'meeting-bot-runtime-'));
-    const socketPath = join(socketDir, 'docker.sock');
-    const requests: Array<{ method?: string; url?: string; body: string }> = [];
+  it('stops only the meeting-bot through its authenticated private endpoint', async () => {
+    const requests: Array<{
+      method?: string;
+      url?: string;
+      authorization?: string;
+      body: string;
+    }> = [];
 
     const server = createServer((request, response) => {
       const chunks: Buffer[] = [];
@@ -30,11 +22,15 @@ describe('meeting bot runtime controller', () => {
         requests.push({
           method: request.method,
           url: request.url,
+          authorization: request.headers.authorization,
           body
         });
 
-        if (request.url === '/containers/meeting-bot-1/restart?t=90') {
-          response.writeHead(204);
+        if (
+          request.url === '/shutdown' &&
+          request.headers.authorization === 'Bearer dedicated-control-token'
+        ) {
+          response.writeHead(202);
           response.end();
           return;
         }
@@ -46,11 +42,15 @@ describe('meeting bot runtime controller', () => {
 
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
-      server.listen(socketPath, resolve);
+      server.listen(0, '127.0.0.1', resolve);
     });
+    const address = server.address() as AddressInfo;
 
     try {
-      const controller = new DockerSocketMeetingBotController(socketPath, 'meeting-bot-1', 90);
+      const controller = new HttpMeetingBotController(
+        `http://127.0.0.1:${address.port}`,
+        'dedicated-control-token'
+      );
       await controller.stopCurrentBot();
     } finally {
       await new Promise<void>((resolve, reject) => {
@@ -61,7 +61,8 @@ describe('meeting bot runtime controller', () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
       method: 'POST',
-      url: '/containers/meeting-bot-1/restart?t=90'
+      url: '/shutdown',
+      authorization: 'Bearer dedicated-control-token'
     });
     expect(requests[0].body).toBe('');
   });

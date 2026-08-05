@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import request from 'supertest';
+import request, { unauthenticatedRequest } from './test-request.js';
 import { describe, expect, it } from 'vitest';
 
 import { createApp } from '../src/app.js';
@@ -26,6 +26,8 @@ class FakeUploadedAudioStorage {
     contentType: string;
     size: number;
   }> = [];
+  readonly deletedKeys: string[][] = [];
+  failDeletes = false;
 
   async storeUpload(input: {
     jobId: string;
@@ -48,6 +50,13 @@ class FakeUploadedAudioStorage {
       downloadUrl: `https://storage.example.test/uploads/${input.submitterId}/${input.jobId}/${input.originalName}`,
       contentType: input.contentType
     };
+  }
+
+  async deleteObjects(storageKeys: string[]) {
+    if (this.failDeletes) {
+      throw new Error('object storage unavailable');
+    }
+    this.deletedKeys.push(storageKeys);
   }
 }
 
@@ -712,7 +721,29 @@ describe('recording jobs API', () => {
           reasoningEffort: 'medium',
           text: 'Short summary',
           structured: {
+            title: 'Beta rollout and unresolved ownership',
             summary: 'Short summary',
+            topics: [
+              {
+                title: 'Rollout',
+                status: 'mixed',
+                subtopics: [
+                  {
+                    title: 'Scope and ownership',
+                    details: ['Beta scope is confirmed', 'Launch owner is unresolved']
+                  }
+                ],
+                points: ['Beta scope is confirmed', 'Launch owner is unresolved'],
+                conclusion: 'Scope is confirmed; ownership remains open.'
+              }
+            ],
+            followUpGroups: [
+              {
+                title: 'Communication',
+                items: ['send recap']
+              }
+            ],
+            analysisNotes: ['Ownership remains a rollout dependency.'],
             keyPoints: ['hello everyone'],
             actionItems: ['send recap'],
             decisions: ['ship beta'],
@@ -750,6 +781,16 @@ describe('recording jobs API', () => {
     });
     expect(fetched.body.summaryArtifact.model).toBe('gpt-5.3-codex-spark');
     expect(fetched.body.summaryArtifact.text).toBe('Short summary');
+    expect(fetched.body.summaryArtifact.structured.topics[0].status).toBe('mixed');
+    expect(fetched.body.summaryArtifact.structured.topics[0].subtopics[0].title).toBe(
+      'Scope and ownership'
+    );
+    expect(fetched.body.summaryArtifact.structured.followUpGroups[0].title).toBe(
+      'Communication'
+    );
+    expect(fetched.body.summaryArtifact.structured.analysisNotes).toEqual([
+      'Ownership remains a rollout dependency.'
+    ]);
     expect(fetched.body.summaryArtifact.structured.actionItems).toEqual(['send recap']);
   });
 
@@ -889,6 +930,55 @@ describe('recording jobs API', () => {
     expect(staleSummaryCallback.body.state).toBe('transcribing');
     expect(staleSummaryCallback.body.processingStage).toBe('generating-summary');
     expect(staleSummaryCallback.body.summaryArtifact).toBeUndefined();
+  });
+
+  it('reclaims an expired summary lease without counting the stale owner as active capacity', async () => {
+    const repository = new InMemoryRecordingJobRepository();
+    const app = createApp(repository);
+    const created = await request(app)
+      .post('/recording-jobs')
+      .send({ meetingUrl: 'https://meet.google.com/exp-summ-ary' });
+
+    await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'recording-artifact-stored',
+        recordingArtifact: {
+          storageKey: 'recordings/job_expired_summary/meeting.webm',
+          downloadUrl: 'https://storage.example.test/recordings/job_expired_summary/meeting.webm',
+          contentType: 'video/webm'
+        }
+      });
+    await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'transcript-artifact-stored',
+        transcriptArtifact: {
+          storageKey: 'transcripts/job_expired_summary/transcript.json',
+          downloadUrl: 'https://storage.example.test/transcripts/job_expired_summary/transcript.json',
+          contentType: 'application/json',
+          language: 'en',
+          segments: [{ startMs: 0, endMs: 1000, text: 'recover this summary' }]
+        }
+      });
+
+    const staleClaim = await request(app)
+      .post('/summary-workers/claims')
+      .send({ workerId: 'summary-stale' });
+    await repository.save({
+      ...(await repository.getById(created.body.id))!,
+      summaryLeaseHeartbeatAt: '2026-01-01T00:00:00.000Z',
+      summaryLeaseExpiresAt: '2026-01-01T00:15:00.000Z'
+    });
+
+    const reclaimed = await request(app)
+      .post('/summary-workers/claims')
+      .send({ workerId: 'summary-replacement' });
+
+    expect(reclaimed.status).toBe(200);
+    expect(reclaimed.body.id).toBe(created.body.id);
+    expect(reclaimed.body.assignedSummaryWorkerId).toBe('summary-replacement');
+    expect(reclaimed.body.leaseToken).not.toBe(staleClaim.body.leaseToken);
   });
 
   it('ignores a stale recording callback after the recording lease has already been released', async () => {
@@ -1086,7 +1176,7 @@ describe('recording jobs API', () => {
     expect(claim.body.meetingPasscode).toBeUndefined();
   });
 
-  it('returns operator job lists with full transcript/summary content inline', async () => {
+  it('keeps operator job lists lightweight and returns full content on demand', async () => {
     const app = createApp();
 
     const created = await request(app)
@@ -1125,9 +1215,10 @@ describe('recording jobs API', () => {
       .query({ submitterId: 'operator-list' });
 
     expect(listed.status).toBe(200);
-    expect(listed.body.jobs[0].transcriptArtifact.segments).toHaveLength(1);
+    expect(listed.body.jobs[0].transcriptArtifact).toBeUndefined();
     expect(listed.body.jobs[0].summaryArtifact).toBeUndefined();
     expect(listed.body.jobs[0].hasTranscript).toBe(true);
+    expect(listed.body.jobs[0].transcriptPreview).toContain('hello list details');
 
     const detailed = await request(app)
       .get(`/api/operator/jobs/${created.body.id}`)
@@ -1199,17 +1290,40 @@ describe('recording jobs API', () => {
   });
 
   it('requires an internal service token for worker routes when configured', async () => {
+    expect(() => createApp(undefined, { internalServiceToken: '' })).toThrow(
+      /INTERNAL_SERVICE_TOKEN/
+    );
+    expect(() =>
+      createApp(undefined, { internalServiceToken: 'internal-token' })
+    ).toThrow(/at least 32 bytes/);
+    expect(() => createApp(undefined, { internalServiceToken: 'too-short' })).toThrow(
+      /at least 32 bytes/
+    );
+
+    const internalServiceToken = 'test-dedicated-internal-service-secret';
+
     const app = createApp(undefined, {
-      internalServiceToken: 'internal-secret'
+      internalServiceToken
     });
 
-    await request(app)
+    const created = await request(app)
       .post('/recording-jobs')
       .send({
         meetingUrl: 'https://meet.google.com/int-erna-ltk'
       });
 
-    const unauthenticatedClaim = await request(app)
+    const unauthenticatedRead = await unauthenticatedRequest(app).get(
+      `/recording-jobs/${created.body.id}`
+    );
+    expect(unauthenticatedRead.status).toBe(401);
+
+    const authenticatedRead = await request(app)
+      .get(`/recording-jobs/${created.body.id}`)
+      .set('x-internal-service-token', internalServiceToken);
+    expect(authenticatedRead.status).toBe(200);
+    expect(authenticatedRead.body.id).toBe(created.body.id);
+
+    const unauthenticatedClaim = await unauthenticatedRequest(app)
       .post('/recording-workers/claims')
       .send({
         workerId: 'worker-alpha'
@@ -1219,7 +1333,7 @@ describe('recording jobs API', () => {
 
     const authenticatedClaim = await request(app)
       .post('/recording-workers/claims')
-      .set('x-internal-service-token', 'internal-secret')
+      .set('x-internal-service-token', internalServiceToken)
       .send({
         workerId: 'worker-alpha'
       });
@@ -1227,7 +1341,7 @@ describe('recording jobs API', () => {
     expect(authenticatedClaim.status).toBe(200);
     expect(authenticatedClaim.body.leaseToken).toBeTruthy();
 
-    const unauthenticatedHeartbeat = await request(app)
+    const unauthenticatedHeartbeat = await unauthenticatedRequest(app)
       .post(`/recording-jobs/${authenticatedClaim.body.id}/leases/heartbeat`)
       .send({
         stage: 'recording',
@@ -1238,7 +1352,7 @@ describe('recording jobs API', () => {
 
     const authenticatedHeartbeat = await request(app)
       .post(`/recording-jobs/${authenticatedClaim.body.id}/leases/heartbeat`)
-      .set('x-internal-service-token', 'internal-secret')
+      .set('x-internal-service-token', internalServiceToken)
       .send({
         stage: 'recording',
         leaseToken: authenticatedClaim.body.leaseToken
@@ -1795,25 +1909,35 @@ describe('recording jobs API', () => {
 
   it('deletes a terminal operator job from visible history', async () => {
     const repository = new InMemoryRecordingJobRepository();
+    const storage = new FakeUploadedAudioStorage();
     const failedJob = markRecordingJobFailed(
-      createRecordingJob({
-        meetingUrl: 'https://meet.google.com/history-delete',
-        platform: 'google-meet',
-        submitterId: 'operator-a'
-      }),
+      attachRecordingArtifact(
+        createRecordingJob({
+          meetingUrl: 'https://meet.google.com/history-delete',
+          platform: 'google-meet',
+          submitterId: 'operator-a'
+        }),
+        {
+          storageKey: 'recordings/job_history_delete/meeting.webm',
+          downloadUrl: 'https://storage.example.test/recordings/job_history_delete/meeting.webm',
+          contentType: 'video/webm'
+        }
+      ),
       {
         code: 'meeting-bot-failed',
         message: 'meeting join failed'
       }
     );
     await repository.save(failedJob);
-    const app = createApp(repository);
+    const app = createApp(repository, { uploadedAudioStorage: storage });
 
     const deleted = await request(app)
       .delete(`/api/operator/jobs/${failedJob.id}`)
       .send({ submitterId: 'operator-a' });
 
-    expect(deleted.status).toBe(204);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body.artifactCleanup).toEqual({ status: 'completed', objectCount: 1 });
+    expect(storage.deletedKeys).toEqual([['recordings/job_history_delete/meeting.webm']]);
 
     const listed = await request(app).get('/api/operator/jobs').query({ submitterId: 'operator-a' });
     expect(listed.body.jobs).toHaveLength(0);
@@ -1849,6 +1973,7 @@ describe('recording jobs API', () => {
 
   it('clears only terminal history for the current operator', async () => {
     const repository = new InMemoryRecordingJobRepository();
+    const storage = new FakeUploadedAudioStorage();
     const failedJob = markRecordingJobFailed(
       createRecordingJob({
         meetingUrl: 'https://meet.google.com/history-failed',
@@ -1913,7 +2038,7 @@ describe('recording jobs API', () => {
     await repository.save(activeJob);
     await repository.save(otherOperatorJob);
 
-    const app = createApp(repository);
+    const app = createApp(repository, { uploadedAudioStorage: storage });
 
     const cleared = await request(app)
       .post('/api/operator/jobs/clear-history')
@@ -1921,6 +2046,13 @@ describe('recording jobs API', () => {
 
     expect(cleared.status).toBe(200);
     expect(cleared.body.deletedCount).toBe(2);
+    expect(cleared.body.artifactCleanup).toEqual({ status: 'completed', objectCount: 2 });
+    expect(storage.deletedKeys).toEqual([
+      [
+        'recordings/job_history_completed/meeting.webm',
+        'transcripts/job_history_completed/transcript.json'
+      ]
+    ]);
 
     const listedA = await request(app).get('/api/operator/jobs').query({ submitterId: 'operator-a' });
     expect(listedA.body.jobs).toHaveLength(1);
@@ -1929,6 +2061,36 @@ describe('recording jobs API', () => {
     const listedB = await request(app).get('/api/operator/jobs').query({ submitterId: 'operator-b' });
     expect(listedB.body.jobs).toHaveLength(1);
     expect(listedB.body.jobs[0].id).toBe(otherOperatorJob.id);
+  });
+
+  it('keeps terminal history visible when object cleanup fails', async () => {
+    const repository = new InMemoryRecordingJobRepository();
+    const storage = new FakeUploadedAudioStorage();
+    storage.failDeletes = true;
+    const failedJob = markRecordingJobFailed(
+      attachRecordingArtifact(
+        createRecordingJob({
+          meetingUrl: 'https://meet.google.com/history-retry',
+          platform: 'google-meet',
+          submitterId: 'operator-a'
+        }),
+        {
+          storageKey: 'recordings/job_history_retry/meeting.webm',
+          downloadUrl: 'https://storage.example.test/recordings/job_history_retry/meeting.webm',
+          contentType: 'video/webm'
+        }
+      ),
+      { code: 'meeting-bot-failed', message: 'meeting join failed' }
+    );
+    await repository.save(failedJob);
+    const app = createApp(repository, { uploadedAudioStorage: storage });
+
+    const deleted = await request(app)
+      .delete(`/api/operator/jobs/${failedJob.id}`)
+      .send({ submitterId: 'operator-a' });
+
+    expect(deleted.status).toBe(503);
+    expect((await repository.getById(failedJob.id))?.id).toBe(failedJob.id);
   });
 
   it('stores uploaded-media progress updates and returns them in job payloads', async () => {
@@ -2254,6 +2416,11 @@ describe('recording jobs API', () => {
     expect(response.body.jobs.map((job: { id: string }) => job.id).sort()).toEqual(
       [matchingTranscript.id, matchingUpload.id].sort()
     );
+    for (const job of response.body.jobs) {
+      expect(job).not.toHaveProperty('recordingLeaseToken');
+      expect(job).not.toHaveProperty('transcriptionLeaseToken');
+      expect(job).not.toHaveProperty('summaryLeaseToken');
+    }
   });
 
   it('exports an owned completed job in markdown, txt, srt, and json formats', async () => {
@@ -2308,7 +2475,7 @@ describe('recording jobs API', () => {
             {
               startMs: 1200,
               endMs: 2600,
-              text: 'next transcript line'
+              text: 'Speaker <C>: next transcript line'
             }
           ],
           speakerAttribution: {
@@ -2325,7 +2492,7 @@ describe('recording jobs API', () => {
       {
         model: 'gpt-5.3-codex-spark',
         reasoningEffort: 'medium',
-        text: '## Summary\n\nExport summary'
+        text: '## Summary\n\nSpeaker <A> 將 Export summary 發給 Speaker <B>。'
       }
     );
 
@@ -2348,7 +2515,13 @@ describe('recording jobs API', () => {
     expect(markdown.headers['content-disposition']).toContain('.md');
     expect(markdown.text).toContain('# AI NoteTacker Export');
     expect(markdown.text).toContain('Export summary');
-    expect(markdown.text).toContain('Speaker A: hello export world');
+    expect(markdown.text).toContain('與會者');
+    expect(markdown.text).toContain('hello export world');
+    expect(markdown.text).not.toContain('Speaker A');
+    expect(markdown.text).not.toContain('Speaker B');
+    expect(markdown.text).not.toContain('Speaker <A>');
+    expect(markdown.text).not.toContain('Speaker <B>');
+    expect(markdown.text).not.toContain('Speaker <C>');
     // The generated summary already carries its own "## Summary" heading,
     // so the export must not prepend a duplicate one.
     expect(markdown.text.split('## Summary').length - 1).toBe(1);
@@ -2362,6 +2535,11 @@ describe('recording jobs API', () => {
     expect(txt.headers['content-type']).toContain('text/plain');
     expect(txt.text).toContain('Export summary');
     expect(txt.text).toContain('next transcript line');
+    expect(txt.text).not.toContain('Speaker A');
+    expect(txt.text).not.toContain('Speaker B');
+    expect(txt.text).not.toContain('Speaker <A>');
+    expect(txt.text).not.toContain('Speaker <B>');
+    expect(txt.text).not.toContain('Speaker <C>');
 
     const srt = await request(app)
       .get(`/api/operator/jobs/${exportedJob.id}/export`)
@@ -2371,7 +2549,7 @@ describe('recording jobs API', () => {
     expect(srt.status).toBe(200);
     expect(srt.headers['content-type']).toContain('application/x-subrip');
     expect(srt.text).toContain(
-      '1\n00:00:00,000 --> 00:00:01,200\nSpeaker A: hello export world'
+      '1\n00:00:00,000 --> 00:00:01,200\nhello export world'
     );
 
     const json = await request(app)
@@ -2382,7 +2560,9 @@ describe('recording jobs API', () => {
     expect(json.status).toBe(200);
     expect(json.headers['content-type']).toContain('application/json');
     expect(json.body.job.id).toBe(exportedJob.id);
-    expect(json.body.summary.text).toBe('## Summary\n\nExport summary');
+    expect(json.body.summary.text).toBe(
+      '## Summary\n\nSpeaker <A> 將 Export summary 發給 Speaker <B>。'
+    );
     expect(json.body.transcript.segments).toHaveLength(2);
     expect(json.body.transcript.segments[0]).toMatchObject({
       rawText: 'hello export world',

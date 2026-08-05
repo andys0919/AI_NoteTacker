@@ -2,9 +2,6 @@ import os
 import time
 
 from transcription_worker.artifact_downloader import RecordingArtifactDownloader, S3ArtifactStorage
-from transcription_worker.azure_openai_punctuation_restorer import (
-    AzureOpenAiPunctuationRestorer,
-)
 from transcription_worker.azure_openai_transcriber import AzureOpenAiTranscriber
 from transcription_worker.config import read_transcription_worker_config
 from transcription_worker.control_plane_client import ControlPlaneClient
@@ -57,19 +54,6 @@ def main() -> None:
     transcriber_registry = {
         "self-hosted-whisper": transcriber,
     }
-    punctuator = None
-    if (
-        config.get("transcript_punctuation_enabled")
-        and config.get("azure_openai_summary_endpoint")
-        and config.get("azure_openai_summary_api_key")
-    ):
-        punctuator = AzureOpenAiPunctuationRestorer(
-            endpoint=str(config["azure_openai_summary_endpoint"]),
-            api_key=str(config["azure_openai_summary_api_key"]),
-            model=str(config["transcript_punctuation_model"]),
-            reasoning_effort=str(config["transcript_polishing_reasoning_effort"]),
-            timeout_seconds=int(config["azure_openai_punctuation_timeout_seconds"]),
-        )
     if (
         config.get("azure_openai_endpoint")
         and config.get("azure_openai_deployment")
@@ -82,16 +66,7 @@ def main() -> None:
             api_version=str(config["azure_openai_api_version"]),
             language=str(config["azure_openai_transcribe_language"]),
             prompt=str(config["azure_openai_transcribe_prompt"]),
-            punctuator=punctuator,
             timeout_seconds=int(config["azure_openai_transcribe_timeout_seconds"]),
-            diarization_endpoint=str(config["azure_openai_diarize_endpoint"] or ""),
-            diarization_deployment=str(config["azure_openai_diarize_model"] or ""),
-            diarization_api_key=str(config["azure_openai_diarize_api_key"] or ""),
-            diarization_api_version=str(config["azure_openai_diarize_api_version"]),
-            diarization_timeout_seconds=int(
-                config["azure_openai_diarize_timeout_seconds"]
-            ),
-            diarization_max_workers=int(config["azure_openai_diarize_max_workers"]),
         )
     if (
         config.get("azure_speech_mai_endpoint")
@@ -104,29 +79,12 @@ def main() -> None:
             model=str(config["azure_speech_mai_model"]),
             api_version=str(config["azure_speech_mai_api_version"]),
             timeout_seconds=int(config["azure_speech_mai_timeout_seconds"]),
-            punctuator=punctuator,
-            diarization_endpoint=str(config["azure_openai_diarize_endpoint"] or ""),
-            diarization_deployment=str(config["azure_openai_diarize_model"] or ""),
-            diarization_api_key=str(config["azure_openai_diarize_api_key"] or ""),
-            diarization_api_version=str(config["azure_openai_diarize_api_version"]),
-            diarization_timeout_seconds=int(
-                config["azure_openai_diarize_timeout_seconds"]
-            ),
-            diarization_max_workers=int(config["azure_openai_diarize_max_workers"]),
         )
     if config.get("qwen_asr_endpoint") and config.get("qwen_asr_model"):
         transcriber_registry["qwen3-asr-1.7b"] = QwenOpenAiTranscriber(
             endpoint=str(config["qwen_asr_endpoint"]),
             model=str(config["qwen_asr_model"]),
             timeout_seconds=int(config["qwen_asr_timeout_seconds"]),
-            diarization_endpoint=str(config["azure_openai_diarize_endpoint"] or ""),
-            diarization_deployment=str(config["azure_openai_diarize_model"] or ""),
-            diarization_api_key=str(config["azure_openai_diarize_api_key"] or ""),
-            diarization_api_version=str(config["azure_openai_diarize_api_version"]),
-            diarization_timeout_seconds=int(
-                config["azure_openai_diarize_timeout_seconds"]
-            ),
-            diarization_max_workers=int(config["azure_openai_diarize_max_workers"]),
         )
     while True:
         try:

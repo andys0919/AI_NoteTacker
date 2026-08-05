@@ -4,21 +4,43 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solomon NoteTaker Admin</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap"
-      rel="stylesheet"
-    />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body class="admin-body">
-    <div class="background-grid" aria-hidden="true"></div>
-    <div class="background-glow background-glow-left" aria-hidden="true"></div>
-    <div class="background-glow background-glow-right" aria-hidden="true"></div>
-
-    <div id="admin-login-overlay" class="admin-login-overlay">
-      <section id="auth-panel" class="panel admin-login-card" aria-labelledby="admin-login-title">
+    <a id="admin-skip-link" class="skip-link" href="#auth-panel">跳至登入</a>
+    <main id="admin-session-status" class="shared-meeting-status" role="status">
+      正在確認管理者登入狀態…
+    </main>
+    <div id="admin-login-overlay" class="admin-login-overlay" hidden>
+      <aside class="admin-login-showcase" aria-hidden="true">
+        <div class="admin-login-showcase-brand">
+          <span class="admin-login-mark">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M4 10v4" />
+              <path d="M8 6v12" />
+              <path d="M12 3v18" />
+              <path d="M16 6v12" />
+              <path d="M20 10v4" />
+            </svg>
+          </span>
+          <span>Solomon NoteTaker</span>
+        </div>
+        <div class="admin-login-showcase-copy">
+          <p class="panel-eyebrow">會議智慧中心</p>
+          <p class="admin-login-showcase-title">掌握模型、成本與每一個執行狀態。</p>
+          <p>一個清楚、可信任的 AI 治理工作區。</p>
+        </div>
+        <svg class="admin-login-wave" viewBox="0 0 560 180" fill="none" aria-hidden="true">
+          <path d="M10 95c45 0 45-50 90-50s45 90 90 90 45-120 90-120 45 145 90 145 45-105 90-105 45 40 90 40" stroke="currentColor" stroke-width="10" stroke-linecap="round" />
+          <path d="M10 120c45 0 45-28 90-28s45 48 90 48 45-70 90-70 45 80 90 80 45-58 90-58 45 28 90 28" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".38" />
+        </svg>
+      </aside>
+      <section
+        id="auth-panel"
+        class="panel admin-login-card"
+        aria-labelledby="admin-login-title"
+        aria-describedby="admin-login-description"
+      >
         <div class="admin-login-brand">
           <span class="admin-login-mark" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -31,17 +53,17 @@
           </span>
           <span class="admin-login-brand-copy">
             <span class="admin-login-brand-name">Solomon NoteTaker</span>
-            <span class="admin-login-brand-sub">Operations Console</span>
           </span>
         </div>
 
         <div class="admin-login-head">
-          <p class="eyebrow">Admin Access</p>
-          <h2 id="admin-login-title">管理者登入</h2>
-          <p class="admin-login-copy">輸入管理者帳號與密碼後即可進入治理設定後台。</p>
+          <h1 id="admin-login-title">管理者登入</h1>
+          <p id="admin-login-description" class="admin-login-copy">
+            登入後管理模型、額度與使用紀錄。
+          </p>
         </div>
 
-        <form id="admin-login-form" class="admin-login-form" novalidate>
+        <form id="admin-login-form" class="admin-login-form" aria-busy="false" novalidate>
           <div class="auth-field">
             <label class="auth-field-label" for="admin-login-username">帳號</label>
             <span class="auth-field-control">
@@ -131,28 +153,20 @@
           </span>
           <span class="admin-rail-brand-copy">
             <span class="admin-rail-brand-name">Solomon NoteTaker</span>
-            <span class="admin-rail-brand-sub">Admin Console</span>
           </span>
         </div>
-        <p class="eyebrow">Operations Console</p>
-        <h1>AI 治理設定</h1>
-        <p class="hero-text">
-          這裡只給管理員使用。查詢歷史使用紀錄、調整要使用的模型、雲端額度與併發池，不影響一般同仁的主頁操作。
-        </p>
-        <div class="admin-rail-points">
-          <article class="hero-point">
-            <strong>歷史使用紀錄</strong>
-            <span>每筆工作的 input/output token、使用的模型與費用狀態一次看清楚。</span>
-          </article>
-          <article class="hero-point">
-            <strong>模型設定</strong>
-            <span>直接切換轉寫與摘要要使用的模型，套用到之後的工作。</span>
-          </article>
-          <article class="hero-point">
-            <strong>使用報表</strong>
-            <span>查看今日每位使用者的 consumed、reserved 與 remaining。</span>
-          </article>
+        <div class="admin-rail-intro">
+          <h1>AI 治理設定</h1>
+          <p class="admin-rail-copy">管理模型路由、額度、執行狀態與歷史用量。</p>
         </div>
+        <nav class="admin-section-nav" aria-label="治理設定區段">
+          <a href="#admin-usage-history-panel">歷史使用紀錄</a>
+          <a href="#admin-provider-panel">模型與治理設定</a>
+          <a href="#admin-runtime-health-panel">執行狀態</a>
+          <a href="#admin-quota-panel">個人額度</a>
+          <a href="#admin-audit-panel">治理異動</a>
+          <a href="#admin-usage-report-panel">今日使用報表</a>
+        </nav>
         <div class="admin-rail-actions">
           <a class="toolbar-button" href="/">回主頁</a>
           <button id="sign-out-button" class="toolbar-button compact" type="button" hidden>登出</button>
@@ -160,18 +174,14 @@
       </aside>
 
       <section class="admin-main">
-        <section class="panel admin-topbar">
-          <div class="admin-topbar-copy">
-            <span class="meta-label">Admin Navigation</span>
-            <strong>治理設定頁</strong>
-            <span>一般送件與查詢請回到主頁操作。</span>
-          </div>
-          <div class="admin-topbar-actions">
-            <a class="toolbar-button admin-home-link" href="/">回主頁</a>
-          </div>
-        </section>
-
         <section id="admin-content" class="admin-content" hidden>
+          <header class="admin-main-heading">
+            <div>
+              <p class="panel-eyebrow">控制中心</p>
+              <h2>治理總覽</h2>
+            </div>
+            <p>快速確認目前路由、歷史用量與服務健康狀態。</p>
+          </header>
           <section class="panel admin-summary-strip">
             <div class="meta-card">
               <span class="meta-label">已登入帳號</span>
@@ -206,14 +216,18 @@
                 </svg>
               </span>
               <div class="section-heading-text">
-                <p class="eyebrow">Usage History</p>
-                <h2>歷史使用紀錄（INPUT / OUTPUT Token）</h2>
+                <h2>歷史使用紀錄</h2>
               </div>
             </div>
             <p id="admin-usage-history-copy" class="hero-text admin-provider-copy">
               這裡列出每一筆雲端處理的輸入 / 輸出 token、使用的模型與已知費用；沒有官方費率的用量會標示「未定價」。
             </p>
-            <form id="admin-usage-history-form" class="admin-usage-history-controls">
+            <p id="admin-currency-reference" class="admin-provider-status"></p>
+            <form
+              id="admin-usage-history-form"
+              class="admin-usage-history-controls"
+              aria-busy="false"
+            >
               <label class="field admin-summary-model-field">
                 <span>顯示筆數</span>
                 <select id="admin-usage-history-limit" name="limit">
@@ -227,22 +241,35 @@
                 重新整理
               </button>
             </form>
-            <p id="admin-usage-history-summary" class="admin-provider-status">正在讀取歷史使用紀錄...</p>
+            <p
+              id="admin-usage-history-summary"
+              class="admin-provider-status"
+              role="status"
+              aria-live="polite"
+            >
+              正在讀取歷史使用紀錄...
+            </p>
             <div id="admin-usage-history-by-model" class="runtime-health-card-grid"></div>
-            <div class="usage-history-table-wrap">
+            <div
+              class="usage-history-table-wrap"
+              role="region"
+              aria-label="雲端處理 Token 與費用歷史紀錄，可左右捲動"
+              tabindex="0"
+            >
               <table class="usage-history-table">
+                <caption class="sr-only">雲端處理 Token 與費用歷史紀錄</caption>
                 <thead>
                   <tr>
-                    <th>時間</th>
-                    <th>階段</th>
-                    <th>Provider</th>
-                    <th>Model</th>
-                    <th class="usage-num">Input Tokens</th>
-                    <th class="usage-num">Output Tokens</th>
-                    <th class="usage-num">Total Tokens</th>
-                    <th class="usage-num">費用狀態 (USD)</th>
-                    <th>提交者</th>
-                    <th>工作</th>
+                    <th scope="col">時間</th>
+                    <th scope="col">階段</th>
+                    <th scope="col">Provider</th>
+                    <th scope="col">Model</th>
+                    <th scope="col" class="usage-num">Input Tokens</th>
+                    <th scope="col" class="usage-num">Output Tokens</th>
+                    <th scope="col" class="usage-num">Total Tokens</th>
+                    <th scope="col" class="usage-num">費用狀態 (TWD)</th>
+                    <th scope="col">提交者</th>
+                    <th scope="col">工作</th>
                   </tr>
                 </thead>
                 <tbody id="admin-usage-history-rows">
@@ -270,14 +297,17 @@
                 </svg>
               </span>
               <div class="section-heading-text">
-                <p class="eyebrow">AI Routing</p>
-                <h2>要使用的模型與治理設定</h2>
+                <h2>模型與治理設定</h2>
               </div>
             </div>
             <p id="admin-provider-copy" class="hero-text admin-provider-copy">
               治理設定只會影響之後新送出的工作。
             </p>
-            <form id="admin-provider-form" class="stack-form admin-provider-form">
+            <form
+              id="admin-provider-form"
+              class="stack-form admin-provider-form"
+              aria-busy="false"
+            >
               <div class="admin-provider-controls">
                 <label class="field admin-summary-model-field">
                   <span>轉寫 Provider</span>
@@ -328,50 +358,83 @@
                   />
                 </label>
                 <label class="field admin-summary-model-field">
-                  <span>每日預設額度 (USD)</span>
+                  <span>每日預設額度 (TWD)</span>
                   <input
                     id="admin-default-quota-input"
                     name="defaultDailyCloudQuotaUsd"
                     type="number"
+                    inputmode="decimal"
                     min="0"
-                    step="0.001"
+                    step="0.01"
                   />
                 </label>
               </div>
               <div class="admin-provider-controls">
                 <label class="field admin-summary-model-field">
-                  <span>會議保留額度 (USD)</span>
+                  <span>會議保留額度 (TWD)</span>
                   <input
                     id="admin-live-meeting-cap-input"
                     name="liveMeetingReservationCapUsd"
                     type="number"
+                    inputmode="decimal"
                     min="0"
-                    step="0.001"
+                    step="0.01"
                   />
                 </label>
                 <label class="field admin-summary-model-field">
                   <span>Local 轉寫併發</span>
-                  <input id="admin-local-transcription-input" type="number" min="1" step="1" />
+                  <input
+                    id="admin-local-transcription-input"
+                    type="number"
+                    inputmode="numeric"
+                    min="1"
+                    step="1"
+                  />
                 </label>
                 <label class="field admin-summary-model-field">
                   <span>Cloud 轉寫併發</span>
-                  <input id="admin-cloud-transcription-input" type="number" min="1" step="1" />
+                  <input
+                    id="admin-cloud-transcription-input"
+                    type="number"
+                    inputmode="numeric"
+                    min="1"
+                    step="1"
+                  />
                 </label>
               </div>
               <div class="admin-provider-controls">
                 <label class="field admin-summary-model-field">
                   <span>Local 摘要併發</span>
-                  <input id="admin-local-summary-input" type="number" min="1" step="1" />
+                  <input
+                    id="admin-local-summary-input"
+                    type="number"
+                    inputmode="numeric"
+                    min="1"
+                    step="1"
+                  />
                 </label>
                 <label class="field admin-summary-model-field">
                   <span>Cloud 摘要併發</span>
-                  <input id="admin-cloud-summary-input" type="number" min="1" step="1" />
+                  <input
+                    id="admin-cloud-summary-input"
+                    type="number"
+                    inputmode="numeric"
+                    min="1"
+                    step="1"
+                  />
                 </label>
                 <button id="admin-provider-submit" class="toolbar-button admin-action-primary" type="submit">
                   更新模型與治理設定
                 </button>
               </div>
-              <p id="admin-provider-status" class="admin-provider-status">正在讀取治理設定...</p>
+              <p
+                id="admin-provider-status"
+                class="admin-provider-status"
+                role="status"
+                aria-live="polite"
+              >
+                正在讀取治理設定...
+              </p>
             </form>
           </section>
 
@@ -383,7 +446,6 @@
                 </svg>
               </span>
               <div class="section-heading-text">
-                <p class="eyebrow">Runtime Health</p>
                 <h2>執行狀態</h2>
               </div>
             </div>
@@ -397,7 +459,7 @@
           </section>
 
           <section class="admin-grid">
-            <section class="panel admin-governance-panel">
+            <section id="admin-quota-panel" class="panel admin-governance-panel">
               <div class="section-heading">
                 <span class="section-heading-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -406,11 +468,14 @@
                   </svg>
                 </span>
                 <div class="section-heading-text">
-                  <p class="eyebrow">Overrides</p>
                   <h2>個人額度</h2>
                 </div>
               </div>
-              <form id="admin-override-form" class="stack-form admin-provider-form">
+              <form
+                id="admin-override-form"
+                class="stack-form admin-provider-form"
+                aria-busy="false"
+              >
                 <div class="admin-provider-controls">
                   <label class="field admin-summary-model-field">
                     <span>Submitter ID</span>
@@ -423,24 +488,32 @@
                     />
                   </label>
                   <label class="field admin-summary-model-field">
-                    <span>個人每日額度 (USD)</span>
+                    <span>個人每日額度 (TWD)</span>
                     <input
                       id="admin-override-quota-input"
                       name="dailyQuotaUsd"
                       type="number"
+                      inputmode="decimal"
                       min="0"
-                      step="0.001"
+                      step="0.01"
                     />
                   </label>
                   <button id="admin-override-submit" class="toolbar-button admin-action-primary" type="submit">
                     更新個人額度
                   </button>
                 </div>
-                <p id="admin-summary-model-status" class="admin-provider-status">尚未設定個人 quota override。</p>
+                <p
+                  id="admin-summary-model-status"
+                  class="admin-provider-status"
+                  role="status"
+                  aria-live="polite"
+                >
+                  尚未設定個人 quota override。
+                </p>
               </form>
             </section>
 
-            <section class="panel admin-governance-panel">
+            <section id="admin-audit-panel" class="panel admin-governance-panel">
               <div class="section-heading">
                 <span class="section-heading-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -453,7 +526,6 @@
                   </svg>
                 </span>
                 <div class="section-heading-text">
-                  <p class="eyebrow">Audit Trail</p>
                   <h2>最近治理異動</h2>
                 </div>
               </div>
@@ -463,7 +535,7 @@
             </section>
           </section>
 
-          <section class="panel admin-governance-panel">
+          <section id="admin-usage-report-panel" class="panel admin-governance-panel">
             <div class="section-heading">
               <span class="section-heading-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -471,11 +543,17 @@
                 </svg>
               </span>
               <div class="section-heading-text">
-                <p class="eyebrow">Cloud Usage</p>
                 <h2>今日使用報表</h2>
               </div>
             </div>
-            <p id="admin-usage-report-summary" class="admin-provider-status">尚無 cloud usage 資料。</p>
+            <p
+              id="admin-usage-report-summary"
+              class="admin-provider-status"
+              role="status"
+              aria-live="polite"
+            >
+              尚無 cloud usage 資料。
+            </p>
             <div id="admin-usage-report-list" class="admin-audit-list">
               <p class="admin-provider-status">尚無 cloud usage 資料。</p>
             </div>
@@ -484,18 +562,21 @@
       </section>
     </main>
 
-    <div id="admin-job-modal" class="admin-job-modal" hidden>
-      <div class="admin-job-modal-backdrop" data-close="true"></div>
-      <div class="admin-job-modal-card panel" role="dialog" aria-modal="true" aria-labelledby="admin-job-modal-title">
+    <dialog id="admin-job-modal" class="admin-job-modal" aria-labelledby="admin-job-modal-title">
+      <div
+        id="admin-job-modal-card"
+        class="admin-job-modal-card panel"
+        tabindex="-1"
+      >
         <div class="admin-job-modal-head">
           <h2 id="admin-job-modal-title">工作內容</h2>
-          <button id="admin-job-modal-close" class="toolbar-button compact" type="button" data-close="true">關閉</button>
+          <button id="admin-job-modal-close" class="toolbar-button compact" type="button">關閉</button>
         </div>
         <div id="admin-job-modal-body" class="admin-job-modal-body">
           <p class="admin-provider-status">正在載入...</p>
         </div>
       </div>
-    </div>
+    </dialog>
 
     <script type="module" src="/admin.js"></script>
   </body>

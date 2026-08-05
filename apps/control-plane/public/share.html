@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <title>共享會議紀錄</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="shared-meeting-page">
+    <a class="skip-link" href="#shared-meeting-content">跳至會議內容</a>
+    <main id="shared-meeting-content" class="shared-meeting-shell" tabindex="-1" hidden>
+      <header class="shared-meeting-header">
+        <div class="shared-meeting-heading">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M4 10v4" />
+              <path d="M8 6v12" />
+              <path d="M12 3v18" />
+              <path d="M16 6v12" />
+              <path d="M20 10v4" />
+            </svg>
+          </span>
+          <div>
+            <p class="brand-name">Solomon NoteTaker · 共享文件</p>
+            <h1 id="shared-title">會議紀錄</h1>
+            <p id="shared-meta" class="shared-meeting-meta"></p>
+          </div>
+        </div>
+        <button id="print-shared-meeting" class="mini-button export" type="button">列印</button>
+      </header>
+      <section id="shared-summary" class="shared-meeting-section" hidden>
+        <h2>會議摘要</h2>
+        <div id="shared-summary-content"></div>
+      </section>
+      <section id="shared-transcript" class="shared-meeting-section" hidden>
+        <h2>完整逐字稿</h2>
+        <div
+          id="shared-transcript-content"
+          class="transcript-reader shared-transcript-reader"
+          role="region"
+          aria-label="完整逐字稿"
+          tabindex="0"
+        ></div>
+      </section>
+    </main>
+    <main id="shared-meeting-status" class="shared-meeting-status" role="status" aria-live="polite" hidden>
+      正在載入共享會議紀錄…
+    </main>
+    <noscript>
+      <main class="shared-meeting-status">
+        此頁需要啟用 JavaScript 才能安全讀取共享會議紀錄。
+      </main>
+    </noscript>
+    <script type="module" src="/share.js"></script>
+  </body>
+</html>

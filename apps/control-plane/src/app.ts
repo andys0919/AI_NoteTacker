@@ -14,6 +14,7 @@ import {
   calculateAzureTranscriptionActualCost,
   calculateRemainingCloudQuotaUsd,
   estimateCloudReservationUsd,
+  getAzureRetailPricingSnapshot,
   isValidIsoDate,
   resolveCloudUsageEntryCost,
   roundUsd,
@@ -25,6 +26,18 @@ import {
   type CloudUsageLedgerRepository
 } from './domain/cloud-usage-ledger-repository.js';
 import type { JobNotificationSender, TerminalJobNotification } from './domain/job-notification-sender.js';
+import {
+  createMeetingShareLink,
+  createMeetingShareToken,
+  isMeetingShareEligible,
+  isMeetingShareLinkActive,
+  isMeetingShareSecretConfigured,
+  parseMeetingShareToken,
+  sanitizeAnonymousSpeakerLabels,
+  toReadableTranscriptText,
+  toPublicMeeting,
+  verifyMeetingShareToken
+} from './domain/meeting-share.js';
 import { evaluateMeetingLinkPolicy } from './domain/meeting-link-policy.js';
 import {
   getOperatorWorkflowTemplate,
@@ -47,6 +60,7 @@ import {
   attachQueuedRecordingArtifact,
   attachSummaryArtifact,
   attachTranscriptArtifact,
+  ARTIFACT_LIFECYCLE_POLICY,
   createRecordingJob,
   DEFAULT_JOIN_NAME,
   DEFAULT_WORKER_LEASE_DURATION_MS,
@@ -54,6 +68,7 @@ import {
   markMeetingJobWaitingForCapacity,
   markTerminalJobNotificationSent,
   markRecordingJobFailed,
+  recordTerminalArtifactLifecyclePolicy,
   type RecordingJob,
   type TranscriptArtifact,
   releaseTranscriptionJobForRetry,
@@ -339,7 +354,35 @@ const summaryArtifactSchema = z.object({
   text: z.string().min(1),
   structured: z
     .object({
+      title: z.string().min(1).optional(),
       summary: z.string(),
+      topics: z
+        .array(
+          z.object({
+            title: z.string().min(1),
+            status: z.enum(['confirmed', 'mixed', 'open']),
+            subtopics: z
+              .array(
+                z.object({
+                  title: z.string().min(1),
+                  details: z.array(z.string().min(1)).min(1)
+                })
+              )
+              .optional(),
+            points: z.array(z.string().min(1)).min(1),
+            conclusion: z.string().min(1)
+          })
+        )
+        .optional(),
+      followUpGroups: z
+        .array(
+          z.object({
+            title: z.string().min(1),
+            items: z.array(z.string().min(1)).min(1)
+          })
+        )
+        .optional(),
+      analysisNotes: z.array(z.string()).optional(),
       keyPoints: z.array(z.string()),
       actionItems: z.array(z.string()),
       decisions: z.array(z.string()),
@@ -533,6 +576,7 @@ type AppOptions = {
   staleMeetingFinalizationAfterMs?: number;
   staleTranscriptionJobAfterMs?: number;
   publicDir?: string;
+  meetingShareSecret?: string;
 };
 
 const toApiRecordingJob = (job: {
@@ -589,7 +633,23 @@ const toApiRecordingJob = (job: {
     reasoningEffort: string;
     text: string;
     structured?: {
+      title?: string;
       summary: string;
+      topics?: Array<{
+        title: string;
+        status: 'confirmed' | 'mixed' | 'open';
+        subtopics?: Array<{
+          title: string;
+          details: string[];
+        }>;
+        points: string[];
+        conclusion: string;
+      }>;
+      followUpGroups?: Array<{
+        title: string;
+        items: string[];
+      }>;
+      analysisNotes?: string[];
       keyPoints: string[];
       actionItems: string[];
       decisions: string[];
@@ -671,6 +731,8 @@ const toOperatorJobListItem = (
 ) => ({
   ...toApiRecordingJob({
     ...job,
+    transcriptArtifact: undefined,
+    summaryArtifact: undefined,
     jobHistory: undefined
   }),
   hasTranscript: job.hasTranscript ?? Boolean(job.transcriptArtifact),
@@ -917,9 +979,6 @@ const formatSrtTimestamp = (milliseconds: number): string => {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(remainingMs).padStart(3, '0')}`;
 };
 
-const renderTranscriptSegmentText = (segment: TranscriptArtifact['segments'][number]): string =>
-  `${segment.speaker ? `${segment.speaker}: ` : ''}${segment.text}`;
-
 const renderMarkdownExport = (job: RecordingJob): string => {
   const parts = [
     '# AI NoteTacker Export',
@@ -932,7 +991,7 @@ const renderMarkdownExport = (job: RecordingJob): string => {
   ];
 
   if (job.summaryArtifact?.text) {
-    const summaryText = job.summaryArtifact.text.trim();
+    const summaryText = sanitizeAnonymousSpeakerLabels(job.summaryArtifact.text).trim();
     parts.push('');
 
     // The generated summary already starts with its own "## Summary" heading,
@@ -951,7 +1010,7 @@ const renderMarkdownExport = (job: RecordingJob): string => {
       '',
       ...job.transcriptArtifact.segments.map(
         (segment) =>
-          `- [${formatSrtTimestamp(segment.startMs).replace(',', '.')}] ${renderTranscriptSegmentText(segment)}`
+          `- [${formatSrtTimestamp(segment.startMs).replace(',', '.')}] ${toReadableTranscriptText(segment)}`
       )
     );
   }
@@ -970,7 +1029,7 @@ const renderTextExport = (job: RecordingJob): string => {
   ];
 
   if (job.summaryArtifact?.text) {
-    parts.push('', 'Summary', job.summaryArtifact.text);
+    parts.push('', 'Summary', sanitizeAnonymousSpeakerLabels(job.summaryArtifact.text));
   }
 
   if (job.transcriptArtifact?.segments.length) {
@@ -979,7 +1038,7 @@ const renderTextExport = (job: RecordingJob): string => {
       'Transcript',
       ...job.transcriptArtifact.segments.map(
         (segment) =>
-          `[${formatSrtTimestamp(segment.startMs)}] ${renderTranscriptSegmentText(segment)}`
+          `[${formatSrtTimestamp(segment.startMs)}] ${toReadableTranscriptText(segment)}`
       )
     );
   }
@@ -991,7 +1050,7 @@ const renderSrtExport = (job: RecordingJob): string =>
   (job.transcriptArtifact?.segments ?? [])
     .map(
       (segment, index) =>
-        `${index + 1}\n${formatSrtTimestamp(segment.startMs)} --> ${formatSrtTimestamp(segment.endMs)}\n${renderTranscriptSegmentText(segment)}`
+        `${index + 1}\n${formatSrtTimestamp(segment.startMs)} --> ${formatSrtTimestamp(segment.endMs)}\n${toReadableTranscriptText(segment)}`
     )
     .join('\n\n');
 
@@ -1038,45 +1097,20 @@ const buildTerminalJobNotification = (
   };
 };
 
-const normalizeSearchValue = (value: string): string => value.trim().toLowerCase();
-
 const parseAdminEmails = (value: string | undefined): string[] =>
   (value ?? '')
     .split(',')
     .map((email) => email.trim().toLowerCase())
     .filter((email) => email.length > 0);
 
-const jobMatchesSearchQuery = (
-  job: {
-    meetingUrl: string;
-    requestedJoinName: string;
-    uploadedFileName?: string;
-    failureMessage?: string;
-    transcriptArtifact?: { segments: Array<{ text: string }> };
-    summaryArtifact?: { text: string };
-  },
-  query?: string
-): boolean => {
-  const normalizedQuery = normalizeSearchValue(query ?? '');
-
-  if (normalizedQuery.length === 0) {
-    return true;
-  }
-
-  const searchableText = [
-    job.meetingUrl,
-    job.requestedJoinName,
-    job.uploadedFileName,
-    job.failureMessage,
-    job.summaryArtifact?.text,
-    job.transcriptArtifact?.segments.map((segment) => segment.text).join(' ')
-  ]
-    .filter((value): value is string => Boolean(value))
-    .join('\n')
-    .toLowerCase();
-
-  return searchableText.includes(normalizedQuery);
-};
+const artifactStorageKeys = (jobs: RecordingJob[]): string[] =>
+  [...new Set(
+    jobs.flatMap((job) =>
+      [job.recordingArtifact?.storageKey, job.transcriptArtifact?.storageKey].filter(
+        (key): key is string => Boolean(key)
+      )
+    )
+  )];
 
 const deriveDisplayState = (
   job: { state: string; inputSource: string },
@@ -1266,12 +1300,18 @@ export const createApp = (
   const meetingBotController = options.meetingBotController;
   const meetingBotRuntimeMonitor = options.meetingBotRuntimeMonitor;
   const jobNotificationSender = options.jobNotificationSender;
-  const internalServiceToken = options.internalServiceToken ?? process.env.INTERNAL_SERVICE_TOKEN;
-  if (!internalServiceToken) {
-    console.warn(
-      '[control-plane] INTERNAL_SERVICE_TOKEN is not set — internal worker and integration ' +
-        'endpoints will accept UNAUTHENTICATED requests. Set INTERNAL_SERVICE_TOKEN before ' +
-        'exposing this service.'
+  const internalServiceToken = (
+    options.internalServiceToken ?? process.env.INTERNAL_SERVICE_TOKEN
+  )?.trim();
+  const meetingShareSecret = options.meetingShareSecret ?? process.env.MEETING_SHARE_SECRET ?? '';
+  const meetingShareSecretConfigured = isMeetingShareSecretConfigured(meetingShareSecret);
+  if (
+    !internalServiceToken ||
+    internalServiceToken === 'internal-token' ||
+    Buffer.byteLength(internalServiceToken, 'utf8') < 32
+  ) {
+    throw new Error(
+      'INTERNAL_SERVICE_TOKEN must be a dedicated non-placeholder secret of at least 32 bytes.'
     );
   }
   const staleMeetingJobAfterMs = options.staleMeetingJobAfterMs ?? 10 * 60 * 1000;
@@ -1289,6 +1329,11 @@ export const createApp = (
     )
   );
   const adminConsoleAuth = options.adminConsoleAuth ?? createAdminConsoleAuthFromEnvironment();
+  // ponytail: per-process throttling matches the supported single control-plane profile;
+  // move this limiter to ingress or shared storage before adding control-plane replicas.
+  const adminLoginFailures = new Map<string, { count: number; resetAt: number }>();
+  const adminLoginFailureLimit = 5;
+  const adminLoginWindowMs = 15 * 60 * 1000;
   const upload = multer({
     dest: tmpdir(),
     limits: {
@@ -1324,12 +1369,23 @@ export const createApp = (
     }
   };
 
-  const quotaExceededResponse = (remainingUsd: number, requiredUsd: number) => ({
+  const sharedMeetingUnavailableResponse = {
     error: {
-      code: 'cloud-quota-exceeded',
-      message: `The daily cloud quota would be exceeded. Remaining: $${remainingUsd.toFixed(3)}, required: $${requiredUsd.toFixed(3)}.`
+      code: 'shared-meeting-unavailable',
+      message: 'This shared meeting is unavailable.'
     }
-  });
+  };
+
+  const setSharedMeetingHeaders = (response: express.Response): void => {
+    response.set({
+      'Cache-Control': 'private, no-store',
+      'Content-Security-Policy':
+        "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'none'; frame-ancestors 'none'; img-src 'none'; object-src 'none'; script-src 'self'; style-src 'self'",
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Robots-Tag': 'noindex, nofollow, noarchive'
+    });
+  };
 
   const meetingCapacityExceededResponse = {
     error: {
@@ -1348,10 +1404,6 @@ export const createApp = (
   };
 
   const hasValidInternalServiceCredential = (request: express.Request): boolean => {
-    if (!internalServiceToken) {
-      return true;
-    }
-
     const headerToken =
       request.header('x-internal-service-token') ??
       request.header('x-internal-token') ??
@@ -1393,6 +1445,18 @@ export const createApp = (
       before: input.before,
       after: input.after
     });
+  };
+
+  const cleanupArtifacts = async (jobs: RecordingJob[]) => {
+    const storageKeys = artifactStorageKeys(jobs);
+    if (storageKeys.length > 0) {
+      if (!uploadedAudioStorage?.deleteObjects) {
+        throw new Error('artifact storage cleanup is not configured');
+      }
+      await uploadedAudioStorage.deleteObjects(storageKeys);
+    }
+
+    return { status: 'completed' as const, objectCount: storageKeys.length };
   };
 
   const getQuotaStatusForSubmitter = async (submitterId: string, at: Date = new Date()) => {
@@ -1444,16 +1508,7 @@ export const createApp = (
       currentPolicy
     );
 
-    if (estimatedCloudReservationUsd > quotaStatus.remainingUsd) {
-      return {
-        accepted: false as const,
-        estimatedCloudReservationUsd,
-        quotaStatus
-      };
-    }
-
     return {
-      accepted: true as const,
       policy: currentPolicy,
       summaryRequested,
       estimatedCloudReservationUsd,
@@ -1751,6 +1806,63 @@ export const createApp = (
     return (await resolveAuthenticatedOperatorFromRequest(request, response))?.id;
   };
 
+  const resolveOwnedJob = async (
+    request: express.Request,
+    response: express.Response,
+    submitterIdValue?: string
+  ): Promise<RecordingJob | undefined> => {
+    const submitterId = await resolveSubmitterIdFromRequest(
+      request,
+      response,
+      submitterIdValue
+    );
+    if (!submitterId) {
+      return undefined;
+    }
+
+    const jobId = String(request.params.id);
+    const job = await repository.getById(jobId);
+    if (!job || job.submitterId !== submitterId) {
+      response.status(404).json(notFoundResponse(jobId));
+      return undefined;
+    }
+
+    return job;
+  };
+
+  const resolveShareableOwnedJob = async (
+    request: express.Request,
+    response: express.Response,
+    submitterId?: string
+  ): Promise<RecordingJob | undefined> => {
+    const job = await resolveOwnedJob(request, response, submitterId);
+    if (!job) {
+      return undefined;
+    }
+
+    if (!meetingShareSecretConfigured) {
+      response.status(503).json({
+        error: {
+          code: 'meeting-share-unavailable',
+          message: 'Meeting sharing is not configured.'
+        }
+      });
+      return undefined;
+    }
+
+    if (!isMeetingShareEligible(job)) {
+      response.status(409).json({
+        error: {
+          code: 'meeting-share-ineligible',
+          message: 'Only completed meetings with transcript or summary content can be shared.'
+        }
+      });
+      return undefined;
+    }
+
+    return job;
+  };
+
   const readAdminConsoleToken = (request: express.Request): string | undefined => {
     const headerToken = request.header('x-admin-console-token');
 
@@ -1832,7 +1944,7 @@ export const createApp = (
   };
 
   const saveJob = async (job: RecordingJob): Promise<RecordingJob> => {
-    const savedJob = await repository.save(job);
+    const savedJob = await repository.save(recordTerminalArtifactLifecyclePolicy(job));
     return await maybeSendTerminalJobNotification(savedJob);
   };
 
@@ -1948,6 +2060,22 @@ export const createApp = (
   });
 
   app.post('/api/admin/login', (request, response) => {
+    const nowMs = Date.now();
+    const source = request.ip || request.socket.remoteAddress || 'unknown';
+    const failure = adminLoginFailures.get(source);
+    if (failure && failure.resetAt > nowMs && failure.count >= adminLoginFailureLimit) {
+      response.set('Retry-After', String(Math.ceil((failure.resetAt - nowMs) / 1000)));
+      return response.status(429).json({
+        error: {
+          code: 'admin-login-rate-limited',
+          message: '登入嘗試次數過多，請稍後再試。'
+        }
+      });
+    }
+    if (failure && failure.resetAt <= nowMs) {
+      adminLoginFailures.delete(source);
+    }
+
     const parsedRequest = adminLoginSchema.safeParse(request.body);
 
     if (!parsedRequest.success) {
@@ -1965,6 +2093,11 @@ export const createApp = (
         parsedRequest.data.password
       )
     ) {
+      const currentFailure = adminLoginFailures.get(source);
+      adminLoginFailures.set(source, {
+        count: (currentFailure?.count ?? 0) + 1,
+        resetAt: currentFailure?.resetAt ?? nowMs + adminLoginWindowMs
+      });
       return response.status(401).json({
         error: {
           code: 'admin-login-invalid',
@@ -1973,6 +2106,7 @@ export const createApp = (
       });
     }
 
+    adminLoginFailures.delete(source);
     const issued = adminConsoleAuth.issueToken();
 
     return response.status(200).json({
@@ -2739,15 +2873,48 @@ export const createApp = (
   });
 
   app.get('/api/operator/config', (_request, response) => {
+    const twdPricing = getAzureRetailPricingSnapshot().twd;
     response.status(200).json({
       defaultJoinName: DEFAULT_JOIN_NAME,
       maxActiveProcessingPerSubmitter: 1,
       submissionTemplates: operatorWorkflowTemplates,
       cloudQuotaEnabled: true,
+      pricingReference: {
+        source: 'Azure Retail Prices API',
+        sourceUrl: twdPricing.meterSource,
+        usdToTwdRate: twdPricing.usdToTwdRate,
+        verifiedAt: twdPricing.verifiedAt
+      },
       notifications: {
         emailConfigured: Boolean(jobNotificationSender)
       }
     });
+  });
+
+  app.get('/api/shared-meeting', async (request, response) => {
+    setSharedMeetingHeaders(response);
+    const token = request.headers.authorization?.match(/^Bearer\s+(\S+)$/i)?.[1];
+    const parsedToken = token ? parseMeetingShareToken(token) : undefined;
+
+    if (!meetingShareSecretConfigured || !token || !parsedToken) {
+      return response.status(404).json(sharedMeetingUnavailableResponse);
+    }
+
+    const link = await repository.getMeetingShareLinkByShareId(parsedToken.shareId);
+    if (
+      !link ||
+      !isMeetingShareLinkActive(link) ||
+      !verifyMeetingShareToken(token, link, meetingShareSecret)
+    ) {
+      return response.status(404).json(sharedMeetingUnavailableResponse);
+    }
+
+    const job = await repository.getById(link.jobId);
+    if (!job || !isMeetingShareEligible(job)) {
+      return response.status(404).json(sharedMeetingUnavailableResponse);
+    }
+
+    return response.status(200).json(toPublicMeeting(job));
   });
 
   app.get('/api/operator/jobs', async (request, response) => {
@@ -2794,9 +2961,7 @@ export const createApp = (
           cursor: decodedCursor
         });
     const visibleJobs = parsedQuery.data.q
-      ? (await repository.listBySubmitter(submitterId)).filter((job) =>
-          jobMatchesSearchQuery(job, parsedQuery.data.q)
-        )
+      ? await repository.listBySubmitter(submitterId, parsedQuery.data.q)
       : page?.jobs ?? [];
     const costSummaries = await cloudUsageLedgerRepository.summarizeActualCostByJobIds(
       visibleJobs.map((job) => job.id)
@@ -2884,13 +3049,26 @@ export const createApp = (
       actualCloudCostUsd: 0,
       hasUnpricedUsage: false
     };
+    const shareLink = await repository.getMeetingShareLinkByJobId(job.id);
+    const shareEligible = isMeetingShareEligible(job);
+    const share = !shareLink
+      ? { status: 'none' as const, eligible: shareEligible }
+      : {
+          status: (
+            shareLink.revokedAt
+              ? 'revoked'
+              : isMeetingShareLinkActive(shareLink)
+                ? 'active'
+                : 'expired'
+          ) as 'active' | 'expired' | 'revoked',
+          eligible: shareEligible,
+          expiresAt: shareLink.expiresAt
+        };
 
-    return response.status(200).json(
-      toApiRecordingJob({
-        ...job,
-        ...costSummary
-      })
-    );
+    return response.status(200).json({
+      ...toApiRecordingJob({ ...job, ...costSummary }),
+      share
+    });
   });
 
   app.get('/api/operator/jobs/:id/export', async (request, response) => {
@@ -2966,6 +3144,82 @@ export const createApp = (
       summary: job.summaryArtifact ?? null,
       transcript: job.transcriptArtifact ?? null
     });
+  });
+
+  app.post('/api/operator/jobs/:id/share', async (request, response) => {
+    const parsedRequest = operatorStopRequestSchema.safeParse(request.body);
+    if (!parsedRequest.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedRequest.error.issues[0]?.message ?? 'The request payload is invalid.'
+        }
+      });
+    }
+
+    const job = await resolveShareableOwnedJob(
+      request,
+      response,
+      parsedRequest.data.submitterId
+    );
+    if (!job) {
+      return;
+    }
+
+    const link = await repository.getOrCreateMeetingShareLink(
+      createMeetingShareLink(job.id)
+    );
+    return response.status(200).json({
+      token: createMeetingShareToken(link, meetingShareSecret),
+      expiresAt: link.expiresAt
+    });
+  });
+
+  app.post('/api/operator/jobs/:id/share/rotate', async (request, response) => {
+    const parsedRequest = operatorStopRequestSchema.safeParse(request.body);
+    if (!parsedRequest.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedRequest.error.issues[0]?.message ?? 'The request payload is invalid.'
+        }
+      });
+    }
+
+    const job = await resolveShareableOwnedJob(
+      request,
+      response,
+      parsedRequest.data.submitterId
+    );
+    if (!job) {
+      return;
+    }
+
+    const link = await repository.rotateMeetingShareLink(createMeetingShareLink(job.id));
+    return response.status(200).json({
+      token: createMeetingShareToken(link, meetingShareSecret),
+      expiresAt: link.expiresAt
+    });
+  });
+
+  app.delete('/api/operator/jobs/:id/share', async (request, response) => {
+    const parsedRequest = operatorStopRequestSchema.safeParse(request.body);
+    if (!parsedRequest.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedRequest.error.issues[0]?.message ?? 'The request payload is invalid.'
+        }
+      });
+    }
+
+    const job = await resolveOwnedJob(request, response, parsedRequest.data.submitterId);
+    if (!job) {
+      return;
+    }
+
+    await repository.revokeMeetingShareLink(job.id, new Date().toISOString());
+    return response.status(204).send();
   });
 
   app.post('/api/operator/jobs/:id/cancel', async (request, response) => {
@@ -3061,9 +3315,28 @@ export const createApp = (
       });
     }
 
+    let artifactCleanup: Awaited<ReturnType<typeof cleanupArtifacts>>;
+    try {
+      artifactCleanup = await cleanupArtifacts([job]);
+    } catch (error) {
+      console.error(`failed to clean artifacts for ${job.id}`, error);
+      return response.status(503).json({
+        error: {
+          code: 'artifact-cleanup-failed',
+          message: 'Stored artifacts could not be deleted. The history entry remains visible.'
+        }
+      });
+    }
+
+    await adminAuditLogRepository.append({
+      actorId: submitterId,
+      action: 'operator-history-delete',
+      target: job.id,
+      after: { policy: ARTIFACT_LIFECYCLE_POLICY, ...artifactCleanup }
+    });
     await repository.deleteTerminalJobForSubmitter(job.id, submitterId);
 
-    return response.status(204).send();
+    return response.status(200).json({ deleted: true, artifactCleanup });
   });
 
   app.post('/api/operator/jobs/clear-history', async (request, response) => {
@@ -3088,10 +3361,38 @@ export const createApp = (
       return;
     }
 
+    const listItems = await repository.listBySubmitter(submitterId);
+    const terminalJobs = (
+      await Promise.all(
+        listItems
+          .filter((job) => isTerminalJobState(job.state))
+          .map((job) => repository.getById(job.id))
+      )
+    ).filter((job): job is RecordingJob => Boolean(job));
+    let artifactCleanup: Awaited<ReturnType<typeof cleanupArtifacts>>;
+    try {
+      artifactCleanup = await cleanupArtifacts(terminalJobs);
+    } catch (error) {
+      console.error(`failed to clean artifacts for ${submitterId} history`, error);
+      return response.status(503).json({
+        error: {
+          code: 'artifact-cleanup-failed',
+          message: 'Stored artifacts could not be deleted. History remains visible.'
+        }
+      });
+    }
+
+    await adminAuditLogRepository.append({
+      actorId: submitterId,
+      action: 'operator-history-clear',
+      target: submitterId,
+      after: { policy: ARTIFACT_LIFECYCLE_POLICY, ...artifactCleanup }
+    });
     const deletedCount = await repository.clearTerminalHistoryForSubmitter(submitterId);
 
     return response.status(200).json({
-      deletedCount
+      deletedCount,
+      artifactCleanup
     });
   });
 
@@ -3133,17 +3434,6 @@ export const createApp = (
       submitterId,
       inputSource: 'meeting-link'
     });
-
-    if (!policySnapshot.accepted) {
-      return response
-        .status(409)
-        .json(
-          quotaExceededResponse(
-            policySnapshot.quotaStatus.remainingUsd,
-            policySnapshot.estimatedCloudReservationUsd
-          )
-        );
-    }
 
     const meetingCapacity = await getMeetingCapacitySnapshot();
 
@@ -3264,18 +3554,6 @@ export const createApp = (
       inputSource: 'uploaded-audio'
     });
 
-    if (!policySnapshot.accepted) {
-      await cleanupUploadedTempFile();
-      return response
-        .status(409)
-        .json(
-          quotaExceededResponse(
-            policySnapshot.quotaStatus.remainingUsd,
-            policySnapshot.estimatedCloudReservationUsd
-          )
-        );
-    }
-
     const pendingTranscriptionJobs = await repository.countPendingTranscriptionJobs();
 
     if (pendingTranscriptionJobs >= maxTranscriptionJobBacklog) {
@@ -3362,11 +3640,22 @@ export const createApp = (
     }
 
     const jobs = await repository.listBySubmitter(submitterId);
-    const activeMeetingJob = jobs.find(
+    const activeMeetingListItem = jobs.find(
       (job) =>
         job.inputSource === 'meeting-link' &&
         (job.state === 'joining' || job.state === 'recording')
     );
+
+    if (!activeMeetingListItem) {
+      return response.status(409).json({
+        error: {
+          code: 'no-active-meeting-job',
+          message: 'No active meeting bot was found for this operator.'
+        }
+      });
+    }
+
+    const activeMeetingJob = await repository.getById(activeMeetingListItem.id);
 
     if (!activeMeetingJob) {
       return response.status(409).json({
@@ -3428,17 +3717,6 @@ export const createApp = (
       submitterId: 'anonymous',
       inputSource: 'meeting-link'
     });
-
-    if (!policySnapshot.accepted) {
-      return response
-        .status(409)
-        .json(
-          quotaExceededResponse(
-            policySnapshot.quotaStatus.remainingUsd,
-            policySnapshot.estimatedCloudReservationUsd
-          )
-        );
-    }
 
     const meetingCapacity = await getMeetingCapacitySnapshot();
 
@@ -4009,9 +4287,10 @@ export const createApp = (
               ? markRecordingJobFailed(job, parsedEvent.data.failure)
               : markRecordingJobFailed(job, parsedEvent.data.failure);
 
+    const policyRecordedJob = recordTerminalArtifactLifecyclePolicy(updatedJob);
     const leaseGuardedSavedJob =
       cloudTerminalLeaseStage && parsedEvent.data.leaseToken
-        ? await repository.saveIfLeaseActive(updatedJob, {
+        ? await repository.saveIfLeaseActive(policyRecordedJob, {
             stage: cloudTerminalLeaseStage,
             leaseToken: parsedEvent.data.leaseToken
           })
@@ -4024,12 +4303,16 @@ export const createApp = (
 
     const savedJob = cloudTerminalLeaseStage
       ? await maybeSendTerminalJobNotification(leaseGuardedSavedJob!)
-      : await saveJob(updatedJob);
+      : await saveJob(policyRecordedJob);
 
     return response.status(202).json(toApiRecordingJob(savedJob));
   });
 
   app.get('/recording-jobs/:id', async (request, response) => {
+    if (!requireInternalService(request, response)) {
+      return;
+    }
+
     const job = await repository.getById(request.params.id);
 
     if (!job) {
@@ -4054,7 +4337,16 @@ export const createApp = (
   };
   app.use(uploadErrorHandler);
 
+  app.get(['/share', '/share.html'], (_request, response) => {
+    setSharedMeetingHeaders(response);
+    response.sendFile(resolve(publicDir, 'share.html'));
+  });
+
   app.use(express.static(publicDir));
+
+  app.get('/notes/:id', (_request, response) => {
+    response.sendFile(resolve(publicDir, 'index.html'));
+  });
 
   app.get('/admin', (_request, response) => {
     response.sendFile(resolve(publicDir, 'admin.html'));

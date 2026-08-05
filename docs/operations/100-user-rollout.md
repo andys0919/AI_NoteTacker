@@ -62,14 +62,18 @@ The public dashboard may be exposed through public ingress, but these routes sho
 
 Internal callers must use `INTERNAL_SERVICE_TOKEN`, and public browser reachability alone must not be enough to invoke worker-state mutation routes.
 
+The control-plane must not mount `/var/run/docker.sock`. Meeting-bot stop control uses the authenticated private `meeting-bot:3001` interface, which is not published on the host or public ingress.
+
 ## Go / No-Go Checklist
 
 Do not describe the deployment as ready for this rollout profile until all items below pass.
 
 ### 1. Configuration
 
-- `docker compose config --quiet` succeeds for the intended deployment files
+- `scripts/deploy.sh config --quiet` succeeds for the intended deployment files
 - `INTERNAL_SERVICE_TOKEN` is set for control-plane and workers
+- base images, meeting-bot, PostgreSQL, MinIO, and direct worker dependencies are pinned
+- `schema_migrations` contains the current migration after control-plane startup
 - `MAX_MEETING_JOB_BACKLOG` is intentionally set and documented for operators
 - concurrency pools match the intended rollout shape
 
@@ -77,7 +81,7 @@ Do not describe the deployment as ready for this rollout profile until all items
 
 - `npm test`
 - `npm run build --workspace @ai-notetacker/control-plane`
-- `openspec validate refactor-company-scale-runtime --strict --no-interactive`
+- `openspec validate --all --strict --no-interactive`
 
 For a local compose-backed smoke that exercises upload, summary, export, and stubbed meeting-link orchestration end to end:
 
@@ -121,13 +125,20 @@ node scripts/run_runtime_load_probe.mjs \
 
 ### 4. Recovery Behavior
 
-1. Claim a meeting or transcription job.
+1. Claim a meeting, transcription, or summary job.
 2. Stop the corresponding worker before it finishes.
 3. Verify:
 - stale work is reclaimed or released without manual database repair
 - stale callbacks from the superseded lease do not overwrite the newer job state
 
-### 5. Queue Drain And Cost Governance
+### 5. Artifact Lifecycle
+
+- operator delete and clear-history remove uploaded/recording object keys before hiding metadata
+- an object-storage failure leaves affected history visible and returns a retryable error
+- embedded transcript and summary evidence remains available only to the administrator audit path
+- cleanup policy and result are recorded in job history or the durable audit log
+
+### 6. Queue Drain And Cost Governance
 
 - after transcript completion but before summary completion, cloud `reservedUsd` remains non-zero for a cloud-summary job
 - after all configured billable stages settle, `reservedUsd` returns to `0`
@@ -136,8 +147,31 @@ node scripts/run_runtime_load_probe.mjs \
 ## Current Known Limits
 
 This rollout profile still has important limits:
-- no HA control-plane deployment guidance yet
+- the live default remains one control-plane and one worker per stage; replicated rollout has not been load- or failure-drilled
 - archive list hot path still needs full pagination rollout and thinner repository access
-- lease liveness still depends mainly on current claim and stale-job handling rather than explicit heartbeat metadata
+- TLS termination and a shared login limiter remain ingress responsibilities before public or replicated deployment
 
 Treat this profile as the initial safe internal rollout target, not the final scale ceiling.
+
+## Next Profile: Replicated Control Plane
+
+Move to the named replicated-control-plane profile only when runtime health shows either backlog at 80% of its configured limit repeatedly, a scarce pool saturated for at least 15 minutes, or recovery time exceeding one lease duration during normal demand. Increase a fixed worker pool first; introduce autoscaling only after the same condition remains measurable with the larger fixed pool.
+
+Replica-safe requirements:
+
+- all control-plane replicas share PostgreSQL, MinIO, pricing configuration, internal credentials, and ingress policy
+- each worker has a unique worker ID; database compare-and-swap lease claims remain the ownership authority
+- internal claim, callback, heartbeat, and meeting-bot control routes remain off public ingress
+- admin login throttling moves from process memory to ingress or shared storage before adding control-plane replicas
+- only pinned images from one release bundle participate in a rollout
+
+Rolling order:
+
+1. Take a database backup and record the current immutable image digests and environment version without storing secrets in the repository.
+2. Stop routing new work, but keep the old control-plane available for callbacks from already issued leases.
+3. Drain active work or wait for leases to expire; start one new control-plane so the advisory-locked migration runs once.
+4. Verify `schema_migrations`, health, private routes, and queue/lease metrics; then replace remaining control-plane replicas.
+5. Replace workers one stage at a time, verifying fresh claims and stale-callback rejection after each stage.
+6. Restore new-work routing only after queue and saturation signals return to the declared profile.
+
+Abort before a migration by restoring the previous pinned bundle. After an additive migration, keep the schema-aware control-plane during feature rollback; do not deploy an older binary unless its compatibility with the current schema and callback contract has been exercised.

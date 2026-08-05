@@ -21,6 +21,33 @@ export type RecordingJobState =
 export type RecordingJobLeaseStage = 'recording' | 'transcription' | 'summary';
 
 export const DEFAULT_WORKER_LEASE_DURATION_MS = 15 * 60 * 1000;
+export const ARTIFACT_LIFECYCLE_POLICY =
+  'delete-object-storage-on-history-removal-retain-derived-audit';
+
+export const isSummaryLeaseExpired = (
+  job: Pick<
+    RecordingJob,
+    'summaryLeaseExpiresAt' | 'summaryLeaseHeartbeatAt' | 'updatedAt'
+  >,
+  nowMs: number = Date.now()
+): boolean => {
+  const expiresAtMs = job.summaryLeaseExpiresAt
+    ? Date.parse(job.summaryLeaseExpiresAt)
+    : Number.NaN;
+  if (!Number.isNaN(expiresAtMs)) {
+    return nowMs >= expiresAtMs;
+  }
+
+  const heartbeatAtMs = job.summaryLeaseHeartbeatAt
+    ? Date.parse(job.summaryLeaseHeartbeatAt)
+    : Number.NaN;
+  if (!Number.isNaN(heartbeatAtMs)) {
+    return nowMs - heartbeatAtMs >= DEFAULT_WORKER_LEASE_DURATION_MS;
+  }
+
+  const updatedAtMs = Date.parse(job.updatedAt);
+  return !Number.isNaN(updatedAtMs) && nowMs - updatedAtMs >= DEFAULT_WORKER_LEASE_DURATION_MS;
+};
 
 export type RecordingFailure = {
   code: string;
@@ -77,7 +104,23 @@ export type SummaryArtifact = {
   reasoningEffort: string;
   text: string;
   structured?: {
+    title?: string;
     summary: string;
+    topics?: Array<{
+      title: string;
+      status: 'confirmed' | 'mixed' | 'open';
+      subtopics?: Array<{
+        title: string;
+        details: string[];
+      }>;
+      points: string[];
+      conclusion: string;
+    }>;
+    followUpGroups?: Array<{
+      title: string;
+      items: string[];
+    }>;
+    analysisNotes?: string[];
     keyPoints: string[];
     actionItems: string[];
     decisions: string[];
@@ -244,6 +287,26 @@ const appendJobHistoryEntry = (
   return [...currentHistory, nextEntry];
 };
 
+export const recordTerminalArtifactLifecyclePolicy = (job: RecordingJob): RecordingJob => {
+  if (
+    (job.state !== 'completed' && job.state !== 'failed') ||
+    job.jobHistory?.some((entry) => entry.stage === 'artifact-lifecycle-policy')
+  ) {
+    return job;
+  }
+
+  return {
+    ...job,
+    jobHistory: appendJobHistoryEntry(job, {
+      stage: 'artifact-lifecycle-policy',
+      message:
+        'Object-storage artifacts are deleted on operator history removal; embedded transcript and summary evidence is retained for administrator audit.',
+      state: job.state,
+      kind: 'artifact'
+    })
+  };
+};
+
 const stateHistoryMessage: Record<RecordingJobState, string> = {
   queued: 'Job queued.',
   joining: 'Worker claimed the job and started joining the meeting.',
@@ -322,7 +385,7 @@ export const transitionRecordingJobState = (
     throw new Error(`Invalid recording job transition from ${job.state} to ${nextState}`);
   }
 
-  return {
+  return recordTerminalArtifactLifecyclePolicy({
     ...job,
     state: nextState,
     updatedAt: now(),
@@ -332,13 +395,13 @@ export const transitionRecordingJobState = (
       state: nextState,
       kind: 'lifecycle'
     })
-  };
+  });
 };
 
 export const markRecordingJobFailed = (
   job: RecordingJob,
   failure: RecordingFailure
-): RecordingJob => ({
+): RecordingJob => recordTerminalArtifactLifecyclePolicy({
   ...job,
   ...clearRecordingLeaseState,
   ...clearTranscriptionLeaseState,
@@ -399,7 +462,7 @@ export const attachTranscriptArtifact = (
   job: RecordingJob,
   transcriptArtifact: TranscriptArtifact
 ): RecordingJob =>
-  job.summaryRequested
+  recordTerminalArtifactLifecyclePolicy(job.summaryRequested
     ? {
         ...job,
         ...clearTranscriptionLeaseState,
@@ -431,12 +494,12 @@ export const attachTranscriptArtifact = (
           state: 'completed',
           kind: 'artifact'
         })
-      };
+      });
 
 export const attachSummaryArtifact = (
   job: RecordingJob,
   summaryArtifact: SummaryArtifact
-): RecordingJob => ({
+): RecordingJob => recordTerminalArtifactLifecyclePolicy({
   ...job,
   ...clearSummaryLeaseState,
   summaryArtifact,
@@ -551,7 +614,7 @@ export const releaseTranscriptionJobForRetry = (
   const nextAttemptCount = (job.transcriptionAttemptCount ?? 0) + 1;
 
   if (nextAttemptCount >= maxAttempts) {
-    return {
+    return recordTerminalArtifactLifecyclePolicy({
       ...job,
       ...clearTranscriptionLeaseState,
       transcriptionAttemptCount: nextAttemptCount,
@@ -568,7 +631,7 @@ export const releaseTranscriptionJobForRetry = (
         state: 'failed',
         kind: 'failure'
       })
-    };
+    });
   }
 
   return {

@@ -1,4 +1,4 @@
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectsCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { createReadStream } from 'node:fs';
 
 import type { RecordingArtifact } from '../domain/recording-job.js';
@@ -14,6 +14,7 @@ export type UploadedAudioStorageInput = {
 
 export interface UploadedAudioStorage {
   storeUpload(input: UploadedAudioStorageInput): Promise<RecordingArtifact>;
+  deleteObjects?(storageKeys: string[]): Promise<void>;
 }
 
 const sanitizeFileName = (value: string): string => {
@@ -60,6 +61,30 @@ export class S3UploadedAudioStorage implements UploadedAudioStorage {
       downloadUrl: `${normalizedEndpoint}/${this.bucketName}/${encodeKeyForUrl(storageKey)}`,
       contentType: input.contentType
     };
+  }
+
+  async deleteObjects(storageKeys: string[]): Promise<void> {
+    const bucketPrefix = `${this.bucketName}/`;
+    const normalizedKeys = [...new Set(storageKeys)]
+      .map((key) => key.replace(/^\/+/, ''))
+      .map((key) => (key.startsWith(bucketPrefix) ? key.slice(bucketPrefix.length) : key))
+      .filter(Boolean);
+
+    for (let offset = 0; offset < normalizedKeys.length; offset += 1000) {
+      const result = await this.client.send(
+        new DeleteObjectsCommand({
+          Bucket: this.bucketName,
+          Delete: {
+            Quiet: true,
+            Objects: normalizedKeys.slice(offset, offset + 1000).map((Key) => ({ Key }))
+          }
+        })
+      );
+
+      if (result.Errors?.length) {
+        throw new Error(`failed to delete ${result.Errors.length} artifact object(s)`);
+      }
+    }
   }
 }
 

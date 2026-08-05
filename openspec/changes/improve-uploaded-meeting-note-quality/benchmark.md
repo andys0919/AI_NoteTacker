@@ -320,9 +320,9 @@ high-confidence display review candidate for exact visible forms such as
 
 ## Remaining gaps
 
-- `gpt-4o-transcribe-diarize` now supplies conservative anonymous speaker
-  metadata, but no human-labelled speaker reference exists and the provider
-  can stabilize at most four speakers.
+- Historical artifacts may contain conservative anonymous speaker metadata,
+  but the canonical Compose workflow no longer configures diarization and
+  readers, summaries, admin transcripts, and text exports ignore stored labels.
 - Generic multi-hypothesis review is deliberately deferred from this change.
   Enabling an independent verifier requires a candidate that clears the
   same-audio terminology/fidelity gate and an explicit ongoing quality/cost
@@ -336,3 +336,107 @@ high-confidence display review candidate for exact visible forms such as
   excluding those spans, only three short adjacent duplicates (`Hello`, an
   acknowledgement, and a goodbye) remain. Diarization cannot determine whether
   those legitimate short repetitions came from separate speakers.
+
+## 2026-07-30 current MAI job versus PLAUD
+
+The live completed job `job_29ecfc5ac0bb40639b0b5ad52688c7b4` used
+`mai-transcribe-1.5`, independent Luna/max polishing and summary, no glossary,
+and the uploaded file `20260723_流程討論.mp4`. Its reported duration is
+5,616,442 ms, while the agreed blind reference WAV is 5,609,520 ms and PLAUD
+reports 5,609,000 ms. This live job is therefore an operational comparison,
+not a same-file blind accuracy benchmark; the correct-WAV benchmark above
+remains authoritative for that claim.
+
+| Measure | Current job | PLAUD | Interpretation |
+| --- | ---: | ---: | --- |
+| Segments | 658 | 510 | Segmentation policies differ; count is not accuracy |
+| Display characters | 31,219 | 27,374 | Current job is 14.0% longer |
+| Five-minute character coverage | higher in 19/19 bins | baseline | Current job has no obvious large omission relative to PLAUD, but extra text can still be wrong |
+| Speaker-attributed segments | 399/658 (60.6%) | 510/510 (100%) | PLAUD remains materially better for speaker/owner evidence |
+| Distinct speaker labels | 3 | 7 | Current labels are anonymous and all timings are estimated |
+| `舌片` | 25 | 32 | PLAUD preserves more occurrences of the requested spelling |
+| `蛇片` / `色片` / `射片` | 1 / 1 / 1 | 1 / 3 / 2 | The narrow three-variant count favors the current job |
+| Other contextual variants `上片` / `試片` / `晶片` | 2 / 2 / 5 | 0 / 0 / 0 | The broader context check favors PLAUD for this term |
+| `條碼` / `硬碟` | 34 / 12 | 31 / 11 | Current job retains slightly more central engineering mentions |
+| `MVS` / incorrect `MBS` or `NVS` | 19 / 1 | 4 / 10 | Current job is much closer to the original-video `MVS` evidence |
+| Case-insensitive `Group ID` / `MoveIn`-or-`moving` | 4 / 7 | 4 / 8 | Effectively tied; current job also contains two wrong `Google ID` occurrences |
+
+The current summary contains 14 key points, 12 actions, 10 decisions, 7 risks,
+and 11 open questions. It is more complete than the PLAUD summary on the late
+1–22 ordering discussion, force-sensor recovery, AI classification limits,
+CT/network risk, and the explicit August 6 schedule statement. It is also more
+faithful on the unresolved 1-6/1-7 choice. PLAUD remains easier to scan because
+it groups content into five named topics with an inline conclusion and grouped
+follow-up work.
+
+The implemented generic format keeps the existing flat fields for compatibility
+and adds content-derived topics with `confirmed`, `mixed`, or `open` status.
+The operator view renders overview, topic notes, conclusions, follow-up,
+decisions, risks, and open questions without empty placeholders. No HDD,
+PLAUD, tray, barcode, or other benchmark answer is embedded in the prompt.
+
+## 2026-07-30 coverage-first Luna/max validation
+
+The generic prompt now prioritizes complete evidence coverage over a shorter
+answer. It explicitly audits the beginning, middle, and final third, groups
+repeated discussion, separates materially different process, requirement,
+exception, dependency, scope, schedule, and outcome topics, and classifies
+only explicit actions, final decisions, stated risks, and unresolved questions.
+It still contains no PLAUD answer, HDD-specific outline, phrase list, or
+speaker label.
+
+The completed job was read through the operator detail API and converted
+through the production `_summary_segment` boundary. Two direct
+`gpt-5.6-luna` / `effort=max` attempts used the same 658-segment transcript and
+new prompt without modifying the job. Both spent the configured 300-second
+socket timeout waiting for an HTTP response and ended with
+`TimeoutError: The read operation timed out`.
+
+| Dimension | New coverage-first attempt | Existing stored summary | PLAUD |
+| --- | --- | --- | --- |
+| Provider result | No HTTP response on 2/2 attempts | Completed historical artifact | Completed external artifact |
+| Topic architecture | Required by prompt; no result to score | Flat fields only | Five named topics |
+| Classified items | No result to count | 12 actions, 10 decisions, 7 risks, 11 open questions | Grouped follow-up and AI suggestions |
+| Full-recording coverage | Beginning/middle/final audit required but not yet provider-verified | Late ordering, recovery, AI, CT/network, and schedule discussion present | Easier to scan but omits or overstates some pending discussion |
+| Latency | More than 300 seconds on each attempt, then timeout | Historical runtime only | Not measured |
+| Usage/cost evidence | Two unmetered direct attempts outside the job ledger | Stored as unpriced | Not available |
+
+There is therefore no honest post-change completeness percentage or quality-win
+claim yet. The deployed prompt and schema contract are verified, but a
+completed provider response is still required before comparing its generated
+topics and classification against PLAUD.
+
+## 2026-07-30 completed hierarchical Luna/max validation
+
+A third oracle-free request used the same 658-segment MAI display transcript,
+removed stored speaker labels, added only segment timing markers, and supplied
+no PLAUD text, HDD-specific outline, phrase list, filename-derived answer, or
+human terminology correction. The request completed once without retry in
+265.499 seconds.
+
+| Measure | Result |
+| --- | ---: |
+| Provider requests | 1 |
+| Input tokens | 36,643 |
+| Output tokens | 35,515 |
+| Reasoning tokens | 26,416 |
+| Total tokens | 72,158 |
+| Content-derived topics | 9 |
+| Subtopics | 27 |
+| Follow-up groups / items | 5 / 20 |
+| Analysis notes | 14 |
+
+The candidate covered late single/dual mode, layout and insertion-direction
+scope, edit-mode ordering validation, AI classification limits, the explicit
+August 6 schedule statement, and recovery details that PLAUD either condensed
+or omitted. It retained the pending 1-6/1-7 path and the unapproved edit-mode
+version as unresolved, while PLAUD promoted some pending discussion.
+
+PLAUD remained easier to scan. The candidate separated related material into
+too many topics and repeated some shared root causes across follow-up and
+analysis sections. It also inherited unresolved ASR variants such as
+`Google ID`, `incarnation`, `脆盤`, and conflicting manufacturing-system
+identifiers. The production prompt therefore uses semantic grouping rather
+than a numeric topic limit, groups work by deliverable and notes by root cause,
+and replaces unconfirmable technical names with supported functional
+descriptions. These are oracle-free rules and do not encode the PLAUD answer.

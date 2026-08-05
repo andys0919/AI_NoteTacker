@@ -146,6 +146,8 @@ class MaiTranscriber(AzureOpenAiTranscriber):
             ),
             "unknown",
         )
+        if language.lower().startswith("zh"):
+            language = "zh-Hant"
         return {
             "text": text,
             "language": language,

@@ -7,6 +7,11 @@ The system SHALL define retention policy for uploaded media, recordings, transcr
 - **THEN** the system records the retention or deletion policy that applies to each stored artifact class
 - **AND** maintainers can determine whether artifacts are retained, expired later, or deleted immediately
 
+#### Scenario: Current policy separates object cleanup from audit retention
+- **WHEN** a terminal job is stored under the current single-host policy
+- **THEN** its object-storage artifacts are marked for deletion when the operator removes the job from history
+- **AND** embedded transcript and summary evidence is marked as retained in the hidden row for administrator audit
+
 ### Requirement: Delete flows apply artifact cleanup semantics
 The system SHALL align operator delete and clear-history flows with artifact cleanup behavior instead of deleting metadata only.
 
@@ -14,8 +19,10 @@ The system SHALL align operator delete and clear-history flows with artifact cle
 - **WHEN** an operator deletes one owned terminal job
 - **THEN** the system applies the configured cleanup or retention behavior to that job's stored artifacts
 - **AND** the operator-visible result distinguishes metadata removal from pending or completed object cleanup
+- **AND** a failed object cleanup leaves the job visible so the operation can be retried
 
 #### Scenario: Operator clears terminal history in bulk
 - **WHEN** an operator clears terminal job history
 - **THEN** the system applies the configured artifact lifecycle policy to each affected job
-- **AND** artifact cleanup work can continue safely even after those jobs leave the visible archive
+- **AND** artifact cleanup attempts are idempotent and safely retryable while those jobs remain visible
+- **AND** all required object cleanup completes before the affected jobs leave the visible archive

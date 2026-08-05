@@ -1,4 +1,4 @@
-import request from 'supertest';
+import request from './test-request.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createApp } from '../src/app.js';
@@ -255,7 +255,7 @@ describe('cloud usage governance API', () => {
     expect(quota.body.remainingUsd).toBeLessThan(2);
   });
 
-  it('rejects submissions that would exceed the remaining daily cloud quota', async () => {
+  it('accepts submissions when the estimated cloud cost exceeds the daily quota', async () => {
     const app = buildApp();
 
     await request(app)
@@ -285,8 +285,8 @@ describe('cloud usage governance API', () => {
         contentType: 'audio/wav'
       });
 
-    expect(created.status).toBe(409);
-    expect(created.body.error.code).toBe('cloud-quota-exceeded');
+    expect(created.status).toBe(201);
+    expect(created.body.reservedCloudQuotaUsd).toBeGreaterThan(0);
   });
 
   it('settles actual cloud usage into consumed quota after transcript and summary events', async () => {

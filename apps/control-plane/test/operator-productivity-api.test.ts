@@ -1,4 +1,4 @@
-import request from 'supertest';
+import request from './test-request.js';
 import { describe, expect, it } from 'vitest';
 
 import { createApp } from '../src/app.js';
@@ -54,6 +54,14 @@ describe('operator productivity workflows API', () => {
     expect(response.body.notifications).toEqual({
       emailConfigured: true
     });
+    expect(response.body.pricingReference).toEqual(
+      expect.objectContaining({
+        source: 'Azure Retail Prices API',
+        sourceUrl: expect.stringContaining('prices.azure.com/api/retail/prices'),
+        usdToTwdRate: expect.any(Number),
+        verifiedAt: expect.any(String)
+      })
+    );
   });
 
   it('persists template-derived workflow preferences on meeting jobs', async () => {

@@ -22,8 +22,8 @@ export interface AdminConsoleAuth {
 }
 
 const DEFAULT_USERNAME = 'admin';
-const DEFAULT_PASSWORD = 'solomonvbuandy';
 const DEFAULT_SESSION_TTL_HOURS = 12;
+const LEGACY_PASSWORD = 'solomonvbuandy';
 
 const base64UrlEncode = (value: string): string =>
   Buffer.from(value, 'utf8').toString('base64url');
@@ -58,7 +58,14 @@ export type AdminConsoleAuthConfig = {
 
 export const createAdminConsoleAuth = (config: AdminConsoleAuthConfig = {}): AdminConsoleAuth => {
   const username = (config.username ?? DEFAULT_USERNAME).trim();
-  const password = config.password ?? DEFAULT_PASSWORD;
+  const password = config.password;
+  if (
+    !password?.trim() ||
+    Buffer.byteLength(password, 'utf8') < 6 ||
+    password === LEGACY_PASSWORD
+  ) {
+    throw new Error('ADMIN_CONSOLE_PASSWORD must be a dedicated secret of at least 6 bytes.');
+  }
   const sessionTtlMs = config.sessionTtlMs ?? DEFAULT_SESSION_TTL_HOURS * 60 * 60 * 1000;
   const now = config.now ?? (() => Date.now());
   // When no explicit secret is configured, derive a stable per-process secret so

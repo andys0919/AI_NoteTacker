@@ -112,14 +112,22 @@ class CodexTranscriptSummarizer:
         if not summary_text:
             raise RuntimeError("codex returned no summary text")
 
-        summary_payload = coerce_summary_payload(summary_text, provider_label="codex")
+        summary_payload = coerce_summary_payload(
+            summary_text,
+            provider_label="codex",
+            require_complete_schema=True,
+        )
 
         return {
             "model": model,
             "reasoning_effort": self._reasoning_effort,
             "text": render_summary_markdown(summary_payload),
             "structured": {
+                "title": summary_payload["title"],
                 "summary": summary_payload["summary"],
+                "topics": summary_payload["topics"],
+                "follow_up_groups": summary_payload["follow_up_groups"],
+                "analysis_notes": summary_payload["analysis_notes"],
                 "key_points": summary_payload["key_points"],
                 "action_items": summary_payload["action_items"],
                 "decisions": summary_payload["decisions"],

@@ -2,10 +2,19 @@ import {
   assignRecordingJobToWorker,
   assignSummaryJobToWorker,
   assignTranscriptionJobToWorker,
+  isSummaryLeaseExpired,
   refreshLeaseHeartbeatForStage,
   type RecordingJob
 } from '../domain/recording-job.js';
-import { toRecordingJobListItem } from '../domain/recording-job-list-item.js';
+import {
+  isMeetingShareLinkActive,
+  type MeetingShareLink
+} from '../domain/meeting-share.js';
+import {
+  recordingJobMatchesSearchQuery,
+  toRecordingJobListItem,
+  type RecordingJobListItem
+} from '../domain/recording-job-list-item.js';
 import type {
   RecordingJobPage,
   RecordingJobPageCursor,
@@ -24,6 +33,7 @@ const compareByCreatedAtDesc = (left: RecordingJob, right: RecordingJob): number
 
 export class InMemoryRecordingJobRepository implements RecordingJobRepository {
   private readonly jobs = new Map<string, RecordingJob>();
+  private readonly meetingShareLinks = new Map<string, MeetingShareLink>();
   // Soft-deleted job ids: hidden from the submitter's own views but still
   // retrievable by getById so the admin console can audit them.
   private readonly operatorHiddenJobIds = new Set<string>();
@@ -134,10 +144,52 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
     return this.jobs.get(id);
   }
 
-  async listBySubmitter(submitterId: string): Promise<RecordingJob[]> {
+  async getMeetingShareLinkByJobId(jobId: string): Promise<MeetingShareLink | undefined> {
+    return this.meetingShareLinks.get(jobId);
+  }
+
+  async getMeetingShareLinkByShareId(shareId: string): Promise<MeetingShareLink | undefined> {
+    return [...this.meetingShareLinks.values()].find((link) => link.shareId === shareId);
+  }
+
+  async getOrCreateMeetingShareLink(link: MeetingShareLink): Promise<MeetingShareLink> {
+    const current = this.meetingShareLinks.get(link.jobId);
+    if (current && isMeetingShareLinkActive(current, new Date(link.createdAt))) {
+      return current;
+    }
+
+    this.meetingShareLinks.set(link.jobId, link);
+    return link;
+  }
+
+  async rotateMeetingShareLink(link: MeetingShareLink): Promise<MeetingShareLink> {
+    this.meetingShareLinks.set(link.jobId, link);
+    return link;
+  }
+
+  async revokeMeetingShareLink(jobId: string, revokedAt: string): Promise<boolean> {
+    const current = this.meetingShareLinks.get(jobId);
+    if (!current) {
+      return false;
+    }
+
+    this.meetingShareLinks.set(jobId, { ...current, revokedAt });
+    return true;
+  }
+
+  async listBySubmitter(
+    submitterId: string,
+    searchQuery?: string
+  ): Promise<RecordingJobListItem[]> {
     return [...this.jobs.values()]
-      .filter((job) => job.submitterId === submitterId && !this.operatorHiddenJobIds.has(job.id))
-      .sort(compareByCreatedAtDesc);
+      .filter(
+        (job) =>
+          job.submitterId === submitterId &&
+          !this.operatorHiddenJobIds.has(job.id) &&
+          recordingJobMatchesSearchQuery(job, searchQuery)
+      )
+      .sort(compareByCreatedAtDesc)
+      .map(toRecordingJobListItem);
   }
 
   async listBySubmitterPage(
@@ -153,7 +205,7 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
             (job.createdAt === cursor.createdAt && job.id < cursor.id)
         )
       : ordered;
-    const pageJobs = filtered.slice(0, input.limit).map(toRecordingJobListItem);
+    const pageJobs = filtered.slice(0, input.limit);
     const hasMore = filtered.length > input.limit;
     const nextJob = hasMore ? pageJobs.at(-1) : undefined;
 
@@ -230,6 +282,13 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
 
     // Soft delete: keep the row, just hide it from the submitter's views.
     this.operatorHiddenJobIds.add(id);
+    const shareLink = this.meetingShareLinks.get(id);
+    if (shareLink) {
+      this.meetingShareLinks.set(id, {
+        ...shareLink,
+        revokedAt: new Date().toISOString()
+      });
+    }
     return true;
   }
 
@@ -243,8 +302,13 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
       )
       .map((job) => job.id);
 
+    const revokedAt = new Date().toISOString();
     terminalJobIds.forEach((id) => {
       this.operatorHiddenJobIds.add(id);
+      const shareLink = this.meetingShareLinks.get(id);
+      if (shareLink) {
+        this.meetingShareLinks.set(id, { ...shareLink, revokedAt });
+      }
     });
 
     return terminalJobIds.length;
@@ -259,7 +323,8 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
       (job) =>
         job.summaryRequested &&
         Boolean(job.assignedSummaryWorkerId) &&
-        !job.summaryArtifact
+        !job.summaryArtifact &&
+        !isSummaryLeaseExpired(job)
     );
   }
 
@@ -366,13 +431,16 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
           job.summaryRequested &&
           Boolean(job.transcriptArtifact) &&
           !job.summaryArtifact &&
-          !job.assignedSummaryWorkerId &&
           job.state === 'transcribing' &&
+          ((!job.assignedSummaryWorkerId && job.processingStage === 'summary-pending') ||
+            (Boolean(job.assignedSummaryWorkerId) &&
+              job.processingStage === 'generating-summary' &&
+              isSummaryLeaseExpired(job))) &&
           (!normalizedProviders?.length ||
             normalizedProviders.includes(job.summaryProvider ?? 'local-codex'))
       )
       .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))
-      .find((job) => job.processingStage === 'summary-pending');
+      .at(0);
 
     if (!summaryJob) {
       return undefined;

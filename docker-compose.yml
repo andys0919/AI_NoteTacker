@@ -9,7 +9,7 @@ services:
     environment:
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       ADMIN_CONSOLE_USERNAME: ${ADMIN_CONSOLE_USERNAME:-admin}
-      ADMIN_CONSOLE_PASSWORD: ${ADMIN_CONSOLE_PASSWORD:-solomonvbuandy}
+      ADMIN_CONSOLE_PASSWORD: ${ADMIN_CONSOLE_PASSWORD:?Set ADMIN_CONSOLE_PASSWORD to a dedicated secret of at least 6 bytes}
       ADMIN_CONSOLE_SESSION_SECRET: ${ADMIN_CONSOLE_SESSION_SECRET:-}
       ADMIN_CONSOLE_SESSION_TTL_HOURS: ${ADMIN_CONSOLE_SESSION_TTL_HOURS:-12}
       AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY:-}
@@ -23,15 +23,12 @@ services:
       AZURE_SPEECH_MAI_MODEL: ${AZURE_SPEECH_MAI_MODEL:-mai-transcribe-1.5}
       DEFAULT_TRANSCRIPTION_PROVIDER: ${DEFAULT_TRANSCRIPTION_PROVIDER:-azure-speech-mai-transcribe-1.5}
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-cloud}
-      DOCKER_SOCKET_PATH: /var/run/docker.sock
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-internal-token}
-      MEETING_BOT_CONTAINER_NAME: ${MEETING_BOT_CONTAINER_NAME:-ai_notetacker-meeting-bot-1}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN to a dedicated secret of at least 32 bytes}
+      MEETING_SHARE_SECRET: ${MEETING_SHARE_SECRET:-}
       QWEN_ASR_ENDPOINT: ${QWEN_ASR_ENDPOINT:-}
       QWEN_ASR_MODEL: ${QWEN_ASR_MODEL:-qwen3-asr-1.7b}
     ports:
       - "3000:3000"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 5s
@@ -48,10 +45,11 @@ services:
       context: .
       dockerfile: workers/recording-worker/Dockerfile
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-internal-token}
+      ARTIFACT_BASE_URL: ${ARTIFACT_BASE_URL:-http://minio:9000/meeting-artifacts}
+      CONTROL_PLANE_BASE_URL: ${CONTROL_PLANE_BASE_URL:-http://control-plane:3000}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN to a dedicated secret of at least 32 bytes}
+      POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-1000}
       WORKER_ID: worker-alpha
     depends_on:
       control-plane:
@@ -67,19 +65,9 @@ services:
       AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2025-03-01-preview}
       AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
-      AZURE_OPENAI_DIARIZE_API_KEY: ${AZURE_OPENAI_DIARIZE_API_KEY:-}
-      AZURE_OPENAI_DIARIZE_API_VERSION: ${AZURE_OPENAI_DIARIZE_API_VERSION:-2025-04-01-preview}
-      AZURE_OPENAI_DIARIZE_ENDPOINT: ${AZURE_OPENAI_DIARIZE_ENDPOINT:-}
-      AZURE_OPENAI_DIARIZE_MAX_WORKERS: ${AZURE_OPENAI_DIARIZE_MAX_WORKERS:-3}
-      AZURE_OPENAI_DIARIZE_MODEL: ${AZURE_OPENAI_DIARIZE_MODEL:-}
-      AZURE_OPENAI_DIARIZE_TIMEOUT_SECONDS: ${AZURE_OPENAI_DIARIZE_TIMEOUT_SECONDS:-300}
-      AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS: ${AZURE_OPENAI_PUNCTUATION_TIMEOUT_SECONDS:-300}
-      AZURE_OPENAI_SUMMARY_API_KEY: ${AZURE_OPENAI_SUMMARY_API_KEY:-}
-      AZURE_OPENAI_SUMMARY_ENDPOINT: ${AZURE_OPENAI_SUMMARY_ENDPOINT:-}
       AZURE_OPENAI_TRANSCRIBE_LANGUAGE: ${AZURE_OPENAI_TRANSCRIBE_LANGUAGE:-}
       AZURE_OPENAI_TRANSCRIBE_PROMPT: ${AZURE_OPENAI_TRANSCRIBE_PROMPT:-}
       AZURE_OPENAI_TRANSCRIBE_TIMEOUT_SECONDS: ${AZURE_OPENAI_TRANSCRIBE_TIMEOUT_SECONDS:-300}
-      AZURE_OPENAI_PUNCTUATION_MODEL: ${AZURE_OPENAI_PUNCTUATION_MODEL:-}
       AZURE_SPEECH_MAI_API_KEY: ${AZURE_SPEECH_MAI_API_KEY:-}
       AZURE_SPEECH_MAI_API_VERSION: ${AZURE_SPEECH_MAI_API_VERSION:-2025-10-15}
       AZURE_SPEECH_MAI_ENDPOINT: ${AZURE_SPEECH_MAI_ENDPOINT:-}
@@ -88,7 +76,7 @@ services:
       CONTROL_PLANE_BASE_URL: ${CONTROL_PLANE_BASE_URL:-http://control-plane:3000}
       CONTROL_PLANE_TIMEOUT_SECONDS: ${CONTROL_PLANE_TIMEOUT_SECONDS:-30}
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-cloud}
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-internal-token}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN to a dedicated secret of at least 32 bytes}
       POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-1000}
       QWEN_ASR_ENDPOINT: ${QWEN_ASR_ENDPOINT:-}
       QWEN_ASR_MODEL: ${QWEN_ASR_MODEL:-qwen3-asr-1.7b}
@@ -98,9 +86,6 @@ services:
       S3_ENDPOINT: ${S3_ENDPOINT:-}
       S3_REGION: ${S3_REGION:-}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
-      SUMMARY_MODEL: ${SUMMARY_MODEL:-gpt-5.6-luna}
-      TRANSCRIPT_PUNCTUATION_ENABLED: ${TRANSCRIPT_PUNCTUATION_ENABLED:-true}
-      TRANSCRIPT_POLISHING_REASONING_EFFORT: ${TRANSCRIPT_POLISHING_REASONING_EFFORT:-max}
       WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
       WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
       WHISPER_MODEL: ${WHISPER_MODEL:-tiny}
@@ -153,14 +138,14 @@ services:
     environment:
       AZURE_OPENAI_SUMMARY_API_KEY: ${AZURE_OPENAI_SUMMARY_API_KEY:-}
       AZURE_OPENAI_SUMMARY_ENDPOINT: ${AZURE_OPENAI_SUMMARY_ENDPOINT:-}
-      AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS: ${AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS:-300}
+      AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS: ${AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS:-900}
       CODEX_CLI_PATH: ${CODEX_CLI_PATH:-codex}
       CONTROL_PLANE_BASE_URL: ${CONTROL_PLANE_BASE_URL:-http://control-plane:3000}
       CONTROL_PLANE_TIMEOUT_SECONDS: ${CONTROL_PLANE_TIMEOUT_SECONDS:-30}
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-internal-token}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN to a dedicated secret of at least 32 bytes}
       POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-1000}
       SUMMARY_MODEL: ${SUMMARY_MODEL:-gpt-5.6-luna}
-      SUMMARY_REASONING_EFFORT: ${SUMMARY_REASONING_EFFORT:-max}
+      SUMMARY_REASONING_EFFORT: ${SUMMARY_REASONING_EFFORT:-high}
       WORKER_ID: summarizer-alpha
       CODEX_HOME: /codex-home
     volumes:
@@ -170,32 +155,27 @@ services:
         condition: service_healthy
 
   postgres:
-    image: postgres:16
+    image: postgres@sha256:2586e2a95d1c9b31cb2967feb562948f7d364854453d703039b6efa45fe48417
     restart: unless-stopped
     environment:
       POSTGRES_DB: ainotetacker
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD to a dedicated secret}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d ainotetacker"]
       interval: 5s
       timeout: 5s
       retries: 10
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER to a dedicated value}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD to a dedicated secret}
     volumes:
       - minio_data:/data
 

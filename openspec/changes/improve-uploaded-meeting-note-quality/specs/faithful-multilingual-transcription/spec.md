@@ -69,57 +69,20 @@ The system SHALL split long Azure transcription work into at most five-minute au
 - **AND** the first retry result that passes both sparse and repetition gates replaces the rejected result
 - **AND** a third consecutive invalid result fails transcription explicitly
 
-### Requirement: Diarization adds speaker evidence without changing primary text
-The system SHALL optionally combine primary transcription text with independently produced diarization speaker evidence while preserving the primary provider as the only transcript-text authority.
+### Requirement: Historical diarization evidence remains compatible without new requests
+The earlier optional diarization runtime in this change is superseded by
+`simplify-mai-transcription-pipeline`, and its speaker presentation is
+superseded by `refine-meeting-artifact-reader`. The system SHALL preserve
+historical diarization metadata as evidence while the canonical transcription
+worker issues no new diarization request.
 
-#### Scenario: Configured diarization aligns with primary text
-- **WHEN** separate diarization credentials are configured and a diarized speaker span passes the deterministic alignment gate for a primary transcript segment
-- **THEN** the segment retains its original primary `rawText`, `displayText`, and `text`
-- **AND** it records an anonymous speaker label, the diarization source, and the derived alignment score
-- **AND** no diarized candidate text replaces transcript or summary wording
-- **AND** the aligned anonymous label may prefix that unchanged wording for summary attribution without implying a real identity
+#### Scenario: A new canonical transcription job runs
+- **WHEN** the transcription worker processes a newly claimed job
+- **THEN** it does not receive or invoke diarization configuration
+- **AND** primary transcript text remains the only transcript-text authority
+- **AND** it does not add new speaker classification
 
-#### Scenario: Speaker alignment is insufficient
-- **WHEN** diarized candidate text does not meet the configured minimum matched-character, coverage, dominance, or segment-duration gate
-- **THEN** the primary transcript segment remains unchanged
-- **AND** the system omits its speaker instead of guessing
-
-#### Scenario: Anonymous speaker references continue across chunks
-- **WHEN** either of the first two diarization chunks contains suitable same-label speech totaling at least two seconds
-- **THEN** the worker bootstraps and passes at most four anonymous audio references to later diarization chunks
-- **AND** it may concatenate same-label PCM clips into one valid 2–8 second reference
-- **AND** matching later spans retain those anonymous labels
-- **AND** a later unmatched generic label is chunk-scoped rather than impersonating a stable speaker
-
-#### Scenario: Diarization returns transient DeploymentNotFound
-- **WHEN** the configured diarization deployment returns HTTP 404 with `DeploymentNotFound`
-- **THEN** the worker retries the identical request once with bounded backoff
-- **AND** a still-failed chunk is requeued once after the parallel batch
-- **AND** another failure does not requeue that chunk again
-- **AND** a valid primary transcript still completes without unsupported speaker labels
-
-#### Scenario: Diarization returns a transient HTTP 400
-- **WHEN** the configured diarization deployment returns HTTP 400
-- **THEN** the worker retries the identical request once after two seconds
-- **AND** another HTTP 400 fails only that speaker-evidence chunk
-- **AND** a valid primary transcript still completes unchanged
-
-#### Scenario: Diarization has a transient transport failure
-- **WHEN** a diarization request fails because of DNS, timeout, reset, or broken connection
-- **THEN** the worker retries the identical request after 2, 10, and 30 seconds
-- **AND** failure after the third retry fails only that speaker-evidence chunk
-- **AND** cancellation during backoff prevents the next provider request
-- **AND** a valid primary transcript still completes unchanged
-
-#### Scenario: Diarization usage is reported
-- **WHEN** the optional diarization pass issues provider requests
-- **THEN** its model, processed audio, request count, unmetered request count, and failed chunk count are reported separately from primary transcription
-- **AND** an HTTP 200 response with an invalid body still records its accepted audio and request as spent
-- **AND** the control plane stores that second-model usage as an unpriced transcription-stage ledger entry
-
-#### Scenario: Primary transcription fails after diarization spends requests
-- **WHEN** the optional diarization pass issues provider requests and primary transcription later fails or is cancelled
-- **THEN** queued diarization chunks and delayed repair stop before issuing additional provider requests
-- **AND** requests already in flight may finish
-- **AND** the transcription failure event still reports the spent diarization usage
-- **AND** the control plane stores it as the same separate unpriced transcription-stage ledger entry
+#### Scenario: A historical artifact contains diarization metadata
+- **WHEN** an existing transcript contains a speaker label, source, or alignment score
+- **THEN** the stored artifact remains schema-compatible and unchanged
+- **AND** the summary prompt and normal user-facing text views ignore that metadata

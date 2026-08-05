@@ -1,4 +1,5 @@
 import { getJobProgressModel, getProgressLabel } from './job-progress.js';
+import { formatTwdFromUsd } from './currency-display.js';
 
 const badgeLabels = {
   queued: '排隊中',
@@ -69,7 +70,10 @@ const getStatusSummary = (job, runtimeState) => {
   }
 
   if (job.state === 'completed') {
-    if (job.transcriptArtifact && !job.summaryArtifact) {
+    const hasTranscript = job.hasTranscript ?? Boolean(job.transcriptArtifact);
+    const hasSummary = job.hasSummary ?? Boolean(job.summaryArtifact);
+
+    if (hasTranscript && !hasSummary) {
       return '逐字稿已完成，但摘要尚未產生。';
     }
 
@@ -84,7 +88,7 @@ const getStatusSummary = (job, runtimeState) => {
 export const getEmptyStateMessage = (search) =>
   search
     ? `找不到符合「${search}」的紀錄，請改用會議名稱、連結或摘要關鍵字搜尋。`
-    : '目前還沒有任何工作。送出會議連結或上傳錄音後，系統會在這裡顯示進度與結果。';
+    : '尚無會議筆記。加入會議或上傳錄音後，進度與結果會顯示在這裡。';
 
 export const renderOptionalMarkup = (value) => (typeof value === 'string' ? value : '');
 
@@ -95,21 +99,6 @@ export const formatJobTimestamp = (value) =>
     hour12: false
   });
 
-const formatUsd = (value) => `$${Number(value || 0).toFixed(3)}`;
-
-const hasCostValue = (value, hasUnpricedUsage) =>
-  typeof value === 'number' || hasUnpricedUsage === true;
-
-const formatStageCost = (value, hasUnpricedUsage) => {
-  if (!hasUnpricedUsage) {
-    return typeof value === 'number' ? formatUsd(value) : null;
-  }
-
-  return typeof value === 'number' && value > 0
-    ? `${formatUsd(value)}（含未定價用量）`
-    : '未定價';
-};
-
 const getKnownCloudCostUsd = (job) =>
   [
     job.actualTranscriptionCostUsd,
@@ -119,16 +108,16 @@ const getKnownCloudCostUsd = (job) =>
 
 const getTotalCostDisplay = (job) => {
   if (!job.hasUnpricedUsage) {
-    return typeof job.actualCloudCostUsd === 'number'
-      ? { label: '合計', value: formatUsd(job.actualCloudCostUsd) }
+    return typeof job.actualCloudCostUsd === 'number' && job.actualCloudCostUsd > 0
+      ? { label: '總費用', value: formatTwdFromUsd(job.actualCloudCostUsd) }
       : { label: null, value: null };
   }
 
   const knownCostUsd = getKnownCloudCostUsd(job);
 
   return knownCostUsd > 0
-    ? { label: '已知費用', value: `${formatUsd(knownCostUsd)}（含未定價用量）` }
-    : { label: '合計', value: '未定價' };
+    ? { label: '總費用', value: `${formatTwdFromUsd(knownCostUsd)}（含未定價用量）` }
+    : { label: '總費用', value: '未定價' };
 };
 
 const formatDuration = (milliseconds) => {
@@ -184,28 +173,7 @@ export const getJobCardViewModel = (job) => {
   });
   const durationText = getJobDurationText(job);
   const totalCostDisplay = getTotalCostDisplay(job);
-  const transcriptionCostDisplay = {
-    label: hasCostValue(job.actualTranscriptionCostUsd, job.hasUnpricedTranscriptionUsage)
-      ? '轉文字'
-      : null,
-    value: formatStageCost(job.actualTranscriptionCostUsd, job.hasUnpricedTranscriptionUsage)
-  };
-  const punctuationCostDisplay = {
-    label: hasCostValue(job.actualPunctuationCostUsd, job.hasUnpricedPunctuationUsage)
-      ? '標點'
-      : null,
-    value: formatStageCost(job.actualPunctuationCostUsd, job.hasUnpricedPunctuationUsage)
-  };
-  const summaryCostDisplay = {
-    label: hasCostValue(job.actualSummaryCostUsd, job.hasUnpricedSummaryUsage) ? '摘要' : null,
-    value: formatStageCost(job.actualSummaryCostUsd, job.hasUnpricedSummaryUsage)
-  };
-  const costItems = [
-    transcriptionCostDisplay,
-    punctuationCostDisplay,
-    summaryCostDisplay,
-    totalCostDisplay
-  ].filter((item) => item.label && item.value);
+  const costItems = [totalCostDisplay].filter((item) => item.label && item.value);
 
   return {
     title: job.inputSource === 'uploaded-audio' ? '錄音整理' : '會議摘要',
@@ -231,12 +199,6 @@ export const getJobCardViewModel = (job) => {
     updatedLabel: '最近更新',
     durationLabel: durationText ? '時長' : null,
     durationValue: durationText,
-    transcriptionCostLabel: transcriptionCostDisplay.label,
-    transcriptionCostValue: transcriptionCostDisplay.value,
-    punctuationCostLabel: punctuationCostDisplay.label,
-    punctuationCostValue: punctuationCostDisplay.value,
-    summaryCostLabel: summaryCostDisplay.label,
-    summaryCostValue: summaryCostDisplay.value,
     totalCostLabel: totalCostDisplay.label,
     totalCostValue: totalCostDisplay.value,
     costItems,

@@ -26,6 +26,11 @@ export const filterJobsByQuickFilter = (jobs, filterId = 'all', nowValue = new D
   return jobs;
 };
 
+export const getArchivePageState = (jobs, filterId, hasMore, searchQuery) => ({
+  visibleJobs: filterJobsByQuickFilter(jobs, filterId),
+  canLoadMore: Boolean(hasMore && !String(searchQuery || '').trim())
+});
+
 export const getPreferredQuickExportFormat = (job) => job.preferredExportFormat || 'markdown';
 
 export const getJobActionSet = (job, runtimeState) => {
@@ -44,10 +49,6 @@ export const getJobActionSet = (job, runtimeState) => {
 
   if (job.state === 'completed' || job.state === 'failed') {
     actions.push('delete-history');
-  }
-
-  if ((job.hasTranscript || job.hasSummary) && !job.transcriptArtifact && !job.summaryArtifact) {
-    actions.push('view-details');
   }
 
   if (job.transcriptArtifact || job.summaryArtifact || job.hasTranscript || job.hasSummary) {

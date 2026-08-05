@@ -65,6 +65,61 @@ const withRetry = async <T>(operation: () => Promise<T>, attempts: number, delay
   throw lastError;
 };
 
+export const CURRENT_SCHEMA_MIGRATION = '20260805-runtime-hardening-v1';
+
+type MigrationClient = {
+  query: <TRow extends Record<string, unknown>>(
+    text: string,
+    values?: unknown[]
+  ) => Promise<{ rows: TRow[] }>;
+  release: () => void;
+};
+
+type MigrationPool = {
+  connect: () => Promise<MigrationClient>;
+};
+
+export const runSchemaMigrations = async (pool: MigrationPool): Promise<void> => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('ai-notetacker-schema-migrations'))");
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version TEXT PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    const applied = await client.query<{ version: string }>(
+      'SELECT version FROM schema_migrations WHERE version = $1',
+      [CURRENT_SCHEMA_MIGRATION]
+    );
+
+    if (applied.rows.length === 0) {
+      await ensureRecordingJobSchema(client);
+      await ensureAuthenticatedUserSchema(client);
+      await ensureTranscriptionProviderSettingsSchema(client);
+      await ensureOperatorCloudQuotaOverrideSchema(client);
+      await ensureCloudUsageLedgerSchema(client);
+      await ensureAdminAuditLogSchema(client);
+      await client.query('INSERT INTO schema_migrations (version) VALUES ($1)', [
+        CURRENT_SCHEMA_MIGRATION
+      ]);
+    }
+
+    await client.query('COMMIT');
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // Preserve the migration failure when rollback also fails.
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
 export type PersistenceContext = {
   recordingJobRepository: RecordingJobRepository;
   authenticatedUserRepository: AuthenticatedUserRepository;
@@ -147,12 +202,7 @@ export const createPersistenceContextFromEnvironment = async (): Promise<Persist
 
   try {
     await withRetry(async () => {
-      await ensureRecordingJobSchema(pool);
-      await ensureAuthenticatedUserSchema(pool);
-      await ensureTranscriptionProviderSettingsSchema(pool);
-      await ensureOperatorCloudQuotaOverrideSchema(pool);
-      await ensureCloudUsageLedgerSchema(pool);
-      await ensureAdminAuditLogSchema(pool);
+      await runSchemaMigrations(pool);
     }, 10, 3000);
   } catch (error) {
     // Release the pool's TCP connections before bubbling up; otherwise a restart loop

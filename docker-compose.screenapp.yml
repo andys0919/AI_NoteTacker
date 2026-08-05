@@ -1,16 +1,14 @@
 services:
   control-plane:
     environment:
-      DOCKER_SOCKET_PATH: /var/run/docker.sock
-      MEETING_BOT_CONTAINER_NAME: ai_notetacker-meeting-bot-1
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      MEETING_BOT_CONTROL_BASE_URL: http://meeting-bot:3001
+      MEETING_BOT_CONTROL_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN to a dedicated secret of at least 32 bytes}
 
   recording-worker:
     environment:
       RECORDING_EXECUTOR: screenapp
       MEETING_BOT_BASE_URL: http://meeting-bot:3000
-      MEETING_BOT_BEARER_TOKEN: internal-token
+      MEETING_BOT_BEARER_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN to a dedicated secret of at least 32 bytes}
       MEETING_BOT_BOT_NAME: AI NoteTacker
       MEETING_BOT_TEAM_ID: meeting-bot-team
       MEETING_BOT_TIMEZONE: UTC
@@ -27,39 +25,44 @@ services:
 
   summary-worker:
     environment:
-      SUMMARY_REASONING_EFFORT: max
+      SUMMARY_REASONING_EFFORT: high
       CODEX_CLI_PATH: codex
       CODEX_HOME: /codex-home
     volumes:
       - ${CODEX_HOME}:/codex-home
 
   meeting-bot:
-    image: ghcr.io/screenappai/meeting-bot:latest
+    image: ghcr.io/screenappai/meeting-bot@sha256:b52295eb76c31085886f1618650b494575ddcea92f0a4694382733cbdffa8688
     restart: unless-stopped
     entrypoint:
       - /bin/bash
       - /opt/ainotetacker/meeting-bot-entrypoint.sh
     command:
       - node
+      - --require
+      - /opt/ainotetacker/meeting-bot-control.cjs
       - dist/index.js
     environment:
       NODE_ENV: production
-      AUTH_BASE_URL_V2: http://control-plane:3000/v2/${INTERNAL_SERVICE_TOKEN:-internal-token}
+      AUTH_BASE_URL_V2: http://control-plane:3000/v2/${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN to a dedicated secret of at least 32 bytes}
       MEETING_INACTIVITY_MINUTES: "52560000"
+      MEETING_BOT_CONTROL_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN to a dedicated secret of at least 32 bytes}
+      MEETING_BOT_STOP_TIMEOUT_SECONDS: ${MEETING_BOT_STOP_TIMEOUT_SECONDS:-90}
       REDIS_CONSUMER_ENABLED: "false"
       STORAGE_PROVIDER: s3
       UPLOADER_TYPE: s3
       S3_ENDPOINT: http://minio:9000
-      S3_ACCESS_KEY_ID: minioadmin
-      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER to a dedicated value}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD to a dedicated secret}
       S3_BUCKET_NAME: meeting-artifacts
       S3_REGION: us-east-1
       S3_USE_MINIO_COMPATIBILITY: "true"
       NOTIFY_WEBHOOK_ENABLED: "true"
-      NOTIFY_WEBHOOK_URL: http://control-plane:3000/integrations/meeting-bot/completions?token=${INTERNAL_SERVICE_TOKEN:-internal-token}
+      NOTIFY_WEBHOOK_URL: http://control-plane:3000/integrations/meeting-bot/completions?token=${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN to a dedicated secret of at least 32 bytes}
       UPLOADER_FILE_EXTENSION: .webm
     volumes:
       - ./ops/meeting-bot/entrypoint.sh:/opt/ainotetacker/meeting-bot-entrypoint.sh:ro
+      - ./ops/meeting-bot/control-endpoint.cjs:/opt/ainotetacker/meeting-bot-control.cjs:ro
       - ./ops/meeting-bot/GoogleMeetBot.js:/usr/src/app/dist/bots/GoogleMeetBot.js:ro
       - ./ops/meeting-bot/MicrosoftTeamsBot.js:/usr/src/app/dist/bots/MicrosoftTeamsBot.js:ro
       - ./ops/meeting-bot/ZoomBot.js:/usr/src/app/dist/bots/ZoomBot.js:ro
@@ -78,7 +81,7 @@ services:
       retries: 20
 
   minio-bucket-init:
-    image: minio/mc:latest
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
     depends_on:
       minio:
         condition: service_started
@@ -86,5 +89,8 @@ services:
       - /bin/sh
       - -c
       - |
-        until /usr/bin/mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 1; done
+        until /usr/bin/mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do sleep 1; done
         /usr/bin/mc mb --ignore-existing local/meeting-artifacts
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER to a dedicated value}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD to a dedicated secret}

@@ -40,21 +40,25 @@ model.
 - Feed operator-verified display terminology to summaries without relabelling
   it as unconfirmed, and keep tentative or later-to-be-confirmed points out of
   `decisions`.
+- Add a generic topic-based summary structure with explicit confirmed, mixed,
+  or open status; cover material discussion across the full recording, classify
+  explicit actions, decisions, risks, and open questions separately, render
+  only supported non-empty sections, and keep existing flat summary fields for
+  backward-compatible export and sharing.
+- Generate one fluent, content-derived Traditional Chinese meeting article in
+  the existing Luna/high summary call: organize independent decision domains as
+  topics, related details as subtopics, explicit work as grouped follow-ups,
+  and evidence-backed unresolved gaps as analysis notes. Derive legacy flat
+  fields in code instead of asking the model to repeat the same content.
 - Raise the default uploaded-media limit to 512 MiB and return structured HTTP
   413 instead of an Express HTML 500 when that limit is exceeded.
 - Retain `gpt-4o-transcribe` as the production ASR baseline. Compare Luna,
   Terra, and Sol summaries against the same transcript; use Sol for the HDD
   quality benchmark without coupling punctuation to the summary model.
-- Add an opt-in hybrid speaker-attribution path: keep `gpt-4o-transcribe` as
-  the only text authority, use lossless `gpt-4o-transcribe-diarize` output only
-  as speaker/timing evidence, bootstrap up to four anonymous speaker
-  references from the first two chunks, carry them across later chunks, and
-  omit a speaker when deterministic text alignment fails.
-- Retry the observed transient diarization `404 DeploymentNotFound` once with
-  the identical request, requeue a still-failed chunk once after the batch,
-  keep diarization failures non-destructive to the primary transcript, and
-  account for the second model separately as unpriced transcription-stage
-  usage.
+- Stop injecting the optional diarization deployment into the canonical
+  workflow. Preserve historical speaker metadata for artifact compatibility,
+  but omit it from new provider calls, summary prompts, operator/admin readers,
+  and text exports.
 - Separate provider-quality benchmarks from operator-assisted terminology
   checks: provider comparisons receive no phrase list or aliases derived from
   the recording, reference transcript, or PLAUD output.
@@ -68,12 +72,12 @@ model.
 - Affected code:
   - upload form and control-plane upload validation
   - recording-job persistence and transcription claims
-  - Azure transcription prompt/chunk/retry/normalization and speaker-evidence
-    alignment logic
+  - Azure transcription prompt/chunk/retry/normalization and dormant
+    speaker-evidence compatibility
   - content-agnostic repetitive-transcript detection at the existing sparse
     retry seam
-  - additive transcript speaker metadata, rendering, export, and usage
-    settlement
+  - historical transcript speaker-metadata compatibility without new
+    classification or presentation
   - Azure Responses error handling, summary retry metadata, and usage settlement
   - focused worker and control-plane tests
 - Related active changes:
@@ -82,3 +86,7 @@ model.
   - `update-cloud-summary-azure-responses` is amended so its former global
     no-provider-retry rule permits only the bounded summary HTTP 400 exception
     defined here.
+  - `simplify-mai-transcription-pipeline` supersedes this change's optional
+    diarization runtime; `refine-meeting-artifact-reader` supersedes its former
+    speaker presentation. Historical metadata and benchmark evidence remain
+    compatible but no new canonical diarization request is made.

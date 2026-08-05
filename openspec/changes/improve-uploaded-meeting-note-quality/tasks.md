@@ -40,7 +40,11 @@
 - [x] 7.1 Run an oracle-free probe with Azure OpenAI log probabilities, an independent Azure OpenAI sample, and standard Azure Speech; record the high-confidence error and cross-provider disagreement.
 - [x] 7.2 Defer the verifier implementation and its normative requirement to a future change because no tested candidate cleared the terminology/fidelity gate and no ongoing latency/cost policy was selected.
 
-## 8. Hybrid speaker evidence
+## 8. Historical hybrid speaker evidence (runtime later superseded)
+
+The completed experiments and implementation tasks below are retained as
+history. `simplify-mai-transcription-pipeline` supersedes their runtime use, and
+`refine-meeting-artifact-reader` supersedes their speaker presentation.
 
 - [x] 8.1 Approve opt-in diarization latency/provider use and verify the Azure deployment accepts automatically extracted known-speaker references without a phrase list.
 - [x] 8.2 Add focused transcriber tests for PCM diarization, cross-chunk anonymous references, conservative alignment, immutable primary text, bounded transient `DeploymentNotFound` retries, and graceful speaker-evidence failure.
@@ -55,3 +59,28 @@
 - [x] 9.1 Add a focused regression proving a highly compressible HTTP 200 transcript is rejected and recovered from the same audio in 30-second chunks.
 - [x] 9.2 Extend the existing sparse-retry seam with the standard-library gzip gate, bounded retry, previous-generated-context removal, usage accounting, and cleanup.
 - [x] 9.3 Run the focused transcription-worker test file, strict OpenSpec validation, and replay the gate against the stored full Azure artifact.
+
+## 10. Generic topic-based summary structure
+
+- [x] 10.1 Preserve the operator-supplied PLAUD transcript and summary as a comparison-only Markdown artifact without the share token.
+- [x] 10.2 Add content-derived summary topics with explicit `confirmed`, `mixed`, or `open` status while retaining the existing flat structured fields.
+- [x] 10.3 Render topic conclusions and only non-empty follow-up, decision, risk, and open-question sections; keep historical artifacts readable.
+- [x] 10.4 Run the focused worker/control-plane tests, build, visual smoke, and strict OpenSpec validation.
+
+## 11. Coverage-first summary and no Speaker classification
+
+- [x] 11.1 Stop canonical diarization injection while preserving historical artifact compatibility and omitting stored labels from summary, readers, and text exports.
+- [x] 11.2 Make the generic prompt cover material discussion across the full transcript and classify explicit actions, decisions, risks, and open questions without benchmark-specific hints.
+- [x] 11.3 Run focused regressions, strict OpenSpec validation, rebuild the affected services, and verify live behavior.
+- [x] 11.4 Obtain a completed oracle-free Luna/max comparison and record the 265.5-second response, hierarchy coverage, terminology limits, and PLAUD-relative trade-offs.
+
+## 12. Fluent hierarchical Luna summary
+
+- [x] 12.1 Specify and ticket a content-derived topic/subtopic structure, grouped explicit follow-ups, evidence-backed analysis notes, and semantic compression without numeric topic limits.
+- [x] 12.2 Extend the shared summary prompt/parser and derive legacy flat fields without a second model request or transcript polishing stage.
+- [x] 12.3 Preserve the additive hierarchy through the worker event, control-plane schema, Markdown, and operator reader while keeping historical artifacts compatible.
+- [x] 12.4 Raise the summary socket timeout to 900 seconds, run focused worker/control-plane checks and strict OpenSpec validation, rebuild/recreate the affected services, and verify live health and loaded runtime behavior.
+
+## 13. Contract supersession review
+
+- [x] 13.1 Replace the obsolete optional-diarization requirement with historical-artifact compatibility and record the later runtime/presentation owners without archiving either change.

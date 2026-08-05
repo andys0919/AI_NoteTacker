@@ -1,5 +1,6 @@
 import type { RecordingJob, RecordingJobLeaseStage } from './recording-job.js';
 import type { RecordingJobListItem } from './recording-job-list-item.js';
+import type { MeetingShareLink } from './meeting-share.js';
 import type { SummaryProvider } from './summary-provider.js';
 import type { TranscriptionProvider } from './transcription-provider.js';
 
@@ -43,7 +44,12 @@ export interface RecordingJobRepository {
    * own history. Used by the admin console to audit hidden jobs.
    */
   getByIdIncludingHidden(id: string): Promise<RecordingJob | undefined>;
-  listBySubmitter(submitterId: string): Promise<RecordingJob[]>;
+  getMeetingShareLinkByJobId(jobId: string): Promise<MeetingShareLink | undefined>;
+  getMeetingShareLinkByShareId(shareId: string): Promise<MeetingShareLink | undefined>;
+  getOrCreateMeetingShareLink(link: MeetingShareLink): Promise<MeetingShareLink>;
+  rotateMeetingShareLink(link: MeetingShareLink): Promise<MeetingShareLink>;
+  revokeMeetingShareLink(jobId: string, revokedAt: string): Promise<boolean>;
+  listBySubmitter(submitterId: string, searchQuery?: string): Promise<RecordingJobListItem[]>;
   listBySubmitterPage(
     submitterId: string,
     input: { limit: number; cursor?: RecordingJobPageCursor }

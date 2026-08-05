@@ -69,6 +69,22 @@ Moving beyond the initial fixed-capacity rollout is an architectural step, not a
 - how rolling upgrades avoid duplicate work or public-route regressions
 - when autoscaling is justified instead of more manual capacity increases
 
+### 5. Reclaim stale summary work at the repository seam
+
+Expired summary leases must stop consuming summary-pool capacity and become claimable through the existing repository interface. Reassignment uses a new lease token and compare-and-swap guards so a heartbeat racing with reclaim keeps the healthy owner, while callbacks from the superseded lease remain stale.
+
+### 6. Give the control plane only meeting-bot stop authority
+
+The public-facing control plane must not mount the host Docker socket. The meeting-bot runtime exposes a private authenticated stop endpoint that can terminate only its own process; Docker's existing restart policy brings that one container back. The existing `MeetingBotController` seam remains the caller interface, with an HTTP adapter replacing the Docker-socket adapter.
+
+### 7. Make destructive artifact behavior explicit and fail safe
+
+Operator delete and clear-history immediately remove object-storage keys for uploaded media, recordings, and transcript objects when storage is configured. Embedded transcript and summary content remains in the hidden database row for administrator audit. Cleanup completes before the row is hidden; a cleanup failure leaves the job visible so the operator can retry. Each job records the selected policy and latest cleanup status.
+
+### 8. Serialize release-sensitive startup work
+
+Schema setup runs as a versioned migration under a PostgreSQL advisory transaction lock. Runtime images and directly installed worker dependencies are pinned to known versions or digests. Repeated failed administrator logins are throttled in the single-host process; a shared limiter belongs at ingress if the control plane is later replicated.
+
 ## Risks / Trade-offs
 
 - [Heartbeat metadata adds write volume to active jobs] -> acceptable because explicit liveness is operationally more valuable than inferring staleness after the fact.
@@ -83,3 +99,4 @@ Moving beyond the initial fixed-capacity rollout is an architectural step, not a
 3. Add artifact lifecycle metadata and cleanup execution paths for delete and retention policies.
 4. Add runtime health aggregation APIs and privileged dashboard surfaces.
 5. Publish multi-instance and rolling-upgrade guidance tied to the rollout-readiness spec.
+6. Remove host-level runtime privileges from the control plane and pin rebuild inputs.

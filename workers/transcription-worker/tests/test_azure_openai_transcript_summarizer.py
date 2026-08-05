@@ -27,12 +27,31 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
             captured["body"] = json.loads(http_request.data.decode("utf-8"))
             summary_json = json.dumps(
                 {
+                    "title": "導入範圍與待確認時程",
                     "summary": "已整理完整會議摘要",
-                    "key_points": ["確認需求範圍", "下週交付報價"],
-                    "action_items": ["Andy 提供正式報價"],
+                    "topics": [
+                        {
+                            "title": "導入範圍",
+                            "status": "mixed",
+                            "subtopics": [
+                                {
+                                    "title": "需求與時程",
+                                    "details": ["先確認需求範圍", "交付日期仍待確認"],
+                                }
+                            ],
+                            "conclusion": "範圍已確認，日期待確認。",
+                        }
+                    ],
+                    "follow_up_groups": [
+                        {
+                            "title": "商務交付",
+                            "items": ["Andy 提供正式報價"],
+                        }
+                    ],
                     "decisions": ["先做 PoC"],
                     "risks": ["時程緊迫"],
                     "open_questions": ["客戶何時提供樣品？"],
+                    "analysis_notes": ["樣品日期會影響驗證安排。"],
                 }
             )
             # Azure Responses API shape: `output` interleaves a reasoning item with
@@ -80,13 +99,19 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
         )
         self.assertEqual(captured["headers"]["Api-key"], "secret")
         self.assertEqual(captured["body"]["model"], "gpt-5.6-luna")
-        self.assertEqual(captured["body"]["reasoning"], {"effort": "max"})
+        self.assertEqual(captured["body"]["reasoning"], {"effort": "high"})
         self.assertIn("summarizer", captured["body"]["instructions"].lower())
         self.assertIn("sales follow-up", captured["body"]["input"].lower())
         self.assertEqual(result["model"], "gpt-5.6-luna")
-        self.assertEqual(result["reasoning_effort"], "max")
+        self.assertEqual(result["reasoning_effort"], "high")
         self.assertEqual(result["structured"]["action_items"], ["Andy 提供正式報價"])
-        self.assertIn("## Decisions", result["text"])
+        self.assertEqual(result["structured"]["topics"][0]["status"], "mixed")
+        self.assertEqual(
+            result["structured"]["follow_up_groups"][0]["title"],
+            "商務交付",
+        )
+        self.assertIn("## 會議紀要", result["text"])
+        self.assertIn("## 已確認決議", result["text"])
         # Responses usage (input/output tokens) is mapped for cost tracking.
         self.assertEqual(result["usage"]["prompt_tokens"], 1200)
         self.assertEqual(result["usage"].get("cached_prompt_tokens"), 200)
@@ -120,12 +145,14 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
                                 "type": "output_text",
                                 "text": json.dumps(
                                     {
+                                        "title": "測試摘要",
                                         "summary": "摘要",
-                                        "key_points": [],
-                                        "action_items": [],
+                                        "topics": [],
+                                        "follow_up_groups": [],
                                         "decisions": [],
                                         "risks": [],
                                         "open_questions": [],
+                                        "analysis_notes": [],
                                     }
                                 ),
                             }
@@ -254,12 +281,14 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
                                 "type": "output_text",
                                 "text": json.dumps(
                                     {
+                                        "title": "測試摘要",
                                         "summary": "摘要",
-                                        "key_points": [],
-                                        "action_items": [],
+                                        "topics": [],
+                                        "follow_up_groups": [],
                                         "decisions": [],
                                         "risks": [],
                                         "open_questions": [],
+                                        "analysis_notes": [],
                                     }
                                 ),
                             }
@@ -305,12 +334,14 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
                                 "type": "output_text",
                                 "text": json.dumps(
                                     {
+                                        "title": "測試摘要",
                                         "summary": "摘要",
-                                        "key_points": [],
-                                        "action_items": [],
+                                        "topics": [],
+                                        "follow_up_groups": [],
                                         "decisions": [],
                                         "risks": [],
                                         "open_questions": [],
+                                        "analysis_notes": [],
                                     }
                                 ),
                             }
@@ -344,12 +375,14 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
                                 "type": "output_text",
                                 "text": json.dumps(
                                     {
+                                        "title": "測試摘要",
                                         "summary": "摘要",
-                                        "key_points": [],
-                                        "action_items": [],
+                                        "topics": [],
+                                        "follow_up_groups": [],
                                         "decisions": [],
                                         "risks": [],
                                         "open_questions": [],
+                                        "analysis_notes": [],
                                     }
                                 ),
                             }
@@ -384,12 +417,14 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
                                 "type": "output_text",
                                 "text": json.dumps(
                                     {
+                                        "title": "測試摘要",
                                         "summary": "摘要",
-                                        "key_points": [],
-                                        "action_items": [],
+                                        "topics": [],
+                                        "follow_up_groups": [],
                                         "decisions": [],
                                         "risks": [],
                                         "open_questions": [],
+                                        "analysis_notes": [],
                                     }
                                 ),
                             }
@@ -470,12 +505,14 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
             "total_tokens": 12,
         }
         valid_summary = {
+            "title": "測試摘要",
             "summary": "摘要",
-            "key_points": [],
-            "action_items": [],
+            "topics": [],
+            "follow_up_groups": [],
             "decisions": [],
             "risks": [],
             "open_questions": [],
+            "analysis_notes": [],
         }
         invalid_summaries = {
             "empty object": {},
@@ -486,8 +523,19 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
             },
             "empty summary": {**valid_summary, "summary": "   "},
             "summary wrong type": {**valid_summary, "summary": ["摘要"]},
-            "list field wrong type": {**valid_summary, "key_points": "重點"},
-            "list item wrong type": {**valid_summary, "key_points": [1]},
+            "list field wrong type": {**valid_summary, "analysis_notes": "重點"},
+            "list item wrong type": {**valid_summary, "analysis_notes": [1]},
+            "topic wrong status": {
+                **valid_summary,
+                "topics": [
+                    {
+                        "title": "範圍",
+                        "status": "done",
+                        "subtopics": [{"title": "內容", "details": ["已確認"]}],
+                        "conclusion": "完成",
+                    }
+                ],
+            },
         }
 
         for case_name, invalid_summary in invalid_summaries.items():

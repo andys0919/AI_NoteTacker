@@ -31,7 +31,6 @@ class QwenOpenAiTranscriber(AzureOpenAiTranscriber):
             endpoint=endpoint,
             deployment=model,
             api_key="",
-            punctuator=None,
             timeout_seconds=timeout_seconds,
             max_chunk_duration_ms=QWEN_CHUNK_DURATION_MS,
             provider_label="Qwen3-ASR",

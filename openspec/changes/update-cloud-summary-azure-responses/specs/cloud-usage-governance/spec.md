@@ -174,6 +174,28 @@ unpriced usage without substituting another price.
 - **THEN** the row is retained with `pricingStatus=unpriced` and `costUsd=null`
 - **AND** the migration does not fabricate historical token or lease metadata
 
+### Requirement: Verified Azure retail prices refresh daily
+The system SHALL refresh the exact Azure public PAYG meters used by the deployed
+Luna and MAI providers plus the TWD reference meter at startup and every 24
+hours without replacing a valid catalog with incomplete or not-yet-effective
+data.
+
+#### Scenario: Complete currently effective snapshot is returned
+- **WHEN** Azure Retail Prices API returns one consistent USD Consumption rate for every required Luna Global Standard short-context meter plus complete USD and TWD rows for the verified Southeast Asia MAI Fast Transcription meter
+- **AND** their effective dates are not later than the current time
+- **THEN** the system atomically applies the USD rates to subsequent cost calculations and the derived positive USD-to-TWD rate to display configuration
+- **AND** records the official query as meter provenance
+
+#### Scenario: Refresh cannot prove a complete price snapshot
+- **WHEN** the API request fails, times out, paginates unexpectedly, omits a required meter, returns conflicting regional rates, has a wrong currency/SKU/unit, or contains only future-effective rows
+- **THEN** the system keeps the last verified catalog unchanged
+- **AND** it does not substitute zero, a partial response, OpenAI direct pricing, or an estimated reservation
+
+#### Scenario: Control plane remains running for another day
+- **WHEN** 24 hours have elapsed since the previous scheduled refresh attempt
+- **THEN** the system starts one new bounded Azure Retail Prices API refresh
+- **AND** it does not require a process restart or operator action
+
 ### Requirement: Cloud worker blocking network operations are finitely bounded
 The system SHALL configure finite socket-operation timeouts for Azure cloud
 calls made by the transcription/summary workers and for those workers'

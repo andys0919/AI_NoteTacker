@@ -86,7 +86,7 @@ does not replace transcription correction.
 - Add a general retry framework or retry timeouts, HTTP 429, or HTTP 5xx.
 - Use `gpt-4o-transcribe-diarize` as the primary text provider, infer real
   speaker names, or claim a human-labelled diarization error rate.
-- Deploy, commit, push, or archive this change.
+- Commit, push, or archive this change.
 
 ## Decisions
 
@@ -243,6 +243,13 @@ verifier implementation and its normative contract to a later OpenSpec change.
 
 ### 8. Use diarization only as optional speaker evidence
 
+> **Superseded runtime decision:** `simplify-mai-transcription-pipeline` later
+> removed diarization configuration and requests from the canonical
+> transcription worker, and `refine-meeting-artifact-reader` removed speaker
+> classification from normal readers. The remainder of this section records the
+> earlier experiment and implementation rationale only; it is not the current
+> runtime or presentation contract. Historical artifacts remain compatible.
+
 The supplied `gpt-4o-transcribe-diarize` Azure deployment succeeded through
 the deployment-specific audio transcription route on the oracle-free 780–840
 second interval. A lossy AAC upload returned ten timed segments with two
@@ -330,6 +337,35 @@ prevents diarization chunks that have not started and the delayed repair from
 issuing more provider calls. Requests already in flight finish so their usage
 can still be reported on the failure event.
 
+### 9. Generate one fluent hierarchical summary and derive compatibility fields
+
+The production summary remains one `gpt-5.6-luna` request with
+`reasoning.effort=high`. There is no separate full-transcript polishing request
+and no second summary rewrite. The prompt asks the model to convert fragmented
+spoken language into concise, grammatically complete Traditional Chinese while
+preserving the supported meaning, uncertainty, names, numbers, and chronology.
+
+The canonical model output contains a title, overview, content-derived topics,
+subtopics, topic conclusion/status, grouped follow-ups, decisions, risks, open
+questions, and evidence-backed analysis notes. It contains no target topic
+count. A main topic exists only for an independent decision domain, process,
+deliverable, or scope boundary; related functions, screens, exceptions, and
+examples stay under subtopics. Items with the same deliverable or root cause
+are grouped so completeness does not become repetition.
+
+Only an explicit request, assignment, commitment, test, confirmation, reply,
+or delivery becomes follow-up work. A requirement or design conclusion alone
+does not. When a technical identifier is internally inconsistent or cannot be
+confirmed from the transcript, the summary uses the supported functional
+description rather than selecting one ASR hypothesis.
+
+The worker derives the existing `points`, `keyPoints`, and `actionItems` fields
+from the canonical hierarchy before storage. Historical artifacts keep their
+existing flat representation, and current readers prefer the hierarchy while
+falling back to the legacy fields. The 93-minute Luna/max validation completed
+in 265.5 seconds, close to the prior 300-second socket limit, so the summary
+request timeout becomes 900 seconds without adding a timeout retry.
+
 ## Risks / Trade-offs
 
 - Five-minute chunks increase provider request count and latency. A sparse or
@@ -357,6 +393,11 @@ can still be reported on the failure event.
 - Bounded parallel diarization shortens wall time but can encounter deployment
   rate limits; the worker keeps a small configurable concurrency ceiling and
   preserves the primary transcript when speaker evidence fails.
+- A richer hierarchy can become verbose; semantic grouping rules constrain
+  repetition without a guessed topic-count limit.
+- A 900-second summary socket timeout can hold a worker lease longer during a
+  provider stall; the existing heartbeat, operator stop, and single-request
+  policy bound the operational impact without issuing duplicate paid work.
 
 ## Migration Plan
 
@@ -365,12 +406,12 @@ can still be reported on the failure event.
 2. Deploy compatible control-plane and transcription/summary workers together.
 3. Keep existing jobs without a glossary compatible as an empty list.
 4. Run the redacted HDD benchmark before changing any production model policy.
-5. Enable diarization only by supplying its separate endpoint, deployment,
-   API-version, and key; older jobs and workers remain compatible because all
-   speaker fields are optional.
-6. Roll back speaker attribution by removing the optional diarization
-   credentials. Existing raw/display transcript artifacts remain readable and
-   any additive speaker metadata can be ignored.
+5. Keep the optional diarization implementation dormant in the canonical
+   Compose workflow by not supplying its endpoint, deployment, API-version, or
+   key to the transcription worker.
+6. Preserve existing raw/display transcript artifacts and optional speaker
+   fields for compatibility, but ignore speaker metadata in summaries,
+   operator/admin readers, and text exports.
 7. Roll back the earlier glossary/chunk changes by omitting new glossary input
    and restoring the old worker chunk constant; stored raw/display artifacts
    and the additive column remain readable.

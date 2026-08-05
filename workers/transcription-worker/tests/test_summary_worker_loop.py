@@ -115,7 +115,29 @@ class RunSummaryWorkerIterationTests(unittest.TestCase):
                 "reasoning_effort": "cloud-default",
                 "text": "Sales summary",
                 "structured": {
+                    "title": "客戶導入時程",
                     "summary": "Sales summary",
+                    "topics": [
+                        {
+                            "title": "導入時程",
+                            "status": "mixed",
+                            "subtopics": [
+                                {
+                                    "title": "目標日期",
+                                    "details": ["四月為目標", "正式日期待確認"],
+                                }
+                            ],
+                            "points": ["四月為目標", "正式日期待確認"],
+                            "conclusion": "目標已提出，日期待確認。",
+                        }
+                    ],
+                    "follow_up_groups": [
+                        {
+                            "title": "商務交付",
+                            "items": ["寄正式報價"],
+                        }
+                    ],
+                    "analysis_notes": ["正式日期仍是執行依賴。"],
                     "key_points": ["客戶希望四月上線"],
                     "action_items": ["寄正式報價"],
                     "decisions": [],
@@ -145,6 +167,20 @@ class RunSummaryWorkerIterationTests(unittest.TestCase):
         self.assertEqual(summarizer.model_overrides, ["gpt-5.4-nano"])
         self.assertEqual(client.events[0][1]["type"], "summary-artifact-stored")
         self.assertEqual(client.events[0][1]["leaseToken"], "lease_summary_1")
+        self.assertEqual(
+            client.events[0][1]["summaryArtifact"]["structured"]["topics"][0]["status"],
+            "mixed",
+        )
+        self.assertEqual(
+            client.events[0][1]["summaryArtifact"]["structured"]["followUpGroups"][0][
+                "title"
+            ],
+            "商務交付",
+        )
+        self.assertEqual(
+            client.events[0][1]["summaryArtifact"]["structured"]["analysisNotes"],
+            ["正式日期仍是執行依賴。"],
+        )
         self.assertEqual(
             client.events[0][1]["usage"],
             {

@@ -1,6 +1,15 @@
 import type { RecordingJob, SummaryArtifact, TranscriptArtifact } from './recording-job.js';
 
-export type RecordingJobListItem = Omit<RecordingJob, 'jobHistory'> & {
+export type RecordingJobListItem = Omit<
+  RecordingJob,
+  | 'jobHistory'
+  | 'recordingArtifact'
+  | 'transcriptArtifact'
+  | 'summaryArtifact'
+  | 'recordingLeaseToken'
+  | 'transcriptionLeaseToken'
+  | 'summaryLeaseToken'
+> & {
   hasTranscript: boolean;
   hasSummary: boolean;
   transcriptPreview?: string;
@@ -32,15 +41,46 @@ export const buildSummaryPreview = (
 };
 
 export const toRecordingJobListItem = (job: RecordingJob): RecordingJobListItem => {
-  // Keep the full transcript/summary artifacts inline so the dashboard can show
-  // the complete result once a job is done (no preview / no extra fetch step).
-  const { jobHistory: _jobHistory, ...baseJob } = job;
+  const {
+    jobHistory: _jobHistory,
+    recordingArtifact: _recordingArtifact,
+    transcriptArtifact,
+    summaryArtifact,
+    recordingLeaseToken: _recordingLeaseToken,
+    transcriptionLeaseToken: _transcriptionLeaseToken,
+    summaryLeaseToken: _summaryLeaseToken,
+    ...baseJob
+  } = job;
 
   return {
     ...baseJob,
-    hasTranscript: Boolean(job.transcriptArtifact),
-    hasSummary: Boolean(job.summaryArtifact),
-    transcriptPreview: buildTranscriptPreview(job.transcriptArtifact),
-    summaryPreview: buildSummaryPreview(job.summaryArtifact?.text)
+    hasTranscript: Boolean(transcriptArtifact),
+    hasSummary: Boolean(summaryArtifact),
+    transcriptPreview: buildTranscriptPreview(transcriptArtifact),
+    summaryPreview: buildSummaryPreview(summaryArtifact?.text)
   };
+};
+
+export const recordingJobMatchesSearchQuery = (
+  job: RecordingJob,
+  query?: string
+): boolean => {
+  const normalizedQuery = (query ?? '').trim().toLowerCase();
+
+  if (normalizedQuery.length === 0) {
+    return true;
+  }
+
+  return [
+    job.meetingUrl,
+    job.requestedJoinName,
+    job.uploadedFileName,
+    job.failureMessage,
+    job.summaryArtifact?.text,
+    job.transcriptArtifact?.segments.map((segment) => segment.text).join(' ')
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join('\n')
+    .toLowerCase()
+    .includes(normalizedQuery);
 };

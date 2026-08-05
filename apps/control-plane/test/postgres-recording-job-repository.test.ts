@@ -15,6 +15,7 @@ import {
 } from '../src/domain/recording-job.js';
 import {
   backfillActiveLeaseTokenHistory,
+  backfillRecordingJobListPreviews,
   PostgresRecordingJobRepository,
   ensureRecordingJobSchema
 } from '../src/infrastructure/postgres/postgres-recording-job-repository.js';
@@ -129,6 +130,46 @@ describe('PostgresRecordingJobRepository', () => {
     await repository.save(created);
 
     expect((await repository.getById(created.id))?.transcriptionGlossary).toEqual([]);
+  });
+
+  it('persists one reusable meeting share link and atomically rotates or revokes it', async () => {
+    const job = createRecordingJob({
+      meetingUrl: 'https://meet.google.com/postgres-share-link',
+      platform: 'google-meet'
+    });
+    await repository.save(job);
+    const first = {
+      jobId: job.id,
+      shareId: 'first-share-id-1234567890123456',
+      createdAt: '2026-07-31T08:00:00.000Z',
+      expiresAt: '2026-08-30T08:00:00.000Z'
+    };
+    const competing = {
+      jobId: job.id,
+      shareId: 'competing-id-123456789012345678',
+      createdAt: '2026-07-31T08:00:01.000Z',
+      expiresAt: '2026-08-30T08:00:01.000Z'
+    };
+
+    expect(await repository.getOrCreateMeetingShareLink(first)).toEqual(first);
+    expect(await repository.getOrCreateMeetingShareLink(competing)).toEqual(first);
+    expect(await repository.getMeetingShareLinkByJobId(job.id)).toEqual(first);
+    expect(await repository.getMeetingShareLinkByShareId(first.shareId)).toEqual(first);
+
+    const rotated = await repository.rotateMeetingShareLink(competing);
+    expect(rotated).toEqual(competing);
+    expect(await repository.getMeetingShareLinkByShareId(first.shareId)).toBeUndefined();
+    expect(await repository.getMeetingShareLinkByShareId(competing.shareId)).toEqual(competing);
+
+    expect(
+      await repository.revokeMeetingShareLink(job.id, '2026-07-31T09:00:00.000Z')
+    ).toBe(true);
+    expect(await repository.getMeetingShareLinkByShareId(competing.shareId)).toEqual({
+      ...competing,
+      revokedAt: '2026-07-31T09:00:00.000Z'
+    });
+    expect(await repository.getOrCreateMeetingShareLink(first)).toEqual(first);
+    expect(await repository.getMeetingShareLinkByJobId(job.id)).toEqual(first);
   });
 
   it('persists and reloads the meeting passcode', async () => {
@@ -476,6 +517,48 @@ describe('PostgresRecordingJobRepository', () => {
     ]);
   });
 
+  it('reclaims an expired summary lease and excludes it from active summary capacity', async () => {
+    const summaryReady = attachTranscriptArtifact(
+      attachRecordingArtifact(
+        createRecordingJob({
+          meetingUrl: 'uploaded://postgres-expired-summary.wav',
+          platform: 'uploaded-audio',
+          inputSource: 'uploaded-audio',
+          summaryRequested: true
+        }),
+        {
+          storageKey: 'recordings/job_pg_expired_summary/meeting.wav',
+          downloadUrl: 'https://storage.example.test/recordings/job_pg_expired_summary/meeting.wav',
+          contentType: 'audio/wav'
+        }
+      ),
+      {
+        storageKey: 'transcripts/job_pg_expired_summary/transcript.json',
+        downloadUrl: 'https://storage.example.test/transcripts/job_pg_expired_summary/transcript.json',
+        contentType: 'application/json',
+        language: 'en',
+        segments: [{ startMs: 0, endMs: 1000, text: 'recover summary' }]
+      }
+    );
+    await repository.save(summaryReady);
+    const staleClaim = (await repository.claimNextSummaryReady('summary-stale'))!;
+    await repository.save({
+      ...staleClaim,
+      summaryLeaseHeartbeatAt: '2026-01-01T00:00:00.000Z',
+      summaryLeaseExpiresAt: '2026-01-01T00:15:00.000Z'
+    });
+
+    expect(await repository.listGeneratingSummaryJobs()).toEqual([]);
+    const reclaimed = await repository.claimNextSummaryReady('summary-replacement');
+
+    expect(reclaimed?.assignedSummaryWorkerId).toBe('summary-replacement');
+    expect(reclaimed?.summaryLeaseToken).not.toBe(staleClaim.summaryLeaseToken);
+    expect(reclaimed?.issuedSummaryLeaseTokens).toEqual([
+      staleClaim.summaryLeaseToken,
+      reclaimed?.summaryLeaseToken
+    ]);
+  });
+
   it('atomically refuses a lifecycle save when the expected transcription lease was superseded', async () => {
     const transcriptionReady = attachRecordingArtifact(
       createRecordingJob({
@@ -657,14 +740,48 @@ describe('PostgresRecordingJobRepository', () => {
     await repository.save(completedJob);
     await repository.save(activeJob);
     await repository.save(otherOperatorJob);
+    const shareFor = (jobId: string, shareId: string) => ({
+      jobId,
+      shareId,
+      createdAt: '2026-07-31T08:00:00.000Z',
+      expiresAt: '2026-08-30T08:00:00.000Z'
+    });
+    await repository.getOrCreateMeetingShareLink(
+      shareFor(failedJob.id, 'failed-share-id-1234567890123456')
+    );
+    await repository.getOrCreateMeetingShareLink(
+      shareFor(completedJob.id, 'completed-share-id-123456789012')
+    );
+    await repository.getOrCreateMeetingShareLink(
+      shareFor(activeJob.id, 'active-share-id-1234567890123456')
+    );
+    await repository.getOrCreateMeetingShareLink(
+      shareFor(otherOperatorJob.id, 'other-share-id-1234567890123456')
+    );
+
+    expect(
+      await repository.deleteTerminalJobForSubmitter(failedJob.id, 'operator-a')
+    ).toBe(true);
+    expect(
+      (await repository.getMeetingShareLinkByJobId(failedJob.id))?.revokedAt
+    ).toEqual(expect.any(String));
 
     const deletedCount = await repository.clearTerminalHistoryForSubmitter('operator-a');
 
-    expect(deletedCount).toBe(2);
+    expect(deletedCount).toBe(1);
     expect(await repository.getById(failedJob.id)).toBeUndefined();
     expect(await repository.getById(completedJob.id)).toBeUndefined();
     expect(await repository.getById(activeJob.id)).toBeDefined();
     expect(await repository.getById(otherOperatorJob.id)).toBeDefined();
+    expect(
+      (await repository.getMeetingShareLinkByJobId(completedJob.id))?.revokedAt
+    ).toEqual(expect.any(String));
+    expect(
+      (await repository.getMeetingShareLinkByJobId(activeJob.id))?.revokedAt
+    ).toBeUndefined();
+    expect(
+      (await repository.getMeetingShareLinkByJobId(otherOperatorJob.id))?.revokedAt
+    ).toBeUndefined();
   });
 
   it('persists job history entries for archive detail timelines', async () => {
@@ -720,7 +837,7 @@ describe('PostgresRecordingJobRepository', () => {
     expect(reloaded?.jobHistory?.at(-1)?.stage).toBe('completed');
   });
 
-  it('returns paginated operator history rows with full artifacts inline (history stripped)', async () => {
+  it('keeps PostgreSQL operator history and search rows thin at the query boundary', async () => {
     const created = createRecordingJob({
       meetingUrl: 'https://meet.google.com/postgres-lightweight',
       platform: 'google-meet',
@@ -764,21 +881,144 @@ describe('PostgresRecordingJobRepository', () => {
 
     await repository.save(summarized);
 
-    const page = await repository.listBySubmitterPage('operator-lightweight', { limit: 10 });
-    const listItem = page.jobs[0] as (typeof summarized) & {
-      hasTranscript?: boolean;
-      hasSummary?: boolean;
-      transcriptPreview?: string;
-      summaryPreview?: string;
-    };
+    const listQueries: string[] = [];
+    const listingRepository = new PostgresRecordingJobRepository({
+      query: async <TRow extends Record<string, unknown>>(
+        text: string,
+        values?: unknown[]
+      ) => {
+        listQueries.push(text);
+        return database.query<TRow>(text, values);
+      }
+    });
+    const page = await listingRepository.listBySubmitterPage('operator-lightweight', {
+      limit: 10
+    });
+    const searched = await listingRepository.listBySubmitter(
+      'operator-lightweight',
+      'second transcript line'
+    );
+    const listItem = page.jobs[0];
 
     expect(listItem.hasTranscript).toBe(true);
     expect(listItem.hasSummary).toBe(true);
     expect(listItem.transcriptPreview).toContain('hello lightweight archive');
     expect(listItem.summaryPreview).toBe('summary preview text for archive history');
-    expect(listItem.transcriptArtifact?.segments).toHaveLength(2);
-    expect(listItem.summaryArtifact?.text).toBe('summary preview text for archive history');
-    expect(listItem.jobHistory).toBeUndefined();
+    expect(listItem).not.toHaveProperty('recordingArtifact');
+    expect(listItem).not.toHaveProperty('transcriptArtifact');
+    expect(listItem).not.toHaveProperty('summaryArtifact');
+    expect(listItem).not.toHaveProperty('recordingLeaseToken');
+    expect(listItem).not.toHaveProperty('transcriptionLeaseToken');
+    expect(listItem).not.toHaveProperty('summaryLeaseToken');
+    expect(searched.map((job) => job.id)).toEqual([summarized.id]);
+    expect(listQueries).toHaveLength(2);
+    for (const query of listQueries) {
+      const projection = query.slice(query.indexOf('SELECT'), query.indexOf('FROM recording_jobs'));
+      expect(projection).not.toMatch(/^\s*recording_artifact\s*,?$/m);
+      expect(projection).not.toMatch(/^\s*transcript_artifact\s*,?$/m);
+      expect(projection).not.toMatch(/^\s*summary_artifact\s*,?$/m);
+      expect(projection).not.toMatch(/^\s*recording_lease_token\s*,?$/m);
+      expect(projection).not.toMatch(/^\s*transcription_lease_token\s*,?$/m);
+      expect(projection).not.toMatch(/^\s*summary_lease_token\s*,?$/m);
+    }
+  });
+
+  it('backfills historical list previews once with current preview semantics', async () => {
+    const summaryText = ` ${'x'.repeat(330)} `;
+    const summarized = attachSummaryArtifact(
+      attachTranscriptArtifact(
+        attachRecordingArtifact(
+          createRecordingJob({
+            meetingUrl: 'https://meet.google.com/postgres-preview-backfill',
+            platform: 'google-meet',
+            submitterId: 'operator-preview-backfill'
+          }),
+          {
+            storageKey: 'recordings/job_pg_preview_backfill/meeting.webm',
+            downloadUrl:
+              'https://storage.example.test/recordings/job_pg_preview_backfill/meeting.webm',
+            contentType: 'video/webm'
+          }
+        ),
+        {
+          storageKey: 'transcripts/job_pg_preview_backfill/transcript.json',
+          downloadUrl:
+            'https://storage.example.test/transcripts/job_pg_preview_backfill/transcript.json',
+          contentType: 'application/json',
+          language: 'en',
+          segments: [
+            { startMs: 0, endMs: 1000, text: '  first segment  ' },
+            { startMs: 1000, endMs: 2000, text: '   ' },
+            { startMs: 2000, endMs: 3000, text: 'second segment' },
+            { startMs: 3000, endMs: 4000, text: '\nthird segment\n' },
+            { startMs: 4000, endMs: 5000, text: 'fourth segment' },
+            { startMs: 5000, endMs: 6000, text: 'fifth segment' },
+            { startMs: 6000, endMs: 7000, text: 'must not appear' }
+          ]
+        }
+      ),
+      {
+        model: 'gpt-5.3-codex-spark',
+        reasoningEffort: 'medium',
+        text: summaryText
+      }
+    );
+
+    await repository.save(summarized);
+    const before = await database.query<{
+      transcript_artifact: unknown;
+      summary_artifact: unknown;
+    }>(
+      'SELECT transcript_artifact, summary_artifact FROM recording_jobs WHERE id = $1',
+      [summarized.id]
+    );
+    await database.query(
+      `
+        UPDATE recording_jobs
+        SET transcript_preview = NULL, summary_preview = NULL
+        WHERE id = $1
+      `,
+      [summarized.id]
+    );
+
+    let rowUpdateCount = 0;
+    const backfillDatabase = {
+      query: async <TRow extends Record<string, unknown>>(
+        text: string,
+        values?: unknown[]
+      ) => {
+        if (/SET\s+transcript_preview = CASE/.test(text)) {
+          rowUpdateCount += 1;
+        }
+        return database.query<TRow>(text, values);
+      }
+    };
+
+    await backfillRecordingJobListPreviews(backfillDatabase);
+    await backfillRecordingJobListPreviews(backfillDatabase);
+
+    const after = await database.query<{
+      transcript_artifact: unknown;
+      summary_artifact: unknown;
+      transcript_preview: string | null;
+      summary_preview: string | null;
+    }>(
+      `
+        SELECT transcript_artifact, summary_artifact, transcript_preview, summary_preview
+        FROM recording_jobs
+        WHERE id = $1
+      `,
+      [summarized.id]
+    );
+
+    expect(after.rows[0]).toMatchObject({
+      transcript_artifact: before.rows[0]?.transcript_artifact,
+      summary_artifact: before.rows[0]?.summary_artifact,
+      transcript_preview:
+        'first segment\nsecond segment\nthird segment\nfourth segment\nfifth segment',
+      summary_preview: `${'x'.repeat(320)}...`
+    });
+    expect(rowUpdateCount).toBe(1);
   });
 
   it('creates the hot-path indexes required for archive retrieval and stage claims', async () => {

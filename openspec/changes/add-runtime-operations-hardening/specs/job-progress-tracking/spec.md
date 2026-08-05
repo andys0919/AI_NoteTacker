@@ -11,3 +11,9 @@ The system SHALL persist explicit heartbeat metadata for claimed stages so long-
 - **WHEN** a claimed stage stops heartbeating past the reclaim threshold
 - **THEN** the system may reclaim the stage for another worker
 - **AND** the stale lease is distinguishable from a healthy active lease
+
+#### Scenario: Expired summary lease is reclaimed
+- **WHEN** a summary worker stops heartbeating until its lease expires
+- **THEN** the expired owner no longer consumes summary-pool capacity
+- **AND** another compatible summary worker can claim the job with a new lease token
+- **AND** a callback carrying the superseded lease token cannot overwrite the new attempt

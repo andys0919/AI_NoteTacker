@@ -51,7 +51,7 @@ class MaiTranscriberTests(unittest.TestCase):
                     "phrases": [
                         {
                             "text": "掃描舌片条码。",
-                            "locale": "zh",
+                            "locale": "zh-CN",
                             "offsetMilliseconds": 0,
                             "durationMilliseconds": 30_000,
                         }
@@ -94,9 +94,10 @@ class MaiTranscriberTests(unittest.TestCase):
             self.assertNotIn(b"locales", request_body)
             self.assertNotIn(b'name="prompt"', request_body)
             self.assertIn(b'name="audio"', request_body)
-            self.assertEqual(result["language"], "zh")
+            self.assertEqual(result["language"], "zh-Hant")
             self.assertEqual(result["segments"][0]["raw_text"], "掃描舌片条码。")
             self.assertEqual(result["segments"][0]["display_text"], "掃描舌片條碼。")
+            self.assertEqual(result["segments"][0]["language"], "zh-Hant")
 
     def test_splits_uploads_at_thirty_seconds(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

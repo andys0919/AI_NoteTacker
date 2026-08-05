@@ -6,20 +6,41 @@ import {
 } from '/dashboard-copy.js';
 import { getDashboardPrefill } from '/dashboard-query.js';
 import {
-  filterJobsByQuickFilter,
+  getArchivePageState,
   getJobActionSet
 } from '/dashboard-workflows.js';
-import { renderTranscriptReviewMarkup } from '/transcript-review.js';
+import {
+  configureSummaryNavigation,
+  renderStructuredSummaryMarkup,
+  renderTranscriptMarkup,
+  sanitizeAnonymousSpeakerLabels,
+  wireArtifactTabs
+} from '/artifact-reader.js';
+import { applyTwdPricingReference } from '/currency-display.js';
 
 const DEFAULT_OPERATOR_ID_KEY = 'solomon-notetaker-operator-id';
+const PROGRESS_POLL_INTERVAL_MS = 5000;
+const meetingDetailJobId = (() => {
+  const match = window.location.pathname.match(/^\/notes\/([^/]+)$/);
+  if (!match) return '';
+
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return '';
+  }
+})();
+if (meetingDetailJobId) {
+  document.body.classList.add('meeting-detail-page');
+}
 const elements = {
-  dashboardGrid: document.querySelector('.dashboard-grid'),
-  submitterId: document.querySelector('#submitter-id'),
-  submitterIdLabel: document.querySelector('#submitter-id-label'),
-  defaultJoinName: document.querySelector('#default-join-name'),
   joinName: document.querySelector('#join-name'),
   meetingForm: document.querySelector('#meeting-form'),
+  meetingSubmitButton: document.querySelector('#meeting-submit-button'),
+  meetingFormStatus: document.querySelector('#meeting-form-status'),
   uploadForm: document.querySelector('#upload-form'),
+  uploadSubmitButton: document.querySelector('#upload-submit-button'),
+  uploadFormStatus: document.querySelector('#upload-form-status'),
   audioFile: document.querySelector('#audio-file'),
   uploadSubtitle: document.querySelector('#upload-subtitle'),
   uploadTitle: document.querySelector('#upload-title'),
@@ -29,6 +50,7 @@ const elements = {
   queuedCount: document.querySelector('#queued-count'),
   completedCount: document.querySelector('#completed-count'),
   clearHistoryButton: document.querySelector('#clear-history-button'),
+  archiveControls: document.querySelector('#archive-controls'),
   archiveSearch: document.querySelector('#archive-search'),
   jobFilters: document.querySelector('#job-filters')
 };
@@ -54,15 +76,10 @@ const getOrCreateSubmitterId = () => {
   return created;
 };
 
-// 主頁以訪客模式運作（Email 登入已移除，管理功能改在 /admin）。
-// 這兩個常數保留以維持下方工作流程的判斷式語意。
-const authEnabled = false;
-const currentOperatorEmail = null;
 let currentSubmitterId = getOrCreateSubmitterId();
 let uploadInFlight = false;
 let operatorConfig = {
-  defaultJoinName: 'Solomon - NoteTaker',
-  submissionTemplates: []
+  defaultJoinName: 'Solomon - NoteTaker'
 };
 let selectedTemplateId = 'general';
 let currentQuickFilter = 'all';
@@ -74,15 +91,9 @@ let currentJobsPageInfo = {
   hasMore: false,
   nextCursor: null
 };
-
-const updateIdentityDisplay = () => {
-  elements.submitterId.textContent = '訪客模式';
-  elements.submitterId.title = currentSubmitterId;
-  elements.submitterIdLabel.textContent = '使用模式';
-};
+let progressPollInFlight = false;
 
 const applyDefaultJoinNameToForm = () => {
-  elements.defaultJoinName.textContent = operatorConfig.defaultJoinName;
   elements.joinName.value = operatorConfig.defaultJoinName;
 };
 
@@ -90,7 +101,11 @@ const setQuickFilter = (filterId) => {
   currentQuickFilter = filterId;
   elements.jobFilters
     ?.querySelectorAll('[data-filter]')
-    .forEach((button) => button.classList.toggle('active', button.dataset.filter === filterId));
+    .forEach((button) => {
+      const selected = button.dataset.filter === filterId;
+      button.classList.toggle('active', selected);
+      button.setAttribute('aria-pressed', String(selected));
+    });
 };
 
 const focusSharedJobIfNeeded = () => {
@@ -105,27 +120,25 @@ const focusSharedJobIfNeeded = () => {
   }
 
   card.classList.add('job-card-highlight');
-  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const scrollBehavior = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    ? 'auto'
+    : 'smooth';
+  card.scrollIntoView({ behavior: scrollBehavior, block: 'center' });
   window.setTimeout(() => {
     card.classList.remove('job-card-highlight');
   }, 2200);
   pendingSharedJobId = '';
 };
 
-const setDashboardInteractionEnabled = (enabled) => {
-  const interactiveElements = [
-    ...elements.meetingForm.querySelectorAll('input, button'),
-    ...elements.uploadForm.querySelectorAll('input, button'),
-    elements.clearHistoryButton,
-    elements.archiveSearch,
-    ...elements.jobFilters.querySelectorAll('button')
-  ];
+const setFormBusy = (form, submitButton, busy) => {
+  form.setAttribute('aria-busy', String(busy));
+  submitButton.disabled = busy;
+};
 
-  interactiveElements.forEach((element) => {
-    if (element) {
-      element.disabled = !enabled;
-    }
-  });
+const setFormStatus = (status, message, kind = 'info') => {
+  status.hidden = !message;
+  status.textContent = message;
+  status.className = `form-status ${kind}`;
 };
 
 const apiFetch = async (input, init) => fetch(input, init);
@@ -194,6 +207,8 @@ const deleteJob = async (jobId) => {
   if (!response.ok) {
     throw new Error(payload?.error?.message ?? `Delete failed: ${response.status}`);
   }
+
+  return payload.artifactCleanup ?? { status: 'completed', objectCount: 0 };
 };
 
 const clearHistory = async () => {
@@ -210,7 +225,10 @@ const clearHistory = async () => {
     throw new Error(payload?.error?.message ?? `Clear history failed: ${response.status}`);
   }
 
-  return payload.deletedCount ?? 0;
+  return {
+    deletedCount: payload.deletedCount ?? 0,
+    artifactCleanup: payload.artifactCleanup ?? { status: 'completed', objectCount: 0 }
+  };
 };
 
 const interruptJob = async (jobId) => {
@@ -239,10 +257,7 @@ const extractDownloadFilename = (response, fallback) => {
 const downloadJobExport = async (jobId, format) => {
   const url = new URL(`/api/operator/jobs/${jobId}/export`, window.location.origin);
   url.searchParams.set('format', format);
-
-  if (!authEnabled) {
-    url.searchParams.set('submitterId', currentSubmitterId);
-  }
+  url.searchParams.set('submitterId', currentSubmitterId);
 
   const response = await apiFetch(url);
 
@@ -266,7 +281,12 @@ const downloadJobExport = async (jobId, format) => {
 
 const createActionBlock = (job, runtimeState) => {
   const actionSet = getJobActionSet(job, runtimeState);
-  const actions = actionSet.map((action) => {
+  const actions = meetingDetailJobId
+    ? []
+    : [
+        `<a class="mini-button primary job-detail-link" href="/notes/${encodeURIComponent(job.id)}" target="_blank" rel="noopener">開啟完整內容（新分頁）</a>`
+      ];
+  actions.push(...actionSet.map((action) => {
     if (action === 'stop-current') {
       return '<button class="mini-button danger" type="button" data-action="stop-current">離開會議</button>';
     }
@@ -279,18 +299,250 @@ const createActionBlock = (job, runtimeState) => {
       return '<button class="mini-button history" type="button" data-action="delete-history">刪除紀錄</button>';
     }
 
-    if (action === 'view-details') {
-      return '<button class="mini-button export" type="button" data-action="view-details">查看內容</button>';
-    }
-
     return '<button class="mini-button export" type="button" data-action="export-markdown">下載 MD</button>';
-  });
+  }));
+
+  const canShare = Boolean(meetingDetailJobId) && job.share?.eligible === true;
+  let shareStatus = '';
+  if (canShare) {
+    const isActiveShare = job.share?.status === 'active';
+    const statusLabel = {
+      active: '分享中',
+      expired: '已到期',
+      revoked: '已撤銷',
+      none: '尚未建立'
+    }[job.share?.status || 'none'];
+    const expiryText = job.share?.expiresAt
+      ? ` · 到期時間 ${new Date(job.share.expiresAt).toLocaleString('zh-TW')}`
+      : '';
+    shareStatus = `
+      <div class="share-management" aria-live="polite">
+        <strong>公開分享</strong>
+        <span>${escapeHtml(statusLabel)}${escapeHtml(expiryText)}</span>
+        <p>持有此網址的人可以查看並轉寄；網址 30 天後到期，也可隨時更換或撤銷。</p>
+      </div>
+    `;
+    actions.push(
+      `<button class="mini-button export" type="button" data-action="share-job">${isActiveShare ? '複製分享網址' : '建立並複製分享網址'}</button>`
+    );
+    if (isActiveShare) {
+      actions.push(
+        '<button class="mini-button history" type="button" data-action="rotate-share">更換分享網址</button>',
+        '<button class="mini-button danger" type="button" data-action="revoke-share">撤銷分享</button>'
+      );
+    }
+  } else if (meetingDetailJobId) {
+    shareStatus = `
+      <div class="share-management" aria-live="polite">
+        <strong>公開分享</strong>
+        <span>尚不可用</span>
+        <p>只有已完成且有摘要或逐字稿內容的會議可以建立分享網址。</p>
+      </div>
+    `;
+  }
 
   if (actions.length === 0) {
     return '';
   }
 
-  return `<div class="job-actions">${actions.join('')}</div>`;
+  return `${shareStatus}<div class="job-actions">${actions.join('')}</div>`;
+};
+
+const requestJobShare = async (jobId, action = '') => {
+  const response = await apiFetch(
+    `/api/operator/jobs/${encodeURIComponent(jobId)}/share${action}`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ submitterId: currentSubmitterId })
+    }
+  );
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error?.message ?? `Share failed: ${response.status}`);
+  }
+
+  return payload;
+};
+
+const revokeJobShare = async (jobId) => {
+  const response = await apiFetch(`/api/operator/jobs/${encodeURIComponent(jobId)}/share`, {
+    method: 'DELETE',
+    headers: {
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify({ submitterId: currentSubmitterId })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload?.error?.message ?? `Revoke failed: ${response.status}`);
+  }
+};
+
+const copyText = async (value) => {
+  if (window.navigator.clipboard?.writeText) {
+    await window.navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const input = document.createElement('textarea');
+  input.value = value;
+  input.setAttribute('readonly', '');
+  input.style.position = 'fixed';
+  input.style.opacity = '0';
+  document.body.append(input);
+  input.select();
+  document.execCommand('copy');
+  input.remove();
+};
+
+const copyShareUrl = async (jobId, action = '') => {
+  const payload = await requestJobShare(jobId, action);
+  await copyText(`${window.location.origin}/share#${payload.token}`);
+  return payload.expiresAt;
+};
+
+const toDomId = (value) => String(value).replace(/[^a-zA-Z0-9_-]/g, '-');
+
+const scrollToOwnerDeepLink = () => {
+  if (!meetingDetailJobId || !window.location.hash) {
+    return;
+  }
+
+  try {
+    const target = document.getElementById(decodeURIComponent(window.location.hash.slice(1)));
+    document
+      .querySelector('.summary-deep-link-target')
+      ?.classList.remove('summary-deep-link-target');
+    target?.classList.add('summary-deep-link-target');
+    target?.scrollIntoView({ block: 'start' });
+    target?.focus({ preventScroll: true });
+  } catch {
+    // Ignore malformed fragments and keep the meeting readable.
+  }
+};
+
+if (meetingDetailJobId) {
+  window.addEventListener('hashchange', scrollToOwnerDeepLink);
+}
+
+const createArtifactReader = (job) => {
+  const hasSummary = Boolean(job.summaryArtifact);
+  const hasTranscript = Boolean(job.transcriptArtifact);
+
+  if (!hasSummary && !hasTranscript) {
+    return '';
+  }
+
+  const readerId = `artifact-${toDomId(job.id)}`;
+  const selectedKind = hasSummary ? 'summary' : 'transcript';
+  const panelHeading = meetingDetailJobId ? 'h2' : 'h4';
+  const tabs = [];
+  const panels = [];
+
+  if (hasSummary) {
+    const tabId = `${readerId}-summary-tab`;
+    const panelId = `${readerId}-summary-panel`;
+    tabs.push(`
+      <button
+        class="artifact-tab${selectedKind === 'summary' ? ' active' : ''}"
+        id="${tabId}"
+        type="button"
+        role="tab"
+        aria-controls="${panelId}"
+        aria-selected="${selectedKind === 'summary'}"
+        tabindex="${selectedKind === 'summary' ? '0' : '-1'}"
+        data-artifact-tab="summary"
+      >摘要</button>
+    `);
+    panels.push(`
+      <section
+        class="artifact-panel"
+        id="${panelId}"
+        role="tabpanel"
+        aria-labelledby="${tabId}"
+        data-artifact-panel="summary"
+        ${selectedKind === 'summary' ? '' : 'hidden'}
+      >
+        ${
+          meetingDetailJobId && job.summaryArtifact.structured
+            ? ''
+            : `
+              <header class="artifact-panel-heading">
+                <div>
+                  <${panelHeading}>會議摘要</${panelHeading}>
+                </div>
+                <p>依逐字稿整理，只顯示有內容的段落。</p>
+              </header>
+            `
+        }
+        ${
+          job.summaryArtifact.structured
+            ? renderStructuredSummaryMarkup(
+                job.summaryArtifact.structured,
+                `${readerId}-summary`,
+                {
+                  headingLevel: meetingDetailJobId ? 2 : 4,
+                  showTitle: !meetingDetailJobId
+                }
+              )
+            : `<pre class="summary-text">${escapeHtml(sanitizeAnonymousSpeakerLabels(job.summaryArtifact.text))}</pre>`
+        }
+      </section>
+    `);
+  }
+
+  if (hasTranscript) {
+    const tabId = `${readerId}-transcript-tab`;
+    const panelId = `${readerId}-transcript-panel`;
+    const transcriptMarkup = renderTranscriptMarkup(job.transcriptArtifact.segments);
+    tabs.push(`
+      <button
+        class="artifact-tab${selectedKind === 'transcript' ? ' active' : ''}"
+        id="${tabId}"
+        type="button"
+        role="tab"
+        aria-controls="${panelId}"
+        aria-selected="${selectedKind === 'transcript'}"
+        tabindex="${selectedKind === 'transcript' ? '0' : '-1'}"
+        data-artifact-tab="transcript"
+      >逐字稿</button>
+    `);
+    panels.push(`
+      <section
+        class="artifact-panel"
+        id="${panelId}"
+        role="tabpanel"
+        aria-labelledby="${tabId}"
+        data-artifact-panel="transcript"
+        ${selectedKind === 'transcript' ? '' : 'hidden'}
+      >
+        <header class="artifact-panel-heading">
+          <div>
+            <${panelHeading}>逐字稿</${panelHeading}>
+          </div>
+          <p>${job.transcriptArtifact.segments.length} 段 · 保留時間與逐字內容</p>
+        </header>
+        <div
+          class="transcript-reader"
+          role="region"
+          aria-label="完整逐字稿，可上下捲動"
+          tabindex="0"
+        >${transcriptMarkup}</div>
+      </section>
+    `);
+  }
+
+  return `
+    <section class="artifact-reader" aria-label="會議內容閱讀器">
+      <div class="artifact-tablist" role="tablist" aria-label="選擇會議內容" data-artifact-tabs>
+        ${tabs.join('')}
+      </div>
+      ${panels.join('')}
+    </section>
+  `;
 };
 
 const createJobCard = (job) => {
@@ -305,52 +557,10 @@ const createJobCard = (job) => {
     typeof viewModel.progressProcessedMs === 'number' && typeof viewModel.progressTotalMs === 'number'
       ? `${formatDuration(viewModel.progressProcessedMs)} / ${formatDuration(viewModel.progressTotalMs)}`
       : '';
-  const summaryBlock = job.summaryArtifact || job.summaryPreview
-    ? `
-      <details open>
-        <summary>AI 摘要${job.summaryArtifact ? '' : '（預覽）'}</summary>
-        <pre class="summary-text">${escapeHtml(job.summaryArtifact?.text ?? job.summaryPreview)}</pre>
-        ${
-          job.summaryArtifact?.structured
-            ? `
-              <div class="structured-summary">
-                ${[
-                  ['待辦事項', job.summaryArtifact.structured.actionItems],
-                  ['決策重點', job.summaryArtifact.structured.decisions],
-                  ['風險提醒', job.summaryArtifact.structured.risks],
-                  ['待確認問題', job.summaryArtifact.structured.openQuestions]
-                ]
-                  .map(
-                    ([title, items]) => `
-                      <div class="structured-section">
-                        <h4>${title}</h4>
-                        ${
-                          items.length
-                            ? `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`
-                            : '<p>目前沒有。</p>'
-                        }
-                      </div>
-                    `
-                  )
-                  .join('')}
-              </div>
-            `
-            : ''
-        }
-      </details>
-    `
-    : '';
-
-  const transcriptPreview = job.transcriptArtifact || job.transcriptPreview
-    ? `
-      <details>
-        <summary>逐字稿${job.transcriptArtifact ? '' : '（預覽）'}</summary>
-        ${job.transcriptArtifact
-          ? `<div class="transcript-preview">${renderTranscriptReviewMarkup(job.transcriptArtifact.segments)}</div>`
-          : `<pre class="transcript-preview">${escapeHtml(job.transcriptPreview)}</pre>`}
-      </details>
-    `
-    : '';
+  const artifactReader = createArtifactReader(job);
+  if (artifactReader) {
+    card.classList.add('job-card-expanded');
+  }
 
   const progressBlock =
     viewModel.showProgress &&
@@ -358,15 +568,22 @@ const createJobCard = (job) => {
       <div class="artifact-block progress-block">
         <div class="artifact-heading">
           <h3>目前進度</h3>
-          <p>${escapeHtml(viewModel.statusSummary)}</p>
         </div>
         <div class="progress-shell">
           <div class="progress-meta">
-            <span>${escapeHtml(viewModel.progressLabel)}</span>
-            <strong>${viewModel.progressPercent}%</strong>
+            <span class="progress-label">${escapeHtml(viewModel.progressLabel)}</span>
+            <strong class="progress-percent">${viewModel.progressPercent}%</strong>
           </div>
           ${progressDuration ? `<p class="progress-duration">${progressDuration}</p>` : ''}
-          <div class="progress-bar ${viewModel.progressTone}">
+          <div
+            class="progress-bar ${viewModel.progressTone}"
+            role="progressbar"
+            aria-label="工作處理進度"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="${viewModel.progressPercent}"
+            aria-valuetext="${escapeHtml(viewModel.progressLabel)} ${viewModel.progressPercent}%"
+          >
             <span style="width: ${viewModel.progressPercent}%"></span>
           </div>
         </div>
@@ -386,16 +603,16 @@ const createJobCard = (job) => {
     `;
 
   const actionBlock = createActionBlock(job, viewModel.badgeTone);
-
-  card.innerHTML = `
+  const jobHeaderMarkup = `
     <div class="job-head">
       <div>
-        <p class="job-kicker">${viewModel.sourceLabel}</p>
         <h3 class="job-title">${viewModel.title}</h3>
         <p class="job-status-summary">${escapeHtml(viewModel.statusSummary)}</p>
       </div>
       <span class="badge ${escapeHtml(activeBadge)}">${escapeHtml(viewModel.badgeLabel)}</span>
     </div>
+  `;
+  const jobMetadataMarkup = `
     <div class="job-meta-grid">
       <div class="job-meta-item">
         <span>${viewModel.sourceLabel}</span>
@@ -417,7 +634,7 @@ const createJobCard = (job) => {
       </div>
       <div class="job-meta-item">
         <span>${viewModel.updatedLabel}</span>
-        <strong>${viewModel.updatedAtText}</strong>
+        <strong data-job-updated-at>${viewModel.updatedAtText}</strong>
       </div>
       ${
         viewModel.durationLabel
@@ -440,12 +657,28 @@ const createJobCard = (job) => {
         )
         .join('')}
     </div>
+  `;
+  const operationalMarkup = `
+    ${jobHeaderMarkup}
+    ${jobMetadataMarkup}
     ${actionBlock}
     ${renderOptionalMarkup(failureBlock)}
     ${renderOptionalMarkup(progressBlock)}
-    ${summaryBlock}
-    ${transcriptPreview}
   `;
+
+  card.innerHTML =
+    meetingDetailJobId && artifactReader
+      ? `
+      <details class="meeting-detail-controls">
+        <summary>工作資訊與分享</summary>
+        <div class="meeting-detail-controls-body">${operationalMarkup}</div>
+      </details>
+      ${artifactReader}
+    `
+      : `${operationalMarkup}${artifactReader}`;
+
+  configureSummaryNavigation(card);
+  wireArtifactTabs(card);
 
   const stopButton = card.querySelector('[data-action="stop-current"]');
   if (stopButton) {
@@ -464,7 +697,7 @@ const createJobCard = (job) => {
           throw new Error(payload?.error?.message ?? `Stop failed: ${response.status}`);
         }
         setBanner('目前會議已停止。');
-        await fetchJobs();
+        await refreshJobsView(job.id);
       } catch (error) {
         setBanner(error instanceof Error ? error.message : String(error), 'error');
       }
@@ -474,15 +707,21 @@ const createJobCard = (job) => {
   const deleteButton = card.querySelector('[data-action="delete-history"]');
   if (deleteButton) {
     deleteButton.addEventListener('click', async () => {
-      const confirmed = window.confirm('要從歷史紀錄中刪除這筆工作嗎？');
+      const confirmed = window.confirm(
+        '要刪除這筆歷史紀錄與錄音物件嗎？逐字稿與摘要仍會保留供管理稽核。'
+      );
       if (!confirmed) {
         return;
       }
 
       try {
         setBanner('正在刪除紀錄...');
-        await deleteJob(job.id);
-        setBanner('紀錄已刪除。');
+        const cleanup = await deleteJob(job.id);
+        if (meetingDetailJobId) {
+          window.location.assign('/');
+          return;
+        }
+        setBanner(`紀錄已刪除，已清除 ${cleanup.objectCount} 個儲存物件。`);
         await fetchJobs();
       } catch (error) {
         setBanner(error instanceof Error ? error.message : String(error), 'error');
@@ -502,20 +741,7 @@ const createJobCard = (job) => {
         setBanner('正在停止工作...');
         await interruptJob(job.id);
         setBanner('工作已停止。');
-        await fetchJobs();
-      } catch (error) {
-        setBanner(error instanceof Error ? error.message : String(error), 'error');
-      }
-    });
-  }
-
-  const detailsButton = card.querySelector('[data-action="view-details"]');
-  if (detailsButton) {
-    detailsButton.addEventListener('click', async () => {
-      try {
-        setBanner('正在載入完整內容...');
-        await fetchJobDetails(job.id);
-        setBanner('');
+        await refreshJobsView(job.id);
       } catch (error) {
         setBanner(error instanceof Error ? error.message : String(error), 'error');
       }
@@ -544,11 +770,73 @@ const createJobCard = (job) => {
     });
   });
 
+  const shareButton = card.querySelector('[data-action="share-job"]');
+  const shareActionButtons = [
+    shareButton,
+    card.querySelector('[data-action="rotate-share"]'),
+    card.querySelector('[data-action="revoke-share"]')
+  ].filter(Boolean);
+  const setShareActionsBusy = (busy) => {
+    shareActionButtons.forEach((button) => {
+      button.disabled = busy;
+    });
+  };
+  shareButton?.addEventListener('click', async () => {
+    setShareActionsBusy(true);
+    try {
+      setBanner('正在建立分享網址...');
+      const expiresAt = await copyShareUrl(job.id);
+      await refreshJobsView(job.id);
+      setBanner(`分享網址已複製；持有網址的人可以查看並轉寄。效期至 ${new Date(expiresAt).toLocaleString('zh-TW')}。`);
+    } catch (error) {
+      setBanner(error instanceof Error ? error.message : String(error), 'error');
+    } finally {
+      setShareActionsBusy(false);
+    }
+  });
+
+  const rotateShareButton = card.querySelector('[data-action="rotate-share"]');
+  rotateShareButton?.addEventListener('click', async () => {
+    if (!window.confirm('更換後，舊分享網址會立即失效。確定繼續嗎？')) {
+      return;
+    }
+
+    setShareActionsBusy(true);
+    try {
+      setBanner('正在更換分享網址...');
+      const expiresAt = await copyShareUrl(job.id, '/rotate');
+      await refreshJobsView(job.id);
+      setBanner(`新分享網址已複製，舊網址已失效；持有網址的人可以查看並轉寄。效期至 ${new Date(expiresAt).toLocaleString('zh-TW')}。`);
+    } catch (error) {
+      setBanner(error instanceof Error ? error.message : String(error), 'error');
+    } finally {
+      setShareActionsBusy(false);
+    }
+  });
+
+  const revokeShareButton = card.querySelector('[data-action="revoke-share"]');
+  revokeShareButton?.addEventListener('click', async () => {
+    if (!window.confirm('確定要讓目前的分享網址立即失效嗎？')) {
+      return;
+    }
+
+    setShareActionsBusy(true);
+    try {
+      setBanner('正在撤銷分享網址...');
+      await revokeJobShare(job.id);
+      await refreshJobsView(job.id);
+      setBanner('分享網址已撤銷。');
+    } catch (error) {
+      setBanner(error instanceof Error ? error.message : String(error), 'error');
+    } finally {
+      setShareActionsBusy(false);
+    }
+  });
+
   return card;
 };
 
-const renderJobs = (jobs) => {
-  currentJobs = jobs;
+const renderJobStats = (jobs) => {
   const activeCount = currentJobStats?.activeCount ?? jobs.filter((job) => activeStates.has(job.state)).length;
   const queuedCount = currentJobStats?.queuedCount ?? jobs.filter((job) => job.state === 'queued').length;
   const completedCount = currentJobStats?.completedCount ?? jobs.filter((job) => job.state === 'completed').length;
@@ -556,39 +844,61 @@ const renderJobs = (jobs) => {
     currentJobStats
       ? (currentJobStats.completedCount || 0) + (currentJobStats.failedCount || 0)
       : jobs.filter((job) => isTerminalJob(job)).length;
-  const activeSearch = elements.archiveSearch?.value.trim() ?? '';
-  let visibleJobs = filterJobsByQuickFilter(jobs, currentQuickFilter);
-
-  if (
-    pendingSharedJobId &&
-    jobs.some((job) => job.id === pendingSharedJobId) &&
-    !visibleJobs.some((job) => job.id === pendingSharedJobId)
-  ) {
-    setQuickFilter('all');
-    visibleJobs = filterJobsByQuickFilter(jobs, currentQuickFilter);
-  }
 
   elements.activeCount.textContent = String(activeCount);
   elements.queuedCount.textContent = String(queuedCount);
   elements.completedCount.textContent = String(completedCount);
   elements.clearHistoryButton.disabled = terminalCount === 0;
+  elements.clearHistoryButton.hidden = terminalCount === 0;
+  const showArchiveControls =
+    (currentJobStats?.totalCount ?? jobs.length) > 0 ||
+    Boolean(elements.archiveSearch?.value.trim());
+  elements.archiveControls.hidden = !showArchiveControls;
+  elements.jobFilters.hidden = !showArchiveControls;
+};
 
-  if (visibleJobs.length === 0) {
-    elements.jobList.innerHTML = `
-      <div class="empty-state">
-        <p>${escapeHtml(
-          activeSearch || currentQuickFilter === 'all'
-            ? getEmptyStateMessage(activeSearch)
-            : '目前沒有符合這個篩選條件的工作。'
-        )}</p>
-      </div>
-    `;
-    return;
+const renderJobs = (jobs) => {
+  elements.jobList.setAttribute('aria-busy', 'false');
+  currentJobs = jobs;
+  const activeSearch = elements.archiveSearch?.value.trim() ?? '';
+  let pageState = getArchivePageState(
+    jobs,
+    currentQuickFilter,
+    currentJobsPageInfo.hasMore,
+    activeSearch
+  );
+
+  if (
+    pendingSharedJobId &&
+    jobs.some((job) => job.id === pendingSharedJobId) &&
+    !pageState.visibleJobs.some((job) => job.id === pendingSharedJobId)
+  ) {
+    setQuickFilter('all');
+    pageState = getArchivePageState(
+      jobs,
+      currentQuickFilter,
+      currentJobsPageInfo.hasMore,
+      activeSearch
+    );
   }
 
-  const nodes = visibleJobs.map(createJobCard);
+  renderJobStats(jobs);
 
-  if (currentJobsPageInfo.hasMore && !activeSearch) {
+  const nodes = pageState.visibleJobs.map(createJobCard);
+  if (nodes.length === 0) {
+    const emptyState = document.createElement('div');
+    emptyState.className = 'empty-state';
+    emptyState.innerHTML = `<p>${escapeHtml(
+      activeSearch || currentQuickFilter === 'all'
+        ? getEmptyStateMessage(activeSearch)
+        : pageState.canLoadMore
+          ? '目前載入的紀錄沒有符合項目，可繼續載入更多。'
+          : '目前沒有符合這個篩選條件的工作。'
+    )}</p>`;
+    nodes.push(emptyState);
+  }
+
+  if (pageState.canLoadMore) {
     const loadMore = document.createElement('div');
     loadMore.className = 'empty-state';
     const button = document.createElement('button');
@@ -621,8 +931,8 @@ const fetchConfig = async () => {
   }
   const payload = await response.json();
   operatorConfig = payload;
+  applyTwdPricingReference(payload.pricingReference);
   applyDefaultJoinNameToForm();
-  setDashboardInteractionEnabled(!authEnabled || Boolean(currentOperatorEmail));
 };
 
 const mergeJobsById = (existingJobs, incomingJobs) => {
@@ -640,18 +950,7 @@ const mergeJobsById = (existingJobs, incomingJobs) => {
   });
 };
 
-const fetchJobs = async ({ append = false } = {}) => {
-  if (authEnabled && !currentOperatorEmail) {
-    currentJobStats = null;
-    currentJobsPageInfo = {
-      pageSize: 25,
-      hasMore: false,
-      nextCursor: null
-    };
-    renderJobs([]);
-    return;
-  }
-
+const fetchJobsPayload = async ({ append = false, pageSize } = {}) => {
   const url = new URL('/api/operator/jobs', window.location.origin);
   url.searchParams.set('submitterId', currentSubmitterId);
   const searchQuery = elements.archiveSearch?.value.trim();
@@ -659,7 +958,7 @@ const fetchJobs = async ({ append = false } = {}) => {
   if (searchQuery) {
     url.searchParams.set('q', searchQuery);
   } else {
-    url.searchParams.set('pageSize', String(currentJobsPageInfo.pageSize || 25));
+    url.searchParams.set('pageSize', String(pageSize || currentJobsPageInfo.pageSize || 25));
     if (append && currentJobsPageInfo.nextCursor) {
       url.searchParams.set('cursor', currentJobsPageInfo.nextCursor);
     }
@@ -670,7 +969,11 @@ const fetchJobs = async ({ append = false } = {}) => {
     throw new Error(`Failed to fetch jobs: ${response.status}`);
   }
 
-  const payload = await response.json();
+  return response.json();
+};
+
+const fetchJobs = async ({ append = false } = {}) => {
+  const payload = await fetchJobsPayload({ append });
   currentJobStats = payload.stats || null;
   currentJobsPageInfo = payload.pageInfo
     ? {
@@ -687,56 +990,199 @@ const fetchJobs = async ({ append = false } = {}) => {
   renderJobs(currentJobs);
 };
 
-const fetchJobDetails = async (jobId) => {
+const fetchJobSnapshot = async (jobId) => {
   const url = new URL(`/api/operator/jobs/${jobId}`, window.location.origin);
-
-  if (!authEnabled) {
-    url.searchParams.set('submitterId', currentSubmitterId);
-  }
+  url.searchParams.set('submitterId', currentSubmitterId);
 
   const response = await apiFetch(url);
   if (!response.ok) {
     throw new Error(`Failed to fetch job details: ${response.status}`);
   }
 
-  const payload = await response.json();
-  currentJobs = currentJobs.map((job) => (job.id === jobId ? payload : job));
+  return response.json();
+};
+
+const refreshJobsView = async (jobId) => {
+  if (!meetingDetailJobId) {
+    await fetchJobs();
+    return;
+  }
+
+  const payload = await fetchJobSnapshot(jobId);
+  const meetingTitle = sanitizeAnonymousSpeakerLabels(
+    payload.summaryArtifact?.structured?.title ||
+      payload.uploadedFileName ||
+      '會議紀錄'
+  );
+  document.title = `${meetingTitle}｜Solomon NoteTaker`;
+  document.querySelector('#dashboard-title').textContent = meetingTitle;
+  document.querySelector('.dashboard-topbar-text').textContent = payload.uploadedFileName
+    ? `${payload.uploadedFileName} · 完整摘要與逐字稿`
+    : '完整摘要與逐字稿';
+  currentJobs = [payload];
+  currentJobStats = {
+    totalCount: 1,
+    activeCount: activeStates.has(payload.state) ? 1 : 0,
+    queuedCount: payload.state === 'queued' ? 1 : 0,
+    completedCount: payload.state === 'completed' ? 1 : 0,
+    failedCount: payload.state === 'failed' ? 1 : 0
+  };
   renderJobs(currentJobs);
+};
+
+const updateJobCardProgress = (job) => {
+  const card = elements.jobList.querySelector(`[data-job-id="${job.id}"]`);
+  const progressBlock = card?.querySelector('.progress-block');
+
+  if (!card || !progressBlock) {
+    return false;
+  }
+
+  const viewModel = getJobCardViewModel(job);
+  const progressDuration =
+    typeof viewModel.progressProcessedMs === 'number' && typeof viewModel.progressTotalMs === 'number'
+      ? `${formatDuration(viewModel.progressProcessedMs)} / ${formatDuration(viewModel.progressTotalMs)}`
+      : '';
+  const badge = card.querySelector('.badge');
+  const progressBar = progressBlock.querySelector('.progress-bar');
+  const progressMeta = progressBlock.querySelector('.progress-meta');
+  let duration = progressBlock.querySelector('.progress-duration');
+
+  card.querySelector('.job-status-summary').textContent = viewModel.statusSummary;
+  card.querySelector('[data-job-updated-at]').textContent = viewModel.updatedAtText;
+  progressBlock.querySelector('.progress-label').textContent = viewModel.progressLabel;
+  progressBlock.querySelector('.progress-percent').textContent = `${viewModel.progressPercent}%`;
+  badge.textContent = viewModel.badgeLabel;
+  badge.className = `badge ${statusClass(viewModel.badgeTone)}`;
+  progressBar.className = `progress-bar ${viewModel.progressTone}`;
+  progressBar.setAttribute('aria-valuenow', String(viewModel.progressPercent));
+  progressBar.setAttribute('aria-valuetext', `${viewModel.progressLabel} ${viewModel.progressPercent}%`);
+  progressBar.firstElementChild.style.width = `${viewModel.progressPercent}%`;
+
+  if (progressDuration) {
+    if (!duration) {
+      duration = document.createElement('p');
+      duration.className = 'progress-duration';
+      progressMeta.after(duration);
+    }
+    duration.textContent = progressDuration;
+  } else {
+    duration?.remove();
+  }
+
+  return true;
+};
+
+const applyPolledJob = (snapshot) => {
+  const index = currentJobs.findIndex((job) => job.id === snapshot.id);
+  if (index < 0) {
+    return;
+  }
+
+  const previous = currentJobs[index];
+  const job = {
+    ...snapshot,
+    transcriptArtifact: previous.transcriptArtifact,
+    summaryArtifact: previous.summaryArtifact
+  };
+  const previousViewModel = getJobCardViewModel(previous);
+  const nextViewModel = getJobCardViewModel(job);
+  const cardMetadataChanged =
+    previousViewModel.durationValue !== nextViewModel.durationValue ||
+    JSON.stringify(previousViewModel.costItems) !== JSON.stringify(nextViewModel.costItems);
+  const artifactAvailabilityChanged =
+    previous.hasTranscript !== job.hasTranscript ||
+    previous.hasSummary !== job.hasSummary;
+  currentJobs[index] = job;
+
+  if (
+    previous.state !== job.state ||
+    previous.displayState !== job.displayState ||
+    cardMetadataChanged ||
+    artifactAvailabilityChanged ||
+    !updateJobCardProgress(job)
+  ) {
+    const card = elements.jobList.querySelector(`[data-job-id="${job.id}"]`);
+    card?.replaceWith(createJobCard(job));
+  }
+};
+
+const refreshJobProgress = async () => {
+  if (document.hidden || progressPollInFlight) {
+    return;
+  }
+
+  const pendingJobIds = new Set(
+    currentJobs.filter((job) => !isTerminalJob(job)).map((job) => job.id)
+  );
+  if (pendingJobIds.size === 0) {
+    return;
+  }
+
+  progressPollInFlight = true;
+  try {
+    if (meetingDetailJobId) {
+      await refreshJobsView(meetingDetailJobId);
+      return;
+    }
+
+    const payload = await fetchJobsPayload({
+      pageSize: Math.min(100, Math.max(currentJobsPageInfo.pageSize || 25, currentJobs.length))
+    });
+    payload.jobs
+      .filter((job) => pendingJobIds.has(job.id))
+      .forEach(applyPolledJob);
+    currentJobStats = payload.stats || currentJobStats;
+    renderJobStats(currentJobs);
+  } catch {
+    // Keep the current view stable; the next poll will retry the transient read.
+  } finally {
+    progressPollInFlight = false;
+  }
 };
 
 const submitMeetingJob = async (event) => {
   event?.preventDefault?.();
-  setBanner('正在送出會議...');
-
-  const formData = new FormData(elements.meetingForm);
-  const response = await apiFetch('/api/operator/jobs/meetings', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify({
-      submitterId: currentSubmitterId,
-      meetingUrl: formData.get('meetingUrl'),
-      requestedJoinName: formData.get('requestedJoinName'),
-      meetingPasscode: formData.get('meetingPasscode'),
-      submissionTemplateId: selectedTemplateId
-    })
-  });
-
-  const payload = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(payload?.error?.message ?? `Meeting submission failed: ${response.status}`);
+  if (elements.meetingForm.getAttribute('aria-busy') === 'true') {
+    return;
   }
 
-  setBanner('會議已加入整理流程。');
-  elements.meetingForm.reset();
-  applyDefaultJoinNameToForm();
-  await fetchJobs();
+  setFormBusy(elements.meetingForm, elements.meetingSubmitButton, true);
+  setFormStatus(elements.meetingFormStatus, '正在送出會議...');
+
+  try {
+    const formData = new FormData(elements.meetingForm);
+    const response = await apiFetch('/api/operator/jobs/meetings', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        submitterId: currentSubmitterId,
+        meetingUrl: formData.get('meetingUrl'),
+        requestedJoinName: formData.get('requestedJoinName'),
+        meetingPasscode: formData.get('meetingPasscode'),
+        submissionTemplateId: selectedTemplateId
+      })
+    });
+
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(payload?.error?.message ?? `Meeting submission failed: ${response.status}`);
+    }
+
+    setFormStatus(elements.meetingFormStatus, '會議已加入整理流程。');
+    elements.meetingForm.reset();
+    applyDefaultJoinNameToForm();
+    await fetchJobs();
+  } finally {
+    setFormBusy(elements.meetingForm, elements.meetingSubmitButton, false);
+  }
 };
 
 const applyQueryPrefill = () => {
-  const prefill = getDashboardPrefill(window.location.href, elements.defaultJoinName.textContent);
+  const prefill = getDashboardPrefill(window.location.href, operatorConfig.defaultJoinName);
   pendingSharedJobId = prefill.jobId;
 
   if (prefill.meetingUrl) {
@@ -754,41 +1200,59 @@ const submitUploadJob = async (event) => {
   }
 
   if (!elements.audioFile.files?.length) {
-    setBanner('請先選擇音訊或影片檔。', 'error');
+    setFormStatus(elements.uploadFormStatus, '請先選擇音訊或影片檔。', 'error');
     return;
   }
 
   uploadInFlight = true;
-  setBanner('正在上傳錄音檔...');
+  setFormBusy(elements.uploadForm, elements.uploadSubmitButton, true);
+  setFormStatus(elements.uploadFormStatus, '正在上傳錄音檔...');
 
-  const formData = new FormData();
-  formData.set('submitterId', currentSubmitterId);
-  formData.set('audio', elements.audioFile.files[0]);
-  formData.set('submissionTemplateId', selectedTemplateId);
+  try {
+    const formData = new FormData();
+    formData.set('submitterId', currentSubmitterId);
+    formData.set('audio', elements.audioFile.files[0]);
+    formData.set('submissionTemplateId', selectedTemplateId);
 
-  const response = await apiFetch('/api/operator/jobs/uploads', {
-    method: 'POST',
-    body: formData
-  });
+    const response = await apiFetch('/api/operator/jobs/uploads', {
+      method: 'POST',
+      body: formData
+    });
 
-  const payload = await response.json().catch(() => ({}));
+    const payload = await response.json().catch(() => ({}));
 
-  if (!response.ok) {
+    if (!response.ok) {
+      throw new Error(payload?.error?.message ?? `Upload failed: ${response.status}`);
+    }
+
+    setFormStatus(elements.uploadFormStatus, '錄音檔已加入整理流程。');
+    elements.uploadForm.reset();
+    resetUploadSelectionUi();
+    await fetchJobs();
+  } finally {
     uploadInFlight = false;
-    throw new Error(payload?.error?.message ?? `Upload failed: ${response.status}`);
+    setFormBusy(elements.uploadForm, elements.uploadSubmitButton, false);
   }
-
-  setBanner('錄音檔已加入整理流程。');
-  elements.uploadForm.reset();
-  resetUploadSelectionUi();
-  uploadInFlight = false;
-  await fetchJobs();
 };
 
 const boot = async () => {
   try {
-    updateIdentityDisplay();
     await fetchConfig();
+
+    if (meetingDetailJobId) {
+      document.querySelector('#dashboard-title').textContent = '完整會議紀錄';
+      document.querySelector('.dashboard-topbar-text').textContent =
+        '查看這筆工作的完整摘要、逐字稿與分享設定。';
+      document.querySelector('.queue-header h2').textContent = '會議內容';
+      document.querySelector('.queue-copy').textContent = '此頁只顯示目前這筆會議紀錄。';
+      const adminLink = document.querySelector('#admin-entry-link');
+      adminLink.href = '/';
+      adminLink.querySelector('span').textContent = '回到工作台';
+      await refreshJobsView(meetingDetailJobId);
+      scrollToOwnerDeepLink();
+      setBanner('');
+      return;
+    }
 
     const prefill = applyQueryPrefill();
     if (prefill.shouldAutoQueue) {
@@ -801,6 +1265,9 @@ const boot = async () => {
     focusSharedJobIfNeeded();
     setBanner('');
   } catch (error) {
+    elements.jobList.setAttribute('aria-busy', 'false');
+    elements.jobList.innerHTML =
+      '<div class="empty-state"><p>無法載入會議筆記。請稍後重新整理頁面。</p></div>';
     setBanner(error instanceof Error ? error.message : String(error), 'error');
   }
 };
@@ -809,7 +1276,11 @@ elements.meetingForm.addEventListener('submit', async (event) => {
   try {
     await submitMeetingJob(event);
   } catch (error) {
-    setBanner(error instanceof Error ? error.message : String(error), 'error');
+    setFormStatus(
+      elements.meetingFormStatus,
+      error instanceof Error ? error.message : String(error),
+      'error'
+    );
   }
 });
 
@@ -817,8 +1288,11 @@ elements.uploadForm.addEventListener('submit', async (event) => {
   try {
     await submitUploadJob(event);
   } catch (error) {
-    setBanner(error instanceof Error ? error.message : String(error), 'error');
-    uploadInFlight = false;
+    setFormStatus(
+      elements.uploadFormStatus,
+      error instanceof Error ? error.message : String(error),
+      'error'
+    );
   }
 });
 
@@ -831,7 +1305,7 @@ elements.audioFile.addEventListener('change', async () => {
   }
 
   showSelectedUploadFile(file);
-  setBanner('');
+  setFormStatus(elements.uploadFormStatus, '');
 });
 
 elements.clearHistoryButton.addEventListener('click', async () => {
@@ -839,15 +1313,19 @@ elements.clearHistoryButton.addEventListener('click', async () => {
     return;
   }
 
-  const confirmed = window.confirm('要清除所有已完成與失敗的歷史紀錄嗎？');
+  const confirmed = window.confirm(
+    '要清除所有已完成與失敗的歷史紀錄及錄音物件嗎？逐字稿與摘要仍會保留供管理稽核。'
+  );
   if (!confirmed) {
     return;
   }
 
   try {
     setBanner('正在清除歷史紀錄...');
-    const deletedCount = await clearHistory();
-    setBanner(`已清除 ${deletedCount} 筆歷史紀錄。`);
+    const result = await clearHistory();
+    setBanner(
+      `已清除 ${result.deletedCount} 筆歷史紀錄與 ${result.artifactCleanup.objectCount} 個儲存物件。`
+    );
     await fetchJobs();
   } catch (error) {
     setBanner(error instanceof Error ? error.message : String(error), 'error');
@@ -877,12 +1355,17 @@ elements.jobFilters?.addEventListener('click', (event) => {
   }
 
   setQuickFilter(button.dataset.filter || 'all');
-  fetchJobs().catch((error) => {
-    setBanner(error instanceof Error ? error.message : String(error), 'error');
-  });
+  renderJobs(currentJobs);
 });
 
-// 自動輪詢已移除：原本每 5 秒呼叫 fetchJobs() 會整個 replaceChildren 重畫卡片，
-// 導致「查看內容」展開的完整內容被收合、還原成預覽。工作進度改為在送出、上傳、
-// 刪除、搜尋、篩選等操作後主動刷新；要看最新進度時重新整理頁面即可。
+window.setInterval(() => {
+  void refreshJobProgress();
+}, PROGRESS_POLL_INTERVAL_MS);
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    void refreshJobProgress();
+  }
+});
+
 boot();
