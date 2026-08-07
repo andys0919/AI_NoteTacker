@@ -10,6 +10,8 @@ from queue import Empty, Queue
 from tempfile import TemporaryDirectory
 from threading import Thread
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from transcription_worker.transcript_summary import (
     build_summary_prompt,
@@ -42,36 +44,6 @@ def _terminate_process_group(
     except ProcessLookupError:
         pass
     process.wait()
-
-
-def _run_codex_process(
-    command: list[str],
-    *,
-    prompt: str,
-    environment: dict[str, str],
-    working_directory: str,
-    timeout_seconds: int | float,
-    terminate_grace_seconds: int | float = 2,
-) -> subprocess.CompletedProcess[str]:
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=environment,
-        cwd=working_directory,
-        start_new_session=True,
-    )
-
-    try:
-        stdout, stderr = process.communicate(input=prompt, timeout=timeout_seconds)
-    except subprocess.TimeoutExpired as error:
-        _terminate_process_group(process, terminate_grace_seconds)
-        process.communicate()
-        raise RuntimeError(f"codex timed out after {timeout_seconds} seconds") from error
-
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def _codex_environment() -> dict[str, str]:
@@ -300,84 +272,43 @@ def read_codex_weekly_usage(
     return codex_weekly_usage_from_rate_limits(payload, checked_at=checked_at)
 
 
-def _extract_summary_text(stdout_text: str) -> str:
-    parts: list[str] = []
+def _request_codex_pty(
+    *,
+    api_url: str,
+    api_token: str,
+    prompt: str,
+    timeout_seconds: int | float,
+) -> str:
+    request = Request(
+        api_url,
+        data=json.dumps({"prompt": prompt}).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            body = response.read(4 * 1024 * 1024 + 1)
+    except HTTPError as error:
+        detail = error.read(4096).decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"Codex PTY API returned HTTP {error.code}: {detail or error.reason}"
+        ) from error
+    except URLError as error:
+        raise RuntimeError(f"Codex PTY API request failed: {error.reason}") from error
 
-    for line in stdout_text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            # Codex may emit non-JSON lines that happen to start with '{'; skip them
-            # instead of crashing the whole summarization job.
-            continue
-        if event.get("type") != "item.completed":
-            continue
-
-        item = event.get("item") or {}
-        if item.get("type") == "agent_message" and str(item.get("text", "")).strip():
-            parts.append(str(item["text"]).strip())
-
-    return "\n".join(parts).strip()
-
-
-def _extract_codex_error_message(stdout_text: str) -> str | None:
-    for line in stdout_text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        if event.get("type") == "error" and str(event.get("message", "")).strip():
-            return str(event["message"]).strip()
-
-        turn_error = event.get("error")
-        if isinstance(turn_error, dict) and str(turn_error.get("message", "")).strip():
-            return str(turn_error["message"]).strip()
-
-    return None
-
-
-def _extract_codex_usage(stdout_text: str) -> dict[str, int] | None:
-    for line in reversed(stdout_text.splitlines()):
-        try:
-            event = json.loads(line.strip())
-        except (json.JSONDecodeError, AttributeError):
-            continue
-        if event.get("type") != "turn.completed" or not isinstance(
-            event.get("usage"), dict
-        ):
-            continue
-        usage = event["usage"]
-        input_tokens = usage.get("input_tokens")
-        cached_input_tokens = usage.get("cached_input_tokens", 0)
-        output_tokens = usage.get("output_tokens")
-        reasoning_output_tokens = usage.get("reasoning_output_tokens", 0)
-        if any(
-            type(value) is not int or value < 0
-            for value in (
-                input_tokens,
-                cached_input_tokens,
-                output_tokens,
-                reasoning_output_tokens,
-            )
-        ) or cached_input_tokens > input_tokens or reasoning_output_tokens > output_tokens:
-            return None
-        return {
-            "inputTokens": input_tokens,
-            "cachedInputTokens": cached_input_tokens,
-            "outputTokens": output_tokens,
-            "reasoningOutputTokens": reasoning_output_tokens,
-            "totalTokens": input_tokens + output_tokens,
-        }
-    return None
+    if len(body) > 4 * 1024 * 1024:
+        raise RuntimeError("Codex PTY API response exceeds 4 MiB")
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Codex PTY API returned invalid JSON") from error
+    summary_text = payload.get("response") if isinstance(payload, dict) else None
+    if not isinstance(summary_text, str) or not summary_text.strip():
+        raise RuntimeError("Codex PTY API returned no response text")
+    return summary_text.strip()
 
 
 class CodexTranscriptSummarizer:
@@ -385,15 +316,17 @@ class CodexTranscriptSummarizer:
         self,
         model: str,
         reasoning_effort: str,
-        codex_cli_path: str = "codex",
+        api_url: str,
+        api_token: str,
         timeout_seconds: int = 900,
-        runner=None,
+        requester=None,
     ) -> None:
         self._model = model
         self._reasoning_effort = reasoning_effort
-        self._codex_cli_path = codex_cli_path
+        self._api_url = api_url
+        self._api_token = api_token
         self._timeout_seconds = timeout_seconds
-        self._runner = runner
+        self._requester = requester or _request_codex_pty
 
     def summarize(
         self,
@@ -403,37 +336,7 @@ class CodexTranscriptSummarizer:
         on_provider_request=None,
     ) -> dict[str, Any]:
         prompt = build_summary_prompt(transcript_result, summary_profile=summary_profile)
-        model = model_override or self._model
-        command = [
-            self._codex_cli_path,
-            "exec",
-            "--ignore-user-config",
-            "--ignore-rules",
-            "--disable",
-            "shell_tool",
-            "--disable",
-            "unified_exec",
-            "--disable",
-            "code_mode_host",
-            "--json",
-            "--color",
-            "never",
-            "--ephemeral",
-            "--sandbox",
-            "read-only",
-            "--skip-git-repo-check",
-            "--model",
-            model,
-            "-c",
-            f"model_reasoning_effort={self._reasoning_effort}",
-            "-c",
-            "allow_login_shell=false",
-            "-c",
-            'shell_environment_policy.inherit="none"',
-            "--",
-            "-",
-        ]
-        codex_environment = _codex_environment()
+        model = self._model
         request_id = uuid.uuid4().hex
         if on_provider_request is not None:
             on_provider_request(
@@ -446,26 +349,12 @@ class CodexTranscriptSummarizer:
                 }
             )
         try:
-            with TemporaryDirectory(prefix="codex-summary-") as working_directory:
-                if self._runner:
-                    result = self._runner(
-                        command,
-                        input=prompt,
-                        env=codex_environment,
-                        cwd=working_directory,
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                        timeout=self._timeout_seconds,
-                    )
-                else:
-                    result = _run_codex_process(
-                        command,
-                        prompt=prompt,
-                        environment=codex_environment,
-                        working_directory=working_directory,
-                        timeout_seconds=self._timeout_seconds,
-                    )
+            summary_text = self._requester(
+                api_url=self._api_url,
+                api_token=self._api_token,
+                prompt=prompt,
+                timeout_seconds=self._timeout_seconds,
+            )
         except Exception as error:
             if on_provider_request is not None:
                 on_provider_request(
@@ -478,30 +367,8 @@ class CodexTranscriptSummarizer:
                 )
             raise
 
-        if result.returncode != 0:
-            if on_provider_request is not None:
-                on_provider_request(
-                    {
-                        "action": "finish",
-                        "requestId": request_id,
-                        "status": "failed",
-                        "errorCode": f"codex-exit-{result.returncode}",
-                        "usage": _extract_codex_usage(result.stdout or ""),
-                    }
-                )
-            stdout_error = _extract_codex_error_message(result.stdout or "")
-            if stdout_error:
-                raise RuntimeError(stdout_error)
-
-            stderr_text = (result.stderr or "").strip()
-            raise RuntimeError(stderr_text or f"codex exited with status {result.returncode}")
-
-        usage = _extract_codex_usage(result.stdout or "")
+        usage = None
         try:
-            summary_text = _extract_summary_text(result.stdout or "")
-            if not summary_text:
-                raise RuntimeError("codex returned no summary text")
-
             summary_payload = coerce_summary_payload(
                 summary_text,
                 provider_label="codex",

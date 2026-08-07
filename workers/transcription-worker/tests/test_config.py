@@ -209,6 +209,8 @@ class ReadSummaryWorkerConfigTests(unittest.TestCase):
         config = read_summary_worker_config(
             {
                 "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                "CODEX_PTY_API_TOKEN": "test-only-token",
+                "CODEX_PTY_API_URL": "http://codex-pty-agent:3001/api/prompt",
                 "WORKER_ID": "summarizer-alpha",
             }
         )
@@ -224,6 +226,8 @@ class ReadSummaryWorkerConfigTests(unittest.TestCase):
                 "summary_model": "gpt-5.6-luna",
                 "summary_reasoning_effort": "max",
                 "summary_timeout_seconds": 900,
+                "codex_pty_api_url": "http://codex-pty-agent:3001/api/prompt",
+                "codex_pty_api_token": "test-only-token",
                 "codex_cli_path": "codex",
                 "azure_openai_summary_endpoint": None,
                 "azure_openai_summary_api_key": None,
@@ -234,6 +238,8 @@ class ReadSummaryWorkerConfigTests(unittest.TestCase):
     def test_uses_only_a_complete_https_azure_fallback_pair(self) -> None:
         base = {
             "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+            "CODEX_PTY_API_TOKEN": "test-only-token",
+            "CODEX_PTY_API_URL": "http://codex-pty-agent:3001/api/prompt",
             "WORKER_ID": "summarizer-alpha",
         }
         incomplete = read_summary_worker_config(

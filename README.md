@@ -8,7 +8,7 @@ This project lets an operator:
 - let an admin switch future transcription jobs among MAI-Transcribe 1.5, Qwen,
   local Whisper, and Azure OpenAI `gpt-4o-transcribe`
 - let an admin manage AI routing defaults and review cloud usage
-- read full transcripts and local Codex summaries in separate,
+- read full transcripts and Codex PTY summaries in separate,
   responsive dashboard tabs
 - export completed jobs as Markdown, TXT, SRT, or JSON
 - stop a live meeting bot or interrupt an upload/transcription job
@@ -24,12 +24,11 @@ This project lets an operator:
   - `qwen3-asr-1.7b`
   - `azure-speech-mai-transcribe-1.5`
   - `azure-openai-gpt-4o-transcribe`
-- Local Codex summary routing with a submission-time model snapshot and an
-  explicit-quota-only Azure fallback
+- Dedicated Codex PTY summary routing with a submission-time model snapshot
 - Submission-time AI policy snapshots for future jobs
 - Cloud reservation estimates and daily usage reporting without submission blocking
 - Cloud usage ledger and admin audit history for governance changes
-- Local Codex summary generation with a content-derived title,
+- Codex PTY summary generation with a content-derived title,
   confirmed/mixed/open topics, topic subtopics, grouped follow-ups, decisions,
   risks, open questions, and evidence-backed analysis notes
 - Archive search, history timeline, and export
@@ -41,12 +40,13 @@ This project lets an operator:
 
 - Docker and Docker Compose
 - NVIDIA driver + `nvidia-smi` if you want GPU transcription
-- A dedicated ChatGPT login in Docker volume `ai_notetacker_summary_codex_home`
+- A protected ChatGPT login in the dedicated
+  `ai_notetacker_codex_pty_home` Docker volume
 - Optional:
   - Supabase project for backend operator bearer-token verification
   - SMTP provider for notification emails
-  - Azure OpenAI deployment if you want hosted transcription or quota-only
-    summary fallback
+  - Azure OpenAI deployment if you want hosted transcription; the retained
+    summary fallback is disabled by canonical production Compose
 
 ## Configure
 
@@ -212,10 +212,10 @@ Important:
   `unpriced`, not `NT$0.00`; the known priced subtotal remains a lower bound until a rate is supplied
 
 Pricing catalog `v1` keeps the verified Azure Luna rates for historical rows and
-the internal quota-only fallback. New summaries normally run through the host's
-Codex subscription and create no Azure/API actual-cost row; a structurally proven
-quota exhaustion may make one reserved Azure request, which is recorded under
-the actual Azure provider instead of as a fabricated zero-dollar charge.
+the retained fallback code. New summaries run through the dedicated Codex PTY
+subscription runtime and create no Azure/API actual-cost row. Canonical
+production keeps Azure summary credentials empty, so quota exhaustion cannot
+make an Azure request.
 The active daily retail refresh covers Azure Speech MAI and its TWD reference;
 historical `gpt-4o-transcribe-diarize` rows with duration-only evidence remain
 unpriced.
@@ -231,7 +231,7 @@ entered in TWD and converted back to the existing USD API precision on save.
 
 Completed jobs can show:
 - Full Transcript
-- Local Codex Summary
+- Codex PTY Summary
 - a content-derived meeting title and topic/subtopic notes with confirmed,
   mixed, or open status
 - only the non-empty grouped follow-up, decision, risk, open-question, and
@@ -258,8 +258,9 @@ Important defaults from [`.env.example`](.env.example):
 - `SUMMARY_MODEL=gpt-5.6-luna`
 - `SUMMARY_REASONING_EFFORT=max`
 - `SUMMARY_TIMEOUT_SECONDS=900`
-- optional paired `AZURE_OPENAI_SUMMARY_ENDPOINT` /
-  `AZURE_OPENAI_SUMMARY_API_KEY` for quota-only fallback
+- `CODEX_PTY_API_TOKEN` set to a dedicated secret of at least 32 bytes
+- `AZURE_OPENAI_SUMMARY_ENDPOINT` and `AZURE_OPENAI_SUMMARY_API_KEY` are
+  retained but forced empty in canonical production
 - `MAX_CONCURRENT_TRANSCRIPTION_JOBS=1`
 - `MAX_MEETING_JOB_BACKLOG=2`
 - `MAX_TRANSCRIPTION_JOB_BACKLOG=10`
@@ -268,9 +269,9 @@ Important defaults from [`.env.example`](.env.example):
 - `AI_PRICING_VERSION=v1`
 - `MEETING_BOT_STOP_TIMEOUT_SECONDS=90`
 
-The template selects Azure Speech MAI for transcription and Local Codex for
-primary summary generation. The separate Azure summary pair is optional and is
-used only after Codex reports a structured reached-limit state.
+The template selects Azure Speech MAI for transcription and AI_NoteTacker's
+dedicated Codex PTY runtime for summary generation. Summary failures are
+explicit; canonical production does not switch to Azure.
 
 ## Backend Operator Auth And Email
 
@@ -326,35 +327,44 @@ questions. Evidence-backed analysis notes are optional. Compatibility
 model request. The prompt contains no PLAUD answer or meeting-specific topic
 list.
 
-Local summary generation reads its ChatGPT login only from the external Docker
-volume `ai_notetacker_summary_codex_home`, mounted read/write at `/codex-home`.
-The host user's default Codex home is not mounted, and the application does not
-accept or store an OAuth token. See
-[`docs/research/2026-08-07-local-codex-auth-isolation.md`](docs/research/2026-08-07-local-codex-auth-isolation.md)
-for the one-time device-login procedure.
+Summary generation runs in the dedicated `codex-pty-agent` service built from
+the shared `claude-telegram-bot` source. The summary worker sends its existing
+prompt to the bearer-authenticated internal `POST /api/prompt` route and keeps
+the existing response-schema validation, artifacts, audits, and failure flow.
+No summary-generation path invokes `codex exec`.
+
+The agent is fixed to `codex-pty`, `gpt-5.6-luna`, and effort `max`. Every
+accepted prompt starts a fresh native session, memory and user profiling are
+disabled, and the working directory is the empty project-local
+`.codex-pty-workdir`. The 1 MiB request cap covers the measured transcript
+range. The container is the unrestricted Codex PTY isolation boundary.
+
+Codex authentication and writable state are isolated in
+`ai_notetacker_codex_pty_home` and `codex_pty_agent_state`. The same operator
+selected OAuth account may be copied to the other bot-specific Codex homes,
+but the volumes, PTY namespace, and sessions are not shared. The summary
+worker's separate `ai_notetacker_summary_codex_home` remains only for the
+structured `account/rateLimits/read` weekly-quota probe. The application does
+not accept OAuth tokens through its UI or committed configuration.
 
 The authenticated admin settings page shows the provider-reported Codex
 seven-day usage, remaining percentage, reset time, and observation time. This
 comes from app-server `account/rateLimits/read`; if the weekly bucket is absent,
 the UI reports it as unavailable instead of estimating from a shorter window.
-`SUMMARY_MODEL` defaults to `gpt-5.6-luna` and
-`SUMMARY_REASONING_EFFORT` defaults to `max`. The Codex subprocess receives the
-transcript on stdin, ignores user configuration/rules, has command tools
-disabled, excludes worker service credentials, and times out after
-`SUMMARY_TIMEOUT_SECONDS` (default `900`). Before the call, the worker reads
-Codex's structured rate-limit state. Only a non-null `rateLimitReachedType` may
-authorize an atomically reserved Azure Responses request; timeout,
-authentication, network, schema, configuration, and unclassified failures do
-not fall back. A durable job reservation prevents another Azure call after a
-worker crash or lease reclaim, and Azure HTTP 400 is preserved without replay.
+`SUMMARY_MODEL` defaults to `gpt-5.6-luna`,
+`SUMMARY_REASONING_EFFORT` defaults to `max`, and
+`SUMMARY_TIMEOUT_SECONDS` defaults to `900` for the Prompt API request. The
+quota probe still reads Codex's structured rate-limit state, but production
+does not use that state to activate Azure because the Azure summary credentials
+are deliberately empty.
 
 The Azure fallback implementation and settings are retained, but canonical
 production Compose injects empty endpoint/key values, so the current deployment
-cannot fall back even when `.env` still contains them. The application still
-does not accept an OAuth token. Before every provider contact, the worker durably starts a request
+cannot fall back even when `.env` still contains them. Before every provider
+contact, the worker durably starts a request
 audit and finalizes the same row with actual provider/model, outcome, external
 request ID, usage, billed audio, and pricing status. Azure fallback usage is
-recorded as Azure spend; normal Local Codex subscription summaries retain token
+recorded as Azure spend; normal Codex PTY subscription summaries retain token
 and outcome evidence under `subscription` billing but do not create an
 Azure/API cost row.
 
@@ -408,16 +418,21 @@ node scripts/run_runtime_smoke.mjs --base-url http://127.0.0.1:3000 --timeout-ms
 
 ### Summary does not appear
 
-For local Codex, check the summary worker environment:
+Check the dedicated Codex PTY agent and summary worker:
 
-- `/codex-home` comes from the dedicated `ai_notetacker_summary_codex_home` volume
-- `CODEX_CLI_PATH` resolves to the Codex executable
-- `codex login status` reports a ChatGPT login inside the worker
-- `SUMMARY_MODEL` is available to that Codex account
-- `account/rateLimits/read` returns a structured snapshot
+- `codex-pty-agent` is healthy and `codex login status` succeeds there
+- `.codex-pty-workdir` exists and is empty
+- `CODEX_PTY_API_URL=http://codex-pty-agent:3001/api/prompt`
+- both services receive the same non-empty `CODEX_PTY_API_TOKEN` without logging it
+- an unauthenticated `/api/prompt` request returns HTTP 401
+- `SUMMARY_MODEL=gpt-5.6-luna`, `SUMMARY_REASONING_EFFORT=max`, fresh sessions,
+  memory disabled, and no provider failover are present in resolved Compose
+- `/codex-home` in `summary-worker` is used only for
+  `account/rateLimits/read`, and that probe returns a structured snapshot
 - `/api/admin/codex-usage` returns the latest sanitized seven-day snapshot after admin login
-- the Azure summary endpoint/key pair is either both configured or both absent
-- the summary worker was rebuilt and recreated after code or model changes
+- the Azure summary endpoint and key resolve to empty strings
+- both `codex-pty-agent` and `summary-worker` were rebuilt and recreated after
+  code or model changes
 
 ### Chinese upload file names look wrong
 

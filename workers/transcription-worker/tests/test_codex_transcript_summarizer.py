@@ -1,6 +1,5 @@
 import os
 import json
-import signal
 import subprocess
 import sys
 import time
@@ -12,38 +11,51 @@ from unittest.mock import patch
 from transcription_worker.codex_transcript_summarizer import (
     CodexTranscriptSummarizer,
     _rate_limit_snapshot_is_exhausted,
-    _run_codex_process,
     _terminate_process_group,
     codex_weekly_usage_from_rate_limits,
     is_codex_quota_exhausted,
 )
 
-
-class _FakeCompletedProcess:
-    def __init__(self, stdout: str, stderr: str = "", returncode: int = 0):
-        self.stdout = stdout
-        self.stderr = stderr
-        self.returncode = returncode
+_API_URL = "http://codex-pty-agent:3001/api/prompt"
+_API_TOKEN = "test-only-codex-pty-token"
 
 
 class CodexTranscriptSummarizerTests(unittest.TestCase):
     def test_returns_structured_summary_and_markdown_text(self) -> None:
         audit_updates = []
 
-        def fake_runner(*_args, **_kwargs):
-            return _FakeCompletedProcess(
-                '\n'.join(
-                    [
-                        '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"title\\":\\"產品上線規劃\\",\\"summary\\":\\"討論產品上線時程。\\",\\"topics\\":[{\\"title\\":\\"上線規劃\\",\\"status\\":\\"mixed\\",\\"subtopics\\":[{\\"title\\":\\"發布準備\\",\\"details\\":[\\"需要完成 QA\\"]}],\\"conclusion\\":\\"先上 beta，對外公告負責人待確認。\\"}],\\"follow_up_groups\\":[{\\"title\\":\\"發布作業\\",\\"items\\":[\\"Andy 更新發布清單\\"]}],\\"decisions\\":[\\"先上 beta\\"],\\"risks\\":[\\"時程壓縮\\"],\\"open_questions\\":[\\"誰負責對外公告？\\"],\\"analysis_notes\\":[]}"}}',
-                        '{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":300}}'
-                    ]
-                )
+        def fake_requester(**_kwargs):
+            return json.dumps(
+                {
+                    "title": "產品上線規劃",
+                    "summary": "討論產品上線時程。",
+                    "topics": [
+                        {
+                            "title": "上線規劃",
+                            "status": "mixed",
+                            "subtopics": [
+                                {"title": "發布準備", "details": ["需要完成 QA"]}
+                            ],
+                            "conclusion": "先上 beta，對外公告負責人待確認。",
+                        }
+                    ],
+                    "follow_up_groups": [
+                        {"title": "發布作業", "items": ["Andy 更新發布清單"]}
+                    ],
+                    "decisions": ["先上 beta"],
+                    "risks": ["時程壓縮"],
+                    "open_questions": ["誰負責對外公告？"],
+                    "analysis_notes": [],
+                },
+                ensure_ascii=False,
             )
 
         summarizer = CodexTranscriptSummarizer(
             model="gpt-5.3-codex-spark",
             reasoning_effort="medium",
-            runner=fake_runner,
+            api_url=_API_URL,
+            api_token=_API_TOKEN,
+            requester=fake_requester,
         )
 
         result = summarizer.summarize(
@@ -65,72 +77,63 @@ class CodexTranscriptSummarizerTests(unittest.TestCase):
             [update["action"] for update in audit_updates], ["start", "finish"]
         )
         self.assertEqual(audit_updates[0]["provider"], "local-codex")
-        self.assertEqual(
-            audit_updates[1]["usage"],
-            {
-                "inputTokens": 1000,
-                "cachedInputTokens": 200,
-                "outputTokens": 300,
-                "reasoningOutputTokens": 0,
-                "totalTokens": 1300,
-            },
-        )
+        self.assertIsNone(audit_updates[1]["usage"])
 
     def test_applies_summary_profile_guidance_to_the_prompt(self) -> None:
         captured = {}
 
-        def fake_runner(command, **kwargs):
-            captured["command"] = command
-            captured["kwargs"] = kwargs
-            captured["cwd_exists"] = Path(kwargs["cwd"]).is_dir()
-            return _FakeCompletedProcess(
-                '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"title\\":\\"客戶導入討論\\",\\"summary\\":\\"已整理業務重點\\",\\"topics\\":[{\\"title\\":\\"客戶需求\\",\\"status\\":\\"open\\",\\"subtopics\\":[{\\"title\\":\\"導入時程\\",\\"details\\":[\\"客戶詢問導入時程\\"]}],\\"conclusion\\":\\"導入時程尚待確認。\\"}],\\"follow_up_groups\\":[],\\"decisions\\":[],\\"risks\\":[],\\"open_questions\\":[],\\"analysis_notes\\":[]}"}}'
+        def fake_requester(**kwargs):
+            captured.update(kwargs)
+            return json.dumps(
+                {
+                    "title": "客戶導入討論",
+                    "summary": "已整理業務重點",
+                    "topics": [
+                        {
+                            "title": "客戶需求",
+                            "status": "open",
+                            "subtopics": [
+                                {
+                                    "title": "導入時程",
+                                    "details": ["客戶詢問導入時程"],
+                                }
+                            ],
+                            "conclusion": "導入時程尚待確認。",
+                        }
+                    ],
+                    "follow_up_groups": [],
+                    "decisions": [],
+                    "risks": [],
+                    "open_questions": [],
+                    "analysis_notes": [],
+                },
+                ensure_ascii=False,
             )
 
         summarizer = CodexTranscriptSummarizer(
-            model="gpt-5.3-codex-spark",
-            reasoning_effort="medium",
-            runner=fake_runner,
+            model="gpt-5.6-luna",
+            reasoning_effort="max",
+            api_url=_API_URL,
+            api_token=_API_TOKEN,
+            requester=fake_requester,
         )
 
-        with patch.dict(
-            os.environ,
+        result = summarizer.summarize(
             {
-                "CODEX_HOME": "/codex-home",
-                "INTERNAL_SERVICE_TOKEN": "test-only-internal-token",
-                "AZURE_OPENAI_SUMMARY_API_KEY": "test-only-retired-key",
+                "language": "zh",
+                "segments": [
+                    {"start_ms": 0, "end_ms": 1000, "text": "客戶詢問導入時程"}
+                ],
             },
-        ):
-            summarizer.summarize(
-                {
-                    "language": "zh",
-                    "segments": [
-                        {"start_ms": 0, "end_ms": 1000, "text": "客戶詢問導入時程"}
-                    ],
-                },
-                summary_profile="sales",
-                model_override="gpt-5.4-nano",
-            )
-
-        prompt = captured["kwargs"]["input"]
-        self.assertIn("gpt-5.4-nano", captured["command"])
-        self.assertEqual(captured["command"][-1], "-")
-        self.assertIn("--ignore-user-config", captured["command"])
-        self.assertIn("--ignore-rules", captured["command"])
-        self.assertEqual(
-            [
-                captured["command"][index + 1]
-                for index, value in enumerate(captured["command"])
-                if value == "--disable"
-            ],
-            ["shell_tool", "unified_exec", "code_mode_host"],
+            summary_profile="sales",
+            model_override="gpt-5.4-nano",
         )
-        self.assertTrue(captured["cwd_exists"])
-        self.assertFalse(Path(captured["kwargs"]["cwd"]).exists())
-        self.assertEqual(captured["kwargs"]["env"]["CODEX_HOME"], "/codex-home")
-        self.assertNotIn("INTERNAL_SERVICE_TOKEN", captured["kwargs"]["env"])
-        self.assertNotIn("AZURE_OPENAI_SUMMARY_API_KEY", captured["kwargs"]["env"])
-        self.assertEqual(captured["kwargs"]["timeout"], 900)
+
+        prompt = captured["prompt"]
+        self.assertEqual(result["model"], "gpt-5.6-luna")
+        self.assertEqual(captured["api_url"], _API_URL)
+        self.assertEqual(captured["api_token"], _API_TOKEN)
+        self.assertEqual(captured["timeout_seconds"], 900)
         self.assertIn("untrusted meeting content", prompt.lower())
         self.assertIn("begin_untrusted_transcript", prompt.lower())
         self.assertIn("prefer complete coverage over a shorter answer", prompt.lower())
@@ -141,15 +144,15 @@ class CodexTranscriptSummarizerTests(unittest.TestCase):
     def test_rejects_new_summary_without_topic_schema(self) -> None:
         audit_updates = []
 
-        def fake_runner(*_args, **_kwargs):
-            return _FakeCompletedProcess(
-                '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"summary\\":\\"缺少主題。\\",\\"key_points\\":[],\\"action_items\\":[],\\"decisions\\":[],\\"risks\\":[],\\"open_questions\\":[]}"}}'
-            )
+        def fake_requester(**_kwargs):
+            return '{"summary":"缺少主題。","key_points":[],"action_items":[],"decisions":[],"risks":[],"open_questions":[]}'
 
         summarizer = CodexTranscriptSummarizer(
             model="gpt-5.3-codex-spark",
             reasoning_effort="medium",
-            runner=fake_runner,
+            api_url=_API_URL,
+            api_token=_API_TOKEN,
+            requester=fake_requester,
         )
 
         with self.assertRaisesRegex(RuntimeError, "invalid summary payload"):
@@ -167,25 +170,16 @@ class CodexTranscriptSummarizerTests(unittest.TestCase):
         self.assertEqual(audit_updates[-1]["status"], "failed")
         self.assertEqual(audit_updates[-1]["errorCode"], "response-validation-failed")
 
-    def test_raises_the_structured_codex_error_message_when_stdout_contains_it(self) -> None:
-        def fake_runner(*_args, **_kwargs):
-            return _FakeCompletedProcess(
-                stdout="\n".join(
-                    [
-                        '{"type":"thread.started","thread_id":"abc"}',
-                        '{"type":"turn.started"}',
-                        '{"type":"error","message":"The configured model is unavailable."}',
-                        '{"type":"turn.failed","error":{"message":"The configured model is unavailable."}}',
-                    ]
-                ),
-                stderr="Reading additional input from stdin...",
-                returncode=1,
-            )
+    def test_surfaces_codex_pty_request_failures(self) -> None:
+        def fake_requester(**_kwargs):
+            raise RuntimeError("The configured model is unavailable.")
 
         summarizer = CodexTranscriptSummarizer(
             model="gpt-5.3-codex-spark",
             reasoning_effort="medium",
-            runner=fake_runner,
+            api_url=_API_URL,
+            api_token=_API_TOKEN,
+            requester=fake_requester,
         )
 
         with self.assertRaisesRegex(RuntimeError, "configured model is unavailable"):
@@ -201,18 +195,20 @@ class CodexTranscriptSummarizerTests(unittest.TestCase):
     def test_applies_the_configured_wall_clock_timeout(self) -> None:
         captured = {}
 
-        def fake_runner(*_args, **kwargs):
-            captured["timeout"] = kwargs["timeout"]
-            raise subprocess.TimeoutExpired("codex", kwargs["timeout"])
+        def fake_requester(**kwargs):
+            captured["timeout"] = kwargs["timeout_seconds"]
+            raise TimeoutError("request timed out")
 
         summarizer = CodexTranscriptSummarizer(
             model="gpt-5.6-luna",
             reasoning_effort="max",
+            api_url=_API_URL,
+            api_token=_API_TOKEN,
             timeout_seconds=17,
-            runner=fake_runner,
+            requester=fake_requester,
         )
 
-        with self.assertRaises(subprocess.TimeoutExpired):
+        with self.assertRaises(TimeoutError):
             summarizer.summarize(
                 {
                     "language": "zh",
@@ -354,76 +350,6 @@ class CodexTranscriptSummarizerTests(unittest.TestCase):
             )["status"],
             "unavailable",
         )
-
-    def test_timeout_terminates_the_codex_process_group(self) -> None:
-        with TemporaryDirectory(prefix="codex-timeout-test-") as directory:
-            child_pid_path = Path(directory, "child.pid")
-            script = (
-                "import subprocess, sys, time; "
-                "from pathlib import Path; "
-                "child = subprocess.Popen([sys.executable, '-c', "
-                "'import time; time.sleep(60)']); "
-                "Path(sys.argv[1]).write_text(str(child.pid)); "
-                "time.sleep(60)"
-            )
-
-            with self.assertRaisesRegex(RuntimeError, "codex timed out after"):
-                _run_codex_process(
-                    [sys.executable, "-c", script, str(child_pid_path)],
-                    prompt="",
-                    environment={},
-                    working_directory=directory,
-                    timeout_seconds=1,
-                    terminate_grace_seconds=0.05,
-                )
-
-            child_pid = int(child_pid_path.read_text())
-            child_running = True
-            for _ in range(50):
-                try:
-                    state = Path(f"/proc/{child_pid}/stat").read_text().split()[2]
-                    child_running = state != "Z"
-                except FileNotFoundError:
-                    child_running = False
-                if not child_running:
-                    break
-                time.sleep(0.02)
-
-            if child_running:
-                os.kill(child_pid, signal.SIGKILL)
-            self.assertFalse(child_running)
-
-    def test_timeout_kills_a_pipe_holding_child_after_its_parent_exits(self) -> None:
-        with TemporaryDirectory(prefix="codex-orphan-timeout-test-") as directory:
-            child_pid_path = Path(directory, "child.pid")
-            script = (
-                "import subprocess, sys; "
-                "from pathlib import Path; "
-                "child = subprocess.Popen([sys.executable, '-c', "
-                "'import time; time.sleep(60)']); "
-                "Path(sys.argv[1]).write_text(str(child.pid))"
-            )
-
-            with self.assertRaisesRegex(RuntimeError, "codex timed out after"):
-                _run_codex_process(
-                    [sys.executable, "-c", script, str(child_pid_path)],
-                    prompt="",
-                    environment={},
-                    working_directory=directory,
-                    timeout_seconds=0.2,
-                    terminate_grace_seconds=0.05,
-                )
-
-            child_pid = int(child_pid_path.read_text())
-            try:
-                state = Path(f"/proc/{child_pid}/stat").read_text().split()[2]
-                child_running = state != "Z"
-            except FileNotFoundError:
-                child_running = False
-
-            if child_running:
-                os.kill(child_pid, signal.SIGKILL)
-            self.assertFalse(child_running)
 
     def test_process_group_termination_returns_promptly_after_clean_exit(self) -> None:
         process = subprocess.Popen(

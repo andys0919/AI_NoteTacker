@@ -29,15 +29,15 @@ uses.
   - sends a multilingual preservation prompt plus workflow-specific verified terminology; it does not ask the provider to translate non-Chinese speech
   - splits long recordings into five-minute uploads with an 800-character preceding-context tail; an audible sparse span is replayed at most twice, while an HTTP 200 span of at least 20 seconds with gzip ratio over 4.0 is replayed from the same audio in at-most-30-second chunks without preceding generated-text context; persistently invalid text fails instead of being stored
   - keeps provider output as immutable raw evidence, converts only confidently Chinese display text to Traditional Chinese, and attaches non-authoritative review candidates for uncertain high-risk terms
-- the separate summary process runs Local Codex as the primary route using the
-  claimed job's model snapshot, with one internal Azure fallback only after the
-  structured Codex quota state reports exhaustion
+- the separate summary process sends the existing prompt to AI_NoteTacker's
+  dedicated shared-runtime `codex-pty-agent` over authenticated `/api/prompt`
 - the summary process claims work from its own local summary pool
 - posts transcript or summary artifacts back to the control plane from the responsible process
 - stores every provider request start before contacting the provider and
   finalizes the same audit row with outcome, external request ID, usage, and
   pricing evidence; terminal callbacks reference those request IDs
-- invokes Codex CLI with `reasoning.effort=max` and the latched summary model
+- runs `gpt-5.6-luna` with effort `max` in a fresh Codex PTY session with
+  memory disabled and an empty working directory
 - uses a 300-second socket-operation timeout for Azure transcription uploads and a 30-second timeout for control-plane GET/POST calls by default
 - rejects summaries unless `title` and `summary` are non-empty strings;
   `topics`, `follow_up_groups`, `decisions`, `risks`, `open_questions`, and
@@ -96,22 +96,25 @@ Summary process:
 
 - `SUMMARY_MODEL`
 - `SUMMARY_REASONING_EFFORT`
-- `SUMMARY_TIMEOUT_SECONDS` (positive wall-clock timeout; default `900`)
-- `CODEX_CLI_PATH`
-- `CODEX_HOME`
+- `SUMMARY_TIMEOUT_SECONDS` (positive Prompt API wall-clock timeout; default `900`)
+- `CODEX_PTY_API_URL` (canonical internal URL:
+  `http://codex-pty-agent:3001/api/prompt`)
+- `CODEX_PTY_API_TOKEN` (dedicated secret of at least 32 bytes)
+- `CODEX_CLI_PATH` and `CODEX_HOME` only for the structured weekly-quota probe;
+  summary generation does not invoke `codex exec`
 - retained `AZURE_OPENAI_SUMMARY_ENDPOINT` and
   `AZURE_OPENAI_SUMMARY_API_KEY` settings; canonical production Compose injects
   empty values and therefore cannot activate the fallback
 - `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS` (default `900`)
 
-`CODEX_HOME` must contain an existing protected Codex login. Do not paste OAuth
-tokens into application settings or Compose variables. Subscription summaries
-are audited with their token usage but are not reported as metered API spend.
-The worker checks Codex's structured
-rate-limit state and makes one atomically reserved Azure Responses request only
-when `rateLimitReachedType` reports exhaustion. Generic failures do not fall
-back, Azure HTTP 400 is not replayed, and a lease reclaim cannot repeat the
-Azure call; Azure fallback usage is reported under the actual Azure provider.
+The `codex-pty-agent` keeps its protected ChatGPT login and writable runtime
+state in bot-specific volumes. The summary worker has a separate protected
+`CODEX_HOME` only for `account/rateLimits/read`. Do not paste OAuth tokens into
+application settings or Compose variables. Subscription summaries are audited
+with their token usage but are not reported as metered API spend. Canonical
+production injects empty Azure summary credentials, so Prompt API, PTY,
+authentication, quota, timeout, and schema failures fail explicitly without an
+Azure request.
 
 ## Provider Selection
 
@@ -121,7 +124,8 @@ The worker does not choose the provider by itself.
 - each stage claim returns the effective job snapshot for that job
 - the transcription process uses `transcriptionProvider`
 - the summary process accepts only `summaryProvider=local-codex` as the primary route
-- Azure is internal quota-only fallback, not a job/provider selection
+- Azure remains an internal quota-only fallback implementation, not a
+  job/provider selection; canonical production disables it with empty credentials
 - once claimed or submitted, the job keeps that routing even if the admin switches future defaults later
 - summary generation begins only after the summary process claims the job
 

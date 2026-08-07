@@ -3,7 +3,7 @@
 ## Purpose
 Build a self-hosted meeting recording and transcription platform that can join supported meetings through direct meeting links, record audio/video inside isolated workers, and produce Whisper-based transcripts without relying on the user's workstation audio stack.
 
-The current product focus is still operational reliability for recording and transcript generation, but the repository now also includes local Codex summaries, structured action items/decisions/risks/open questions, archive search/export, and operator controls needed to make the system usable day to day.
+The current product focus is still operational reliability for recording and transcript generation, but the repository now also includes Codex PTY summaries, structured action items/decisions/risks/open questions, archive search/export, and operator controls needed to make the system usable day to day.
 
 ## Tech Stack
 - OpenSpec for change proposals, design docs, and requirement tracking
@@ -13,8 +13,9 @@ The current product focus is still operational reliability for recording and tra
 - FFmpeg, Xvfb, and PulseAudio for isolated media capture where browser-native capture is insufficient
 - Transcription selected by policy among Azure Speech `mai-transcribe-1.5`,
   self-hosted Qwen3-ASR or Whisper, and Azure OpenAI `gpt-4o-transcribe`
-- Meeting summaries through Local Codex using `gpt-5.6-luna` with max reasoning;
-  Azure Luna is an internal fallback only for a structured Codex quota-exhausted state
+- Meeting summaries through an AI_NoteTacker-owned shared Codex PTY runtime,
+  fixed to `gpt-5.6-luna` with max reasoning, fresh sessions, no memory, and an
+  empty working directory; canonical production has no Azure summary fallback
 - Object storage compatible with S3/MinIO for recording artifacts
 - PostgreSQL for job metadata and transcript indexing
 
@@ -70,7 +71,8 @@ The current product focus is still operational reliability for recording and tra
 - Whisper model weights and runtime dependencies
 - S3-compatible object storage such as MinIO
 - PostgreSQL
-- Azure OpenAI / Microsoft Foundry for optional hosted transcription and the
-  quota-only summary fallback
-- Codex CLI with a dedicated Business ChatGPT login volume for summary generation
+- Azure OpenAI / Microsoft Foundry for optional hosted transcription; retained
+  summary fallback code is disabled by canonical production configuration
+- Shared `claude-telegram-bot` Codex PTY source plus bot-specific OAuth/state
+  volumes for summary generation
 - A fork or derivative of `screenappai/meeting-bot` as the likely browser automation foundation

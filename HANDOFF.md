@@ -1,4 +1,4 @@
-# Handoff — MAI 主轉錄、Local Codex 主摘要、quota-only Azure fallback
+# Handoff — MAI 主轉錄、獨立 Codex PTY 主摘要
 
 _更新：2026-08-07（Asia/Taipei）_
 
@@ -7,9 +7,9 @@ _更新：2026-08-07（Asia/Taipei）_
 使用者已核准把 Azure Speech `mai-transcribe-1.5` 改為新工作的主轉錄，並於
 2026-07-30 決定正式系統不再做 Speaker 分類；Qwen、Azure OpenAI
 transcription 與 Whisper 保留為 operator 可選 fallback。轉寫 worker 不取得或
-使用 Azure Luna 設定；summary worker 預設透過本機 Codex CLI，以
-`gpt-5.6-luna`、`reasoning.effort=max` 執行。只有 Codex 結構化 quota 狀態明確
-回報 reached 時才單次 fallback 到 Azure Luna。產品不接收或保存 OAuth token。
+使用 Azure Luna 設定；summary worker 透過 AI_NoteTacker 自己的 shared-runtime
+`codex-pty-agent` 執行 `gpt-5.6-luna`、effort `max`。每筆工作都是全新 session、
+不使用記憶，canonical production 不 fallback Azure。產品不接收或保存 OAuth token。
 
 處理鏈如下：
 
@@ -22,17 +22,35 @@ transcription 與 Whisper 保留為 operator 可選 fallback。轉寫 worker 不
 3. Speaker 分類：轉寫 worker 不接 diarization 設定，也不發出
    `gpt-4o-transcribe-diarize` request；歷史 metadata 保留相容，但不進摘要
    prompt、閱讀畫面、管理台逐字稿或文字匯出。
-4. 摘要：獨立 Local Codex CLI request，model `gpt-5.6-luna`、
-   `reasoning.effort=max`；只有 preflight Codex `rateLimitReachedType` 明確為
-   reached，才先原子保留並做最多一個 Azure Responses request。其他錯誤與
-   不完整輸出不得 fallback 或儲存半成品。
+4. 摘要：summary worker 將既有 prompt POST 到自己 stack 內的 authenticated
+   `/api/prompt`；agent 固定 `codex-pty`、`gpt-5.6-luna`、effort `max`，使用空
+   cwd、每 turn fresh session、memory/profiling 關閉。任何 Prompt API、PTY、登入、
+   quota、timeout 或 schema 錯誤均明確失敗，不發 Azure request 或儲存半成品。
 5. Cloud usage：每個外部推論 request 在呼叫 provider 前先建立 durable audit，
    再以同一 request ID 保存 actual provider/model、成功或失敗、provider request
-   ID、token／raw 與 billed audio、計價狀態與時間。Local Codex 保存 subscription
+   ID、token／raw 與 billed audio、計價狀態與時間。Codex PTY 保存 subscription
    request/token 稽核但不建立 Azure/API actual-cost row，也不宣稱訂閱呼叫為 `$0`；
-   Azure quota fallback 只允許單次 request，依實際 provider 與 usage 入帳。
+   保留的 Azure quota fallback code 只允許單次 request，但 canonical production
+   credential 為空，因此目前不會觸發。
 
 ## 目前 checkpoint
+
+### 2026-08-07 AI_NoteTacker 專屬 Codex PTY runtime 已部署
+
+- 摘要 generation 已移除 `codex exec`，改由 AI_NoteTacker Compose 內唯一的
+  HTTP-only shared-runtime process 提供既有 `POST /api/prompt`；沒有呼叫 Report
+  agent，也沒有新增 `/api/codex/tasks` 或 `/api/codex/usage`。
+- agent 固定 `codex-pty`／`gpt-5.6-luna`／`max`、1 MiB request cap、空的
+  `/home/solomon/Andy/AI_NoteTacker/.codex-pty-workdir`、每 turn fresh session，
+  memory/profiling/failover 全部關閉。OAuth 帳號可共用，但
+  `CODEX_HOME`、PTY namespace 與 session state 均為 bot 專屬。
+- focused Python 22 tests、launcher TypeScript typecheck、resolved Compose、
+  `use-shared-codex-runtime` strict OpenSpec 與 `git diff --check` 均通過。
+  live authenticated structured summary、unauthenticated 401、連續不同 native
+  session id，以及 Report/AI concurrent PTY smoke 均通過；兩個服務 running。
+- summary worker 仍只用自己的 `CODEX_HOME` 執行
+  `account/rateLimits/read` weekly quota probe；model generation 不再由該 worker
+  啟動 Codex CLI。Azure summary endpoint/key 在 production 仍固定為空。
 
 ### 2026-08-07 Codex weekly allowance in admin settings
 
@@ -48,7 +66,10 @@ transcription 與 Whisper 保留為 operator 可選 fallback。轉寫 worker 不
 - live page source 已從 `http://10.1.2.158:3000/admin` 讀回新區塊。此 session 缺少
   in-app Browser 控制介面，因此尚未宣稱 desktop／mobile rendered visual inspection。
 
-### 2026-08-07 Local Codex Business runtime identity isolation
+### 2026-08-07 Local Codex Business runtime identity isolation（歷史 transition）
+
+下列紀錄保留當時 direct-CLI 認證隔離證據；目前 summary generation 已由上方
+專屬 Codex PTY runtime 取代，`summary-worker` volume 只負責 weekly quota probe。
 
 - `summary-worker` 已從主機 `/home/solomon/.codex` bind mount 切換為唯一的外部
   Docker volume `ai_notetacker_summary_codex_home`；主機登入仍為 `pro`，runtime
@@ -563,49 +584,50 @@ transcription 與 Whisper 保留為 operator 可選 fallback。轉寫 worker 不
   removal 已讀回。尚未實際觸發 private meeting-bot stop/restart，因此
   `add-runtime-operations-hardening` task 2.4 保持未完成。
 
-## Local Codex runtime 與設定契約
+## Codex PTY runtime 與設定契約
 
 摘要必填／預設設定：
 
-- dedicated `ai_notetacker_summary_codex_home` Docker volume：受保護的 Business
-  `codex login` 狀態；不得掛入 host 預設 Codex home，產品不接收 OAuth token。
-- `SUMMARY_MODEL=gpt-5.6-luna`。
-- `SUMMARY_REASONING_EFFORT=max`。
-- `SUMMARY_TIMEOUT_SECONDS=900`：Codex CLI 的 wall-clock timeout。
-- `CONTROL_PLANE_TIMEOUT_SECONDS=30`：worker 對 control-plane 的 HTTP timeout。
+- `codex-pty-agent` 是 AI_NoteTacker 自己的 HTTP-only shared-runtime process；只用
+  既有 bearer-authenticated `POST /api/prompt`，request cap 為 1 MiB。
+- `AGENT_PROVIDER=codex-pty`、`CODEX_MODEL=gpt-5.6-luna`，project slot effort
+  固定 `max`，`PROVIDER_FAILOVER_ENABLED=false`。
+- `PTY_FRESH_SESSION_PER_TURN=true`、`MEMORY_FEATURES_ENABLED=false`、
+  `USER_PROFILING_ENABLED=false`。
+- cwd 固定 `/workspace/codex-pty-workdir`，對應 host 空目錄
+  `/home/solomon/Andy/AI_NoteTacker/.codex-pty-workdir`。
+- `CODEX_PTY_API_TOKEN` 是至少 32 bytes 的 dedicated secret，只存在 gitignored
+  `.env` 與 service env；不得寫入文件、commit 或 log。
+- `SUMMARY_TIMEOUT_SECONDS=900` 是 summary worker 對 Prompt API 的 wall-clock
+  timeout；`CONTROL_PLANE_TIMEOUT_SECONDS=30` 是 worker 對 control-plane 的 HTTP
+  timeout。
 
-canonical production 固定把 `AZURE_OPENAI_SUMMARY_ENDPOINT`、
-`AZURE_OPENAI_SUMMARY_API_KEY` 設為空；`AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS`
-預設 `900`。三個名稱只可出現在 summary-worker，不能出現在 control-plane 或
-transcription worker。Local Codex 額度或登入失敗時必須明確失敗，不發 Azure
-request。Azure
-Speech MAI 轉錄仍要求
-`AZURE_SPEECH_MAI_ENDPOINT`、`AZURE_SPEECH_MAI_API_KEY` 與
-`AZURE_SPEECH_MAI_MODEL=mai-transcribe-1.5` 成組設定。
+`ai_notetacker_codex_pty_home` 保存 agent 的 ChatGPT OAuth；
+`codex_pty_agent_state` 保存其 session/runtime state；PTY namespace 固定
+`ai-notetacker-codex-pty`。可與其他 bot 使用同一個 OAuth 帳號，但不得共用可寫
+`CODEX_HOME`、PTY 或 session volume。`ai_notetacker_summary_codex_home` 只留給
+summary worker 的 `account/rateLimits/read` weekly quota probe；summary generation
+不得再啟動 `codex exec`。
 
-逐字稿是未受信任資料。summary worker 以 stdin 傳給 `codex exec`，忽略 user
-config 與 rules、停用 `shell_tool`／`unified_exec`／`code_mode_host`、使用空的
-暫存 cwd，並以環境白名單啟動 Codex 子程序；`INTERNAL_SERVICE_TOKEN` 與 Azure
-key 都不會傳給 Codex exec 或 quota app-server。CLI 超過 timeout 時沿既有
-`summary-failed` 流程結束，heartbeat 不會永久續租。摘要 JSON 仍必須完整包含
-`title`、`summary`、`topics`、
-`follow_up_groups`、`decisions`、`risks`、`open_questions` 與
-`analysis_notes`；缺欄、錯型或空輸出均不得儲存半成品。
+逐字稿是未受信任資料。summary worker 建立既有 prompt 後只送往內部
+`http://codex-pty-agent:3001/api/prompt`；Codex PTY 的 unrestricted surface 以 agent
+container 為隔離邊界。Prompt API authentication、transport、timeout、PTY、quota、
+schema 或不完整輸出一律沿 `summary-failed` 流程結束，heartbeat 不會永久續租。
+摘要 JSON 仍必須完整包含 `title`、`summary`、`topics`、`follow_up_groups`、
+`decisions`、`risks`、`open_questions` 與 `analysis_notes`；缺欄、錯型或空輸出均
+不得儲存半成品。
 
-Local Codex 摘要不建立 API actual-cost row，也不標示為 `$0` provider charge；
-Azure fallback usage 依 actual provider 另建 summary actual row。歷史與新 fallback
-Azure Luna ledger 都沿用 checked-in pricing provenance；無完整 meter 資訊時維持
-`unpriced`，不捏造 `$0`。
+canonical production 固定把 `AZURE_OPENAI_SUMMARY_ENDPOINT` 與
+`AZURE_OPENAI_SUMMARY_API_KEY` 設為空，任何 Codex 失敗都不發 Azure request。
+Azure Speech MAI 轉錄仍要求 `AZURE_SPEECH_MAI_ENDPOINT`、
+`AZURE_SPEECH_MAI_API_KEY` 與 `AZURE_SPEECH_MAI_MODEL=mai-transcribe-1.5` 成組設定。
 
-每個 MAI、Azure OpenAI、Qwen 或 Local Codex 推論 request 都先在
-`provider_request_ledger` 建立 `started` row；start 失敗即不得呼叫 provider。
-完成或失敗後以同一 request ID 做 idempotent finalization，保存 actual
-provider/model、external request ID、HTTP status／error class、token、raw／billed
-audio、billing/pricing status 與時間。process 在 provider 回應前後中斷時，該 row
-維持 `started` 且明確標為可能未定價費用；terminal callback 若漏列、列到未完成
-request，或 provider/model 不符，會被拒絕。request-level Azure actual row 取代同
-lease 的舊 terminal aggregate，避免重複收費；Local Codex 與 Qwen audit 分別標為
-`subscription`／`self-hosted`，不併入 Azure spend。
+Codex PTY 摘要不建立 API actual-cost row，也不標示為 `$0` provider charge。
+每個 MAI、Azure OpenAI、Qwen 或 Codex PTY 推論 request 仍先在
+`provider_request_ledger` 建立 `started` row，再以同一 request ID 做 idempotent
+finalization；Codex PTY 與 Qwen audit 分別標為 `subscription`／`self-hosted`，不
+併入 Azure spend。歷史 Azure Luna ledger 沿用 checked-in pricing provenance；無
+完整 meter 資訊時維持 `unpriced`，不捏造 `$0`。
 
 ## 歷史 Punctuation usage 與 lifecycle settlement
 
@@ -715,10 +737,10 @@ subscription 的 `EffectivePrice`；而且目前 callback 沒有這三種 billed
   complete cost 維持 unpriced，成功 upload subtotal 只作為 lower bound。
 - 歷史 MAI row 沒有保存每次 upload 邊界，reporting 只依 raw audio duration
   解析 USD 0.36/hour 的 known lower bound，仍保留 unpriced 且不修改 immutable ledger。
-- 新工作通常只有 Azure 轉錄進入 cloud usage；Local Codex summary 不建立
-  actual usage row。只有結構化 quota exhaustion 觸發的單次 Azure Luna fallback
-  會以實際 `azure-openai` provider 建立 summary usage；歷史 Luna summary／潤稿
-  row 仍依保存的 provider/model 資料處理。
+- 新工作通常只有 Azure 轉錄進入 cloud usage；Codex PTY summary 不建立 actual
+  usage row。canonical production 的 Azure summary credential 為空，因此 quota
+  exhaustion 不會發 Azure request；歷史 Luna summary／潤稿 row 仍依保存的
+  provider/model 資料處理。
 - `gpt-4o-transcribe-diarize` 舊 row 只有 `audioMs`，不足以重建三種 billed
   token charge，因此仍是 unpriced。
 - 任一 actual entry 未完整定價時，完整 `totalCostUsd` 必須是 `null` 並設
@@ -738,31 +760,33 @@ subscription 的 `EffectivePrice`；而且目前 callback 沒有這三種 billed
 - 不能證明 lease duplicate／superseded callback 在 live 環境只結算一次。
 - 沒有保留目前版本的完整 audio upload → transcription → punctuation → summary E2E artifact。
 
-## Canonical Local Codex + quota fallback deploy 與 rollback
+## Canonical Codex PTY deploy 與 rollback
 
 production 一律使用 `docker-compose.yml` + `docker-compose.screenapp.yml`；不要執行
 bare `docker compose up`，否則 recording worker 會掉回 stub。worker source baked
-into image，所以 code 修改一定要 rebuild 並 recreate。本次只授權部署；目前沒有
-commit、push、archive、tag 或 pull request 權限。
+into image，所以 code 修改一定要 rebuild 並 recreate。Codex PTY agent 另外從
+`CLAUDE_TELEGRAM_SOURCE_DIR` build shared runtime；不得改接 Report agent endpoint。
 
 forward order：
 
-1. 讀回 DB，確認沒有非終態 `summary_provider='azure-openai'` job、active summary
-   lease 或等待中的 summary。若存在，只遷移非終態 snapshot，不改歷史完成資料。
-2. render Compose，確認只有 summary-worker 有 Azure summary env key names，且
-   endpoint/key 都是空白；control-plane／transcription worker 均沒有。另確認
-   Local Codex Luna/max、有限 timeout 與 dedicated named-volume `CODEX_HOME`
-   mount；不讀取、輸出或修改 credential 值。
-3. 保存可回復的 DB backup 與前一版 image identifiers 後，執行 canonical deploy。
-4. 讀取 operator policy 觸發 singleton normalization，再由 DB 確認
+1. 確認 gitignored `.env` 有至少 32 bytes 的 `CODEX_PTY_API_TOKEN`，
+   `CLAUDE_TELEGRAM_SOURCE_DIR` 指向最新 shared runtime，且
+   `.codex-pty-workdir` 存在、為空、可由 container 的 `bun` user 使用。
+2. 確認 `ai_notetacker_codex_pty_home`、`ai_notetacker_summary_codex_home` 已有同一
+   operator-selected ChatGPT OAuth；只比較或複製 credential file，不輸出 token。
+3. render Compose，確認 agent 為 Codex PTY/Luna/max、fresh/no-memory/no-failover、
+   1 MiB cap、bot-specific volumes；summary worker 指向內部 `/api/prompt`。Azure
+   summary endpoint/key 必須是空字串。
+4. 保存可回復的 DB backup 與前一版 image identifiers，執行 canonical deploy，
+   再讀取 operator policy 確認
    `summary_provider='local-codex'` 已持久化。
-5. 驗證 health、worker-to-control-plane reachability、restart count、Codex ChatGPT
-   login、structured rate-limit read、model availability、effective env key names 與
-   近期錯誤日誌。跑去識別 Local Codex summary，但不為驗證刻意觸發付費 fallback。
+5. 驗證 agent/worker health、兩個 Codex login、unauthenticated Prompt API 401、
+   structured weekly quota、live structured summary、連續不同 native session ID、
+   Report/AI concurrency 與近期錯誤日誌。
 
 rollback：停止新 claim，保留 schema-aware control-plane，回復上一個已驗證的
-Local Codex-only image/config。fallback 只有結構化 reached-limit 分支，不得擴大為
-generic-error Azure retry。
+Codex PTY image/config；不要把 generation 接回 `codex exec` 或 Report endpoint。
+Azure summary credential 保持空白。
 
 canonical 指令：
 
@@ -792,6 +816,9 @@ action。GitHub issue `andys0919/AI_NoteTacker#8` 追蹤本次契約與唯讀 UI
 授權或執行 credential 操作、rollback 演練、archive、部署、commit 或 push。
 `add-azure-summary-quota-fallback` 的 implementation、review、canonical deploy 與
 live local-default evidence 已完成；archive 未獲授權，change 仍保持 unarchived。
+`use-shared-codex-runtime` 的 implementation、focused verification、canonical live
+deployment、auth rejection、fresh-session 與 Report/AI concurrent smoke 已完成；
+change-level strict validation 通過，尚未 archive。
 - `add-codex-transcript-summaries`、`add-cloud-usage-governance`、
   `update-cloud-summary-azure-responses`、`use-mai-luna-transcription-pipeline`、
   `simplify-mai-transcription-pipeline`、`add-admin-summary-model-switch` 與
@@ -804,7 +831,8 @@ live local-default evidence 已完成；archive 未獲授權，change 仍保持 
 
 2026-07-29 使用者曾另行授權當時 MAI/Luna 版本的 commit、push、部署與重啟；
 2026-08-05 又明確授權目前 WIP commit、push `main` 與 canonical deploy。
-archive、tag 與 pull request 仍需另行授權。
+2026-08-07 使用者另行授權本次 Codex PTY 變更與文件 commit、push。archive、tag
+與 pull request 仍需另行授權。
 
 `remove-unused-runtime-scaffolding` 另有固定的未來 archive 順序：
 `extract-meeting-ai-pipeline-package` →
@@ -815,7 +843,7 @@ archive、tag 與 pull request 仍需另行授權。
 
 ## 可重跑的 verification / deployment
 
-目前 Local Codex + quota fallback 可在 repo root 重跑且不碰 live：
+目前 Codex PTY summary adapter 可在 repo root 重跑且不碰 live：
 
 ```bash
 PYTHONPATH=workers/transcription-worker/src:workers/transcription-worker \
@@ -831,11 +859,12 @@ npm run build
 git diff --check
 openspec validate use-local-codex-summaries --strict --no-interactive
 openspec validate add-azure-summary-quota-fallback --strict --no-interactive
+openspec validate use-shared-codex-runtime --strict --no-interactive
 openspec validate --all --strict --no-interactive
 ```
 
-確認 production compose 的 stage isolation，但只輸出 boolean，不顯示
-hostname 或 key：
+確認 production Compose 的 PTY/summary isolation，只輸出 boolean，不顯示 token
+或 credential：
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.screenapp.yml config --format json \
@@ -847,6 +876,20 @@ docker compose -f docker-compose.yml -f docker-compose.screenapp.yml config --fo
           | has("AZURE_OPENAI_SUMMARY_ENDPOINT") | not)
         and ($services["transcription-worker"].environment
           | has("AZURE_OPENAI_SUMMARY_API_KEY") | not)
+        and ($services["codex-pty-agent"].environment.AGENT_PROVIDER
+          == "codex-pty")
+        and ($services["codex-pty-agent"].environment.CODEX_MODEL
+          == "gpt-5.6-luna")
+        and ($services["codex-pty-agent"].environment.PTY_FRESH_SESSION_PER_TURN
+          == "true")
+        and ($services["codex-pty-agent"].environment.MEMORY_FEATURES_ENABLED
+          == "false")
+        and ($services["codex-pty-agent"].environment.USER_PROFILING_ENABLED
+          == "false")
+        and ($services["codex-pty-agent"].environment.PROMPT_API_MAX_BODY_BYTES
+          == "1048576")
+        and ($services["summary-worker"].environment.CODEX_PTY_API_URL
+          == "http://codex-pty-agent:3001/api/prompt")
         and ($services["summary-worker"].environment.SUMMARY_MODEL
           == "gpt-5.6-luna")
         and ($services["summary-worker"].environment.SUMMARY_REASONING_EFFORT
@@ -855,23 +898,25 @@ docker compose -f docker-compose.yml -f docker-compose.screenapp.yml config --fo
           == "900")
         and ($services["summary-worker"].environment.CODEX_HOME == "/codex-home")
         and ($services["summary-worker"].environment.AZURE_OPENAI_SUMMARY_ENDPOINT
-          | length > 0)
+          | length == 0)
         and ($services["summary-worker"].environment.AZURE_OPENAI_SUMMARY_API_KEY
-          | length > 0)
+          | length == 0)
         and (($services["control-plane"].environment | keys
           | map(select(startswith("AZURE_OPENAI_SUMMARY"))) | length) == 0)
     '
 ```
 
-canonical deployment 使用既有 `.env` 的 Azure summary pair；只驗證成對非空，
-不要讀取、輸出、修改或宣稱驗證既有 credential：
+canonical deployment 使用 `.env` 的 dedicated Prompt API secret；驗證時只確認
+非空，不讀取或輸出值。Azure summary pair 必須維持空白：
 
 ```bash
 ./scripts/deploy.sh up
 ./scripts/deploy.sh ps
 curl -fsS http://127.0.0.1:3000/health
 docker compose -f docker-compose.yml -f docker-compose.screenapp.yml \
-  logs --tail=200 control-plane transcription-worker summary-worker
+  logs --tail=200 control-plane transcription-worker codex-pty-agent summary-worker
+docker compose -f docker-compose.yml -f docker-compose.screenapp.yml \
+  exec -T codex-pty-agent codex login status
 docker compose -f docker-compose.yml -f docker-compose.screenapp.yml \
   exec -T summary-worker codex login status
 ```
@@ -885,7 +930,7 @@ WHERE singleton_key = 'global';
 ```
 
 若另跑一筆已去識別的 controlled summary，確認 job snapshot 為
-`local-codex`／`gpt-5.6-luna`、產生完整 structured summary，且
+`local-codex`／`gpt-5.6-luna`、由 Codex PTY 產生完整 structured summary，且
 `cloud_usage_ledger` 沒有該 job 的 `stage='summary'` actual row。live evidence
 必須遮蔽 transcript、summary、hostname、token、key 與使用者識別資料。
 

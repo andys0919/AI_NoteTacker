@@ -26,7 +26,8 @@ def main() -> None:
     summarizer = CodexTranscriptSummarizer(
         model=str(config["summary_model"]),
         reasoning_effort=str(config["summary_reasoning_effort"]),
-        codex_cli_path=codex_cli_path,
+        api_url=str(config["codex_pty_api_url"]),
+        api_token=str(config["codex_pty_api_token"]),
         timeout_seconds=int(config["summary_timeout_seconds"]),
     )
     azure_fallback_summarizer = None

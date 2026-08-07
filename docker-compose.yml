@@ -155,6 +155,60 @@ services:
       retries: 60
       start_period: 120s
 
+  codex-pty-agent:
+    build:
+      context: ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}
+      dockerfile: Dockerfile.live-shared
+    image: ai-notetacker-codex-pty-agent:managed
+    restart: unless-stopped
+    init: true
+    user: "bun"
+    stop_grace_period: 20s
+    command: ["bun", "run", "/app/codex-pty-agent.ts"]
+    environment:
+      AGENT_PROVIDER: codex-pty
+      ALLOWED_PATHS: "*"
+      API_PROMPT_TOKEN: ${CODEX_PTY_API_TOKEN:?Set CODEX_PTY_API_TOKEN to a dedicated secret of at least 32 bytes}
+      AUTOPILOT_DEFAULT: "true"
+      CLAUDE_WORKING_DIR: /workspace/codex-pty-workdir
+      CODEX_HOME: /home/bun/.codex
+      CODEX_MODEL: gpt-5.6-luna
+      HOME: /home/bun
+      IS_SANDBOX: "1"
+      MEMORY_FEATURES_ENABLED: "false"
+      PROMPT_API_MAX_BODY_BYTES: "1048576"
+      PROVIDER_FAILOVER_ENABLED: "false"
+      PTY_DAEMON_NAMESPACE: ai-notetacker-codex-pty
+      PTY_FRESH_SESSION_PER_TURN: "true"
+      SESSION_DIR: /home/bun/.local/state/claude-telegram-bot/sessions
+      USER_PROFILING_ENABLED: "false"
+      WEBHOOK_HOST: 0.0.0.0
+      WEBHOOK_PORT: "3001"
+    volumes:
+      - ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}/src:/app/src:ro
+      - ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}/packages:/app/packages:ro
+      - ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}/vendor:/app/vendor:ro
+      - ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}/scripts:/app/scripts:ro
+      - ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}/mcp-shared:/app/mcp-shared:ro
+      - ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}/ask_user_mcp:/app/ask_user_mcp:ro
+      - ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}/send_file_mcp:/app/send_file_mcp:ro
+      - ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}/bash_progress_mcp:/app/bash_progress_mcp:ro
+      - ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}/config:/app/config:ro
+      - ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}/mcp-config.ts:/app/mcp-config.ts:ro
+      - ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}/package.json:/app/package.json:ro
+      - ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}/bun.lock:/app/bun.lock:ro
+      - ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}/tsconfig.json:/app/tsconfig.json:ro
+      - ./codex-pty-agent.ts:/app/codex-pty-agent.ts:ro
+      - ./.codex-pty-workdir:/workspace/codex-pty-workdir
+      - codex_pty_agent_home:/home/bun/.codex
+      - codex_pty_agent_state:/home/bun/.local/state
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
   summary-worker:
     build:
       context: .
@@ -168,6 +222,8 @@ services:
       AZURE_OPENAI_SUMMARY_ENDPOINT: ""
       AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS: ${AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS:-900}
       CODEX_CLI_PATH: ${CODEX_CLI_PATH:-codex}
+      CODEX_PTY_API_TOKEN: ${CODEX_PTY_API_TOKEN:?Set CODEX_PTY_API_TOKEN to a dedicated secret of at least 32 bytes}
+      CODEX_PTY_API_URL: http://codex-pty-agent:3001/api/prompt
       CONTROL_PLANE_BASE_URL: ${CONTROL_PLANE_BASE_URL:-http://control-plane:3000}
       CONTROL_PLANE_TIMEOUT_SECONDS: ${CONTROL_PLANE_TIMEOUT_SECONDS:-30}
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN to a dedicated secret of at least 32 bytes}
@@ -180,6 +236,8 @@ services:
     volumes:
       - summary_codex_home:/codex-home
     depends_on:
+      codex-pty-agent:
+        condition: service_healthy
       control-plane:
         condition: service_healthy
 
@@ -214,6 +272,10 @@ volumes:
   summary_codex_home:
     external: true
     name: ai_notetacker_summary_codex_home
+  codex_pty_agent_home:
+    external: true
+    name: ai_notetacker_codex_pty_home
+  codex_pty_agent_state:
   qwen3_asr_cache:
     name: qwen3-asr-cache
   whisper_model_cache:

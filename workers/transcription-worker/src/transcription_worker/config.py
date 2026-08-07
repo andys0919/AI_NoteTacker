@@ -70,6 +70,21 @@ def _read_summary_endpoint(environment: Mapping[str, str | None]) -> str | None:
     return endpoint
 
 
+def _read_codex_pty_api_url(environment: Mapping[str, str | None]) -> str:
+    endpoint = (environment.get("CODEX_PTY_API_URL") or "").strip()
+    parsed = urlparse(endpoint)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.path.rstrip("/") != "/api/prompt"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("CODEX_PTY_API_URL must target /api/prompt over http or https")
+    return endpoint
+
+
 def read_transcription_worker_config(
     environment: Mapping[str, str | None],
 ) -> dict[str, str | int | None]:
@@ -142,6 +157,10 @@ def read_summary_worker_config(
     if not azure_summary_endpoint:
         azure_summary_api_key = None
 
+    codex_pty_api_token = (environment.get("CODEX_PTY_API_TOKEN") or "").strip()
+    if not codex_pty_api_token:
+        raise ValueError("CODEX_PTY_API_TOKEN is required")
+
     return {
         **_read_worker_config(environment),
         "summary_model": environment.get("SUMMARY_MODEL") or "gpt-5.6-luna",
@@ -151,6 +170,8 @@ def read_summary_worker_config(
         "summary_timeout_seconds": _read_positive_int(
             environment, "SUMMARY_TIMEOUT_SECONDS", 900
         ),
+        "codex_pty_api_url": _read_codex_pty_api_url(environment),
+        "codex_pty_api_token": codex_pty_api_token,
         "codex_cli_path": environment.get("CODEX_CLI_PATH") or "codex",
         "azure_openai_summary_endpoint": azure_summary_endpoint,
         "azure_openai_summary_api_key": azure_summary_api_key,
