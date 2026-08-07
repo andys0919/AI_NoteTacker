@@ -20,8 +20,42 @@ export const formatProviderLabel = (value) => {
   return 'Whisper 自架';
 };
 
-export const formatSummaryModeLabel = (value) =>
-  value === 'azure-openai' ? '雲端' : '地端 Codex';
+export const formatSummaryModeLabel = () => '本機 Codex';
+
+const formatPercent = (value) =>
+  `${Number.isInteger(value) ? value : value.toFixed(1)}%`;
+
+export const getCodexWeeklyUsageViewModel = (
+  payload = {},
+  formatTimestamp = (value) => value
+) => {
+  if (payload.status !== 'available') {
+    return {
+      available: false,
+      headline: '暫時無法取得每週額度',
+      statusText: '資料不可用',
+      usedText: '—',
+      remainingText: '—',
+      resetText: '—',
+      checkedText: payload.checkedAt ? formatTimestamp(payload.checkedAt) : '等待 worker 回報'
+    };
+  }
+
+  const usedPercent = Math.min(100, Math.max(0, Number(payload.usedPercent) || 0));
+  const remainingPercent = 100 - usedPercent;
+  const planLabel = payload.planType === 'team' ? 'ChatGPT Business' : 'ChatGPT Codex';
+
+  return {
+    available: true,
+    headline: `本週剩餘 ${formatPercent(remainingPercent)}`,
+    statusText: remainingPercent > 0 ? planLabel : '額度已用罄',
+    usedPercent,
+    usedText: formatPercent(usedPercent),
+    remainingText: formatPercent(remainingPercent),
+    resetText: formatTimestamp(new Date(payload.resetsAt * 1000).toISOString()),
+    checkedText: formatTimestamp(payload.checkedAt)
+  };
+};
 
 export const getCloudCostDisplayModel = ({
   totalCostUsd,
@@ -60,6 +94,24 @@ export const formatUsageStageLabel = (stage) => {
   return stage === 'summary' ? '摘要' : stage;
 };
 
+const formatUsageEntryCost = (entry) => {
+  if (entry.pricingStatus === 'not-applicable') {
+    return '訂閱／自架，不計 Azure API 費';
+  }
+  if (entry.pricingStatus === 'pending') {
+    return '待結算';
+  }
+  if (entry.pricingStatus === 'unpriced') {
+    return typeof entry.costUsd === 'number' && entry.costUsd > 0
+      ? `${formatTwdFromUsd(entry.costUsd)}（含未定價用量）`
+      : '未定價';
+  }
+  return formatTwdFromUsd(entry.costUsd);
+};
+
+const formatProviderRequestStatus = (status) =>
+  status === 'succeeded' ? '成功' : status === 'failed' ? '失敗' : '進行中';
+
 export const getUsageHistoryCostViewModel = (payload = {}) => {
   const totals = payload.totals ?? {};
   const totalCost = getCloudCostDisplayModel({
@@ -85,7 +137,10 @@ export const getUsageHistoryCostViewModel = (payload = {}) => {
       return {
         ...row,
         stageLabel: formatUsageStageLabel(row.stage),
-        costLabel: cost.value,
+        costLabel:
+          row.billingClass && row.billingClass !== 'metered-api'
+            ? '不計 Azure API 費'
+            : cost.value,
         unpricedCountLabel:
           rowUnpricedEntryCount > 0 ? `未定價 ${rowUnpricedEntryCount} 筆` : null
       };
@@ -93,12 +148,10 @@ export const getUsageHistoryCostViewModel = (payload = {}) => {
     entries: (payload.entries ?? []).map((entry) => ({
       ...entry,
       stageLabel: formatUsageStageLabel(entry.stage),
-      costLabel:
-        entry.pricingStatus === 'unpriced'
-          ? typeof entry.costUsd === 'number' && entry.costUsd > 0
-            ? `${formatTwdFromUsd(entry.costUsd)}（含未定價用量）`
-            : '未定價'
-          : formatTwdFromUsd(entry.costUsd)
+      ...(entry.recordKind === 'provider-request'
+        ? { requestStatusLabel: formatProviderRequestStatus(entry.requestStatus) }
+        : {}),
+      costLabel: formatUsageEntryCost(entry)
     }))
   };
 };
@@ -133,7 +186,7 @@ export const getAdminGovernanceViewModel = ({
     (option) => option.value === selectedSummaryProvider
   );
   const selectedReady = Boolean(selectedTranscriptionOption?.ready && selectedSummaryOption?.ready);
-  const summaryModelInputDisabled = selectedSummaryProvider === 'local-codex';
+  const summaryModelInputDisabled = false;
 
   return {
     currentLabel: `${formatProviderLabel(state.transcriptionProvider)} / ${formatSummaryModeLabel(
@@ -141,11 +194,12 @@ export const getAdminGovernanceViewModel = ({
     )}`,
     pillText: selectedReady ? '可用' : '未就緒',
     pillTone: selectedReady ? 'ready' : 'blocked',
-    copyText: '新的治理設定只會影響之後新送出的工作。雲端 quota 也會依照新政策估算。',
+    copyText:
+      '新的治理設定只影響之後送出的工作；摘要預設走 Local Codex，僅在 Codex 明確額度用罄時單次切 Azure，Azure 用量照 API 入帳。',
     submitDisabled:
       !selectedReady ||
       !transcriptionModelInput.trim() ||
-      (!summaryModelInputDisabled && !summaryModelInput.trim()) ||
+      !summaryModelInput.trim() ||
       !pricingVersionInput.trim(),
     overrideDisabled: !overrideSubmitterId.trim() || !overrideQuotaInput.trim(),
     providerStatusText: selectedReady
@@ -187,6 +241,6 @@ export const getUsageReportRowViewModels = (rows = []) =>
         row.hasUnpricedUsage ? '（依已知費用計算）' : ''
       }`,
       dailyQuotaLabel: formatTwdFromUsd(row.dailyQuotaUsd),
-      entryCountLabel: `${row.entries?.length ?? 0} 筆`
+      entryCountLabel: `${(row.entries?.length ?? 0) + (row.providerRequests?.length ?? 0)} 筆`
     };
   });

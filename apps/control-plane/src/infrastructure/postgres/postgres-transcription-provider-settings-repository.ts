@@ -3,7 +3,10 @@ import type {
   TranscriptionProviderSetting,
   TranscriptionProviderSettingsRepository
 } from '../../domain/transcription-provider-settings-repository.js';
-import type { SummaryProvider } from '../../domain/summary-provider.js';
+import {
+  defaultSummaryProvider,
+  type SummaryProvider
+} from '../../domain/summary-provider.js';
 import type { TranscriptionProvider } from '../../domain/transcription-provider.js';
 
 type Queryable = {
@@ -77,6 +80,11 @@ const cloneConcurrencyPools = (input: ConcurrencyPools): ConcurrencyPools => ({
   localSummary: input.localSummary,
   cloudSummary: input.cloudSummary
 });
+
+const normalizeSummaryProvider = (
+  provider: SummaryProvider | null | undefined
+): SummaryProvider =>
+  provider === 'local-codex' ? provider : defaultSummaryProvider;
 
 export const ensureTranscriptionProviderSettingsSchema = async (
   database: Queryable
@@ -240,7 +248,7 @@ export class PostgresTranscriptionProviderSettingsRepository
         row.transcription_provider,
         row.transcription_model
       ),
-      summaryProvider: row.summary_provider ?? this.defaults.summaryProvider,
+      summaryProvider: normalizeSummaryProvider(row.summary_provider),
       summaryModel: row.summary_model ?? this.defaults.summaryModel,
       pricingVersion: row.pricing_version ?? this.defaults.pricingVersion,
       defaultDailyCloudQuotaUsd: toNumber(
@@ -271,6 +279,7 @@ export class PostgresTranscriptionProviderSettingsRepository
     concurrencyPools: ConcurrencyPools;
     updatedBy?: string;
   }): Promise<TranscriptionProviderSetting> {
+    const summaryProvider = normalizeSummaryProvider(input.summaryProvider);
     const result = await this.database.query<PolicySettingsRow>(
       `
         INSERT INTO ai_processing_policy_settings (
@@ -310,7 +319,7 @@ export class PostgresTranscriptionProviderSettingsRepository
         this.singletonKey,
         input.transcriptionProvider,
         input.transcriptionModel,
-        input.summaryProvider,
+        summaryProvider,
         input.summaryModel,
         input.pricingVersion,
         input.defaultDailyCloudQuotaUsd,
@@ -359,12 +368,18 @@ export class PostgresTranscriptionProviderSettingsRepository
         result.rows[0].transcription_provider,
         result.rows[0].transcription_model
       );
+      const normalizedSummaryProvider = normalizeSummaryProvider(
+        result.rows[0].summary_provider
+      );
 
-      if (normalizedModel !== (result.rows[0].transcription_model ?? null)) {
+      if (
+        normalizedModel !== (result.rows[0].transcription_model ?? null) ||
+        normalizedSummaryProvider !== result.rows[0].summary_provider
+      ) {
         return await this.upsertCurrent({
           transcriptionProvider: result.rows[0].transcription_provider,
           transcriptionModel: normalizedModel,
-          summaryProvider: result.rows[0].summary_provider ?? this.defaults.summaryProvider,
+          summaryProvider: normalizedSummaryProvider,
           summaryModel: result.rows[0].summary_model ?? this.defaults.summaryModel,
           pricingVersion: result.rows[0].pricing_version ?? this.defaults.pricingVersion,
           defaultDailyCloudQuotaUsd: toNumber(

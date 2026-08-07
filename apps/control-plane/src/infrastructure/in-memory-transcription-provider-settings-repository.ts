@@ -3,7 +3,10 @@ import type {
   TranscriptionProviderSetting,
   TranscriptionProviderSettingsRepository
 } from '../domain/transcription-provider-settings-repository.js';
-import type { SummaryProvider } from '../domain/summary-provider.js';
+import {
+  defaultSummaryProvider,
+  type SummaryProvider
+} from '../domain/summary-provider.js';
 import type { TranscriptionProvider } from '../domain/transcription-provider.js';
 
 const now = (): string => new Date().toISOString();
@@ -57,7 +60,10 @@ export class InMemoryTranscriptionProviderSettingsRepository
             : input.defaultTranscriptionProvider === 'qwen3-asr-1.7b'
               ? this.qwenTranscriptionModel
               : this.localTranscriptionModel,
-      summaryProvider: input.defaultSummaryProvider,
+      summaryProvider:
+        input.defaultSummaryProvider === 'local-codex'
+          ? input.defaultSummaryProvider
+          : defaultSummaryProvider,
       summaryModel: input.defaultSummaryModel,
       pricingVersion: input.defaultPricingVersion,
       defaultDailyCloudQuotaUsd: input.defaultDailyCloudQuotaUsd,
@@ -134,7 +140,12 @@ export class InMemoryTranscriptionProviderSettingsRepository
       provider: nextProvider,
       transcriptionProvider: nextProvider,
       transcriptionModel: normalizedTranscriptionModel,
-      summaryProvider: input.summaryProvider ?? this.current.summaryProvider,
+      summaryProvider:
+        input.summaryProvider === undefined
+          ? this.current.summaryProvider
+          : input.summaryProvider === 'local-codex'
+            ? input.summaryProvider
+            : defaultSummaryProvider,
       summaryModel: input.summaryModel ?? this.current.summaryModel,
       pricingVersion: input.pricingVersion ?? this.current.pricingVersion,
       defaultDailyCloudQuotaUsd:

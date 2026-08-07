@@ -1,26 +1,20 @@
 ## ADDED Requirements
 
-### Requirement: Azure summary HTTP 400 retry is bounded and observable
-The system SHALL retry an Azure Responses summary HTTP 400 exactly once with the identical request and SHALL NOT generalize that exception to other summary or punctuation failures.
+### Requirement: Azure summary HTTP 400 failures are observable without replay
+The system SHALL preserve an Azure Responses summary HTTP 400 failure and its
+request audit evidence without replaying the provider request. The later
+quota-only fallback contract permits at most one Azure request per job.
 
-#### Scenario: First summary request returns HTTP 400 and retry succeeds
+#### Scenario: Summary request returns HTTP 400
 - **WHEN** Azure returns HTTP 400 for a summary request
-- **AND** the identical request succeeds on the next call
-- **THEN** the job stores the valid summary artifact
-- **AND** summary usage records two provider requests and one request without trustworthy usage
-- **AND** the attempt remains unpriced unless usage for every request is authoritative
-
-#### Scenario: Summary retry also returns HTTP 400
-- **WHEN** Azure returns HTTP 400 for both the initial summary request and its one retry
 - **THEN** the job records `summary-failed`
-- **AND** the failure message states that one retry was exhausted
-- **AND** it preserves the final Azure error body
-- **AND** it does not issue a third provider request
+- **AND** preserves the Azure error body and one failed request audit
+- **AND** does not issue a second provider request
 
 #### Scenario: Summary fails for another reason
 - **WHEN** a summary request times out or returns a non-400 HTTP error
-- **THEN** the provider call fails without this retry
-- **AND** punctuation requests never use the summary HTTP 400 retry policy
+- **THEN** the provider call fails without a retry
+- **AND** punctuation requests use the same no-hidden-retry rule
 
 ### Requirement: External note quality comparisons remain evidence based
 The system SHALL compare summary candidates against transcript evidence and SHALL report comparison dimensions separately instead of treating an external generated summary as ground truth.

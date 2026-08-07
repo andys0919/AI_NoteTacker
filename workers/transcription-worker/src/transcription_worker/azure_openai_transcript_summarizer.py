@@ -1,5 +1,4 @@
 from transcription_worker.azure_openai_responses import (
-    AzureOpenAiResponsesHttpError,
     extract_output_text,
     extract_token_usage,
     request_response,
@@ -11,31 +10,34 @@ from transcription_worker.transcript_summary import (
 )
 
 
+def _summary_usage(usage: dict[str, int] | None = None) -> dict[str, int]:
+    usage = usage or {}
+    result = {
+        "prompt_tokens": usage.get("input_tokens", 0),
+        "cached_prompt_tokens": usage.get("cached_input_tokens", 0),
+        "completion_tokens": usage.get("output_tokens", 0),
+        "reasoning_completion_tokens": usage.get("reasoning_output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+        "provider_request_count": 1,
+        "unmetered_request_count": 0 if usage else 1,
+    }
+    if "cache_write_tokens" in usage:
+        result["cache_write_prompt_tokens"] = usage["cache_write_tokens"]
+    return result
+
+
 class AzureOpenAiSummaryError(RuntimeError):
-    def __init__(self, message: str, usage: dict[str, int]) -> None:
+    def __init__(self, message: str, usage: dict[str, int] | None) -> None:
         super().__init__(message)
         self.usage = usage
 
 
-def _raise_with_valid_usage(
-    error: Exception,
-    payload: dict,
-    provider_request_count: int,
-    unmetered_request_count: int,
-) -> None:
+def _raise_with_usage(error: Exception, payload: dict) -> None:
     try:
-        usage = extract_token_usage(payload)
+        usage = _summary_usage(extract_token_usage(payload))
     except Exception:
-        raise error
-
-    raise AzureOpenAiSummaryError(
-        str(error),
-        {
-            **usage,
-            "provider_request_count": provider_request_count,
-            "unmetered_request_count": unmetered_request_count,
-        },
-    ) from error
+        usage = _summary_usage()
+    raise AzureOpenAiSummaryError(str(error), usage) from error
 
 
 class AzureOpenAiTranscriptSummarizer:
@@ -60,105 +62,58 @@ class AzureOpenAiTranscriptSummarizer:
         transcript_result: dict,
         summary_profile: str = "general",
         model_override: str | None = None,
+        on_provider_request=None,
     ) -> dict:
-        prompt = build_summary_prompt(transcript_result, summary_profile=summary_profile)
         model = model_override or self._model
+        validated = {}
+        provider_request_started = False
 
-        request_options = dict(
-            endpoint=self._endpoint,
-            api_key=self._api_key,
-            model=model,
-            instructions="You are a precise meeting summarizer. Return JSON only.",
-            user_input=prompt,
-            reasoning_effort=self._reasoning_effort,
-            timeout_seconds=self._timeout_seconds,
-            urlopen=self._urlopen,
-        )
-        provider_request_count = 1
-        unmetered_request_count = 0
+        def report_provider_request(update):
+            nonlocal provider_request_started
+            if update["action"] == "start":
+                if on_provider_request is not None:
+                    on_provider_request(update)
+                provider_request_started = True
+            elif on_provider_request is not None:
+                on_provider_request(update)
 
-        try:
-            payload = request_response(**request_options)
-        except AzureOpenAiResponsesHttpError as error:
-            if error.status_code != 400:
-                raise AzureOpenAiSummaryError(
-                    str(error),
-                    {
-                        "input_tokens": 0,
-                        "cached_input_tokens": 0,
-                        "output_tokens": 0,
-                        "reasoning_output_tokens": 0,
-                        "total_tokens": 0,
-                        "provider_request_count": 1,
-                        "unmetered_request_count": 1,
-                    },
-                ) from error
-
-            provider_request_count = 2
-            unmetered_request_count = 1
+        def validate_response(payload):
             try:
-                payload = request_response(**request_options)
-            except Exception as retry_error:
-                raise AzureOpenAiSummaryError(
-                    f"Azure OpenAI summary failed after one HTTP 400 retry: {retry_error}",
-                    {
-                        "input_tokens": 0,
-                        "cached_input_tokens": 0,
-                        "output_tokens": 0,
-                        "reasoning_output_tokens": 0,
-                        "total_tokens": 0,
-                        "provider_request_count": 2,
-                        "unmetered_request_count": 2,
-                    },
-                ) from retry_error
+                summary_text = extract_output_text(payload)
+                if not summary_text:
+                    raise RuntimeError("azure openai returned no summary text")
+                validated["summary_payload"] = coerce_summary_payload(
+                    summary_text,
+                    provider_label="azure openai",
+                    require_complete_schema=True,
+                )
+                validated["usage"] = _summary_usage(extract_token_usage(payload))
+            except Exception as error:
+                _raise_with_usage(error, payload)
 
         try:
-            summary_text = extract_output_text(payload)
+            request_response(
+                endpoint=self._endpoint,
+                api_key=self._api_key,
+                model=model,
+                instructions="You are a precise meeting summarizer. Return JSON only.",
+                user_input=build_summary_prompt(
+                    transcript_result, summary_profile=summary_profile
+                ),
+                reasoning_effort=self._reasoning_effort,
+                timeout_seconds=self._timeout_seconds,
+                urlopen=self._urlopen,
+                on_provider_request=report_provider_request,
+                validate_response=validate_response,
+            )
+        except AzureOpenAiSummaryError:
+            raise
         except Exception as error:
-            _raise_with_valid_usage(
-                error,
-                payload,
-                provider_request_count,
-                unmetered_request_count,
-            )
+            usage = _summary_usage() if provider_request_started else None
+            raise AzureOpenAiSummaryError(str(error), usage) from error
 
-        if not summary_text:
-            _raise_with_valid_usage(
-                RuntimeError("azure openai returned no summary text"),
-                payload,
-                provider_request_count,
-                unmetered_request_count,
-            )
-
-        try:
-            summary_payload = coerce_summary_payload(
-                summary_text,
-                provider_label="azure openai",
-                require_complete_schema=True,
-            )
-        except Exception as error:
-            _raise_with_valid_usage(
-                error,
-                payload,
-                provider_request_count,
-                unmetered_request_count,
-            )
-
-        try:
-            usage = extract_token_usage(payload)
-        except Exception as error:
-            raise AzureOpenAiSummaryError(
-                str(error),
-                {
-                    "input_tokens": 0,
-                    "cached_input_tokens": 0,
-                    "output_tokens": 0,
-                    "reasoning_output_tokens": 0,
-                    "total_tokens": 0,
-                    "provider_request_count": provider_request_count,
-                    "unmetered_request_count": provider_request_count,
-                },
-            ) from error
+        summary_payload = validated["summary_payload"]
+        usage = validated["usage"]
 
         return {
             "model": model,
@@ -176,13 +131,5 @@ class AzureOpenAiTranscriptSummarizer:
                 "risks": summary_payload["risks"],
                 "open_questions": summary_payload["open_questions"],
             },
-            "usage": {
-                "prompt_tokens": usage.get("input_tokens", 0),
-                "cached_prompt_tokens": usage.get("cached_input_tokens", 0),
-                "completion_tokens": usage.get("output_tokens", 0),
-                "reasoning_completion_tokens": usage.get("reasoning_output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-                "provider_request_count": provider_request_count,
-                "unmetered_request_count": unmetered_request_count,
-            },
+            "usage": usage,
         }

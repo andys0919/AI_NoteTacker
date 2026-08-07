@@ -15,10 +15,11 @@
 - [x] 3.1 Require an explicit Responses endpoint/key and remove or reject the legacy derived `chat/completions` fallback.
 - [x] 3.2 Add `store: false` to both summary and punctuation request payloads and assert it in tests.
 - [x] 3.3 Require `status=completed`; add multi-item/multi-part ordered-concatenation tests and reject incomplete, failed, or empty summary responses.
-- [x] 3.4 Add a configurable finite socket-operation timeout and prove that punctuation and non-400 summary failures do not retry; the later `improve-uploaded-meeting-note-quality` change owns the one identical summary HTTP 400 retry.
+- [x] 3.4 Add a configurable finite socket-operation timeout and prove that provider failures, including Azure summary HTTP 400, do not replay the request.
 - [x] 3.5 Validate non-negative integer input/output/total tokens without defaulting missing usage to zero; preserve cached-input and reasoning token details.
 - [x] 3.6 Preserve punctuation metered subtotals and report how many provider calls were unmetered.
 - [x] 3.7 Reject schema-incomplete Azure summary JSON while preserving valid provider usage on the failure callback.
+- [x] 3.8 Preserve optional provider-reported cache-write tokens end to end and fail closed when Luna omits them.
 
 ## 4. Punctuation-stage and lifecycle accounting
 - [x] 4.1 Add `punctuation` to the cloud stage domain, persistence schema, callback payloads, APIs, and reports without merging it into transcription or summary.
@@ -38,8 +39,9 @@
 - [x] 5.6 Add the verified Luna Global Standard and MAI Transcribe Fast Transcription catalog rows.
 - [x] 5.7 Reprice fully metered historical rows in reporting without mutating the immutable ledger, and expose partial metered costs only as lower bounds.
 - [x] 5.8 Re-verify the Luna catalog against Azure Retail Prices API on 2026-07-31 and forbid substituting OpenAI direct pricing for the live Azure deployment.
-- [x] 5.9 Refresh the exact Luna USD and MAI USD/TWD Azure Retail Prices API meters at startup and every 24 hours with a finite timeout and no dependency.
+- [x] 5.9 Refresh the exact MAI USD/TWD Azure Retail Prices API meters at startup and every 24 hours with a finite timeout and no dependency; keep historical Luna prices checked in.
 - [x] 5.10 Apply only a complete, consistent, currently effective Consumption snapshot and retain the last verified catalog/reference on every failure.
+- [x] 5.11 Settle MAI from per-upload whole-second billed duration and keep uncertain retry quantities unpriced with a known lower bound.
 
 ## 6. Verification and deployment
 - [x] 6.1 Run the pre-hardening Responses unit baseline (7 targeted worker tests pass on 2026-07-15).
@@ -47,15 +49,23 @@
 - [x] 6.3 Add worker regression tests for explicit config, `store: false`, completed status, ordered output, strict usage, socket-operation timeout, and no hidden provider retry.
 - [x] 6.4 Add control-plane migration and integration tests for punctuation-stage accounting, lease-token idempotency, settlement-before-lifecycle, unmetered request counts, conservative legacy migration, and unpriced reporting.
 - [x] 6.5 Run the complete worker and control-plane suites after the final corrective implementation (393 tests pass on 2026-07-15: control-plane 282, recording worker 13, external Python package 2, transcription worker 96; build also passes).
-- [ ] 6.6 Deploy the current release in the design order and capture durable
-  redacted evidence for summary attempts, absence of new punctuation provider
-  calls, readability of historical punctuation settlements, runtime config,
-  zero duplicate settlements, and Luna pricing output; dated component
-  deployments in `HANDOFF.md` are historical observations and do not satisfy
-  this gate.
-- [ ] 6.7 Exercise pre-migration abort and post-migration feature rollback with the schema-aware control-plane; do not mix a chat endpoint with Responses callers or restore unverified previous binaries.
-- [ ] 6.8 Resolve and rebase the active-change archive order documented in `design.md` before archiving.
+- [x] 6.6 Superseded by the verified 2026-08-06 production deployment of
+  `use-local-codex-summaries`. No Azure summary route is operator-selectable or
+  claimable as primary; historical ledger readback remains covered and the
+  internal quota-only fallback is tracked separately.
+- [ ] 6.7 Exercise pre-migration abort and post-migration feature rollback with
+  the schema-aware control-plane; do not mix a chat endpoint with Responses
+  callers or restore unverified previous binaries.
+- [ ] 6.8 Superseded archive order is recorded in
+  `use-local-codex-summaries`; archive/rebase work remains unperformed.
 - [x] 6.9 Run `openspec validate update-cloud-summary-azure-responses --strict --no-interactive` after the OpenSpec artifact update; rerun it after implementation changes.
 - [x] 6.10 Add configurable socket-operation timeouts for Azure transcription and transcription/summary worker-to-control-plane HTTP calls, with regression tests.
 - [x] 6.11 Add focused refresh regressions and, on 2026-07-31, rebuild the control-plane and prove that deployment loaded the USD catalog and TWD reference from the live Azure API.
-- [x] 6.12 Reconcile the 900-second summary timeout, hierarchical summary schema, and dated deployment evidence in operator/handoff documentation while leaving current-release tasks 6.6-6.8 open.
+- [x] 6.12 Reconcile the 900-second summary timeout, hierarchical summary schema, and dated deployment evidence in operator/handoff documentation while leaving current-release tasks 6.7-6.8 open.
+- [x] 6.13 Add focused regressions for cache-write propagation, MAI per-upload rounding/retry accounting, historical lower bounds, and partial-cost dashboard wording.
+- [x] 6.14 Persist every inference request before provider contact, finalize it idempotently, and settle request-level actual or unpriced usage without terminal aggregate duplication.
+- [x] 6.15 Validate the runtime provider/model against the latched job identity and preserve external request IDs, statuses, timings, billed audio, and token categories.
+- [ ] 6.16 Expose request-level audit details in the admin APIs/UI and verify responsive, keyboard-readable presentation.
+- [x] 6.17 Remove the superseded Azure summary HTTP 400 replay contract and align the active MAI-only retail refresh contract.
+- [x] 6.18 Rebuild one coherent production release and verify schema, live image source, health, request audit persistence, and Azure CLI reconciliation without forcing a paid call.
+- [x] 6.19 Fix strict-review findings for fallback request authorization, mixed-provider callbacks, phantom pre-provider usage, and Local Codex invalid-output audit status.

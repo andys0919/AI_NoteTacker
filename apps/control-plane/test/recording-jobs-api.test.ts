@@ -9,6 +9,7 @@ import { createApp } from '../src/app.js';
 import type { AuthenticatedUser } from '../src/domain/authenticated-user.js';
 import {
   assignRecordingJobToWorker,
+  assignSummaryJobToWorker,
   attachRecordingArtifact,
   attachSummaryArtifact,
   attachTranscriptArtifact,
@@ -712,10 +713,15 @@ describe('recording jobs API', () => {
         }
       });
 
+    const summaryClaim = await request(app)
+      .post('/summary-workers/claims')
+      .send({ workerId: 'summary-artifact-reader' });
+
     await request(app)
       .post(`/recording-jobs/${created.body.id}/events`)
       .send({
         type: 'summary-artifact-stored',
+        leaseToken: summaryClaim.body.leaseToken,
         summaryArtifact: {
           model: 'gpt-5.3-codex-spark',
           reasoningEffort: 'medium',
@@ -872,7 +878,49 @@ describe('recording jobs API', () => {
     expect(summaryCallback.body.state).toBe('completed');
   });
 
-  it('ignores a summary callback with the wrong active lease token', async () => {
+  it('rejects a targeted claim for a historical Azure summary snapshot', async () => {
+    const repository = new InMemoryRecordingJobRepository();
+    const app = createApp(repository);
+    const created = await request(app)
+      .post('/recording-jobs')
+      .send({ meetingUrl: 'https://meet.google.com/old-azur-sum' });
+
+    await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'recording-artifact-stored',
+        recordingArtifact: {
+          storageKey: 'recordings/job_old_azure/meeting.webm',
+          downloadUrl: 'https://storage.example.test/recordings/job_old_azure/meeting.webm',
+          contentType: 'video/webm'
+        }
+      });
+    await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'transcript-artifact-stored',
+        transcriptArtifact: {
+          storageKey: 'transcripts/job_old_azure/transcript.json',
+          downloadUrl: 'https://storage.example.test/transcripts/job_old_azure/transcript.json',
+          contentType: 'application/json',
+          language: 'en',
+          segments: [{ startMs: 0, endMs: 1000, text: 'historical route' }]
+        }
+      });
+    await repository.save({
+      ...(await repository.getById(created.body.id))!,
+      summaryProvider: 'azure-openai'
+    });
+
+    const claim = await request(app)
+      .post('/transcription-workers/summary-claims')
+      .send({ workerId: 'summary-alpha', jobId: created.body.id });
+
+    expect(claim.status).toBe(409);
+    expect(claim.body.error.code).toBe('summary-provider-retired');
+  });
+
+  it('requires the active summary lease and ignores a wrong token', async () => {
     const app = createApp();
 
     const created = await request(app)
@@ -914,6 +962,19 @@ describe('recording jobs API', () => {
 
     expect(summaryClaim.status).toBe(200);
 
+    const missingLeaseCallback = await request(app)
+      .post(`/recording-jobs/${created.body.id}/events`)
+      .send({
+        type: 'summary-artifact-stored',
+        summaryArtifact: {
+          model: 'gpt-5.6-luna',
+          reasoningEffort: 'max',
+          text: 'This must be rejected.'
+        }
+      });
+
+    expect(missingLeaseCallback.status).toBe(400);
+
     const staleSummaryCallback = await request(app)
       .post(`/recording-jobs/${created.body.id}/events`)
       .send({
@@ -926,10 +987,63 @@ describe('recording jobs API', () => {
         }
       });
 
-    expect(staleSummaryCallback.status).toBe(202);
-    expect(staleSummaryCallback.body.state).toBe('transcribing');
-    expect(staleSummaryCallback.body.processingStage).toBe('generating-summary');
-    expect(staleSummaryCallback.body.summaryArtifact).toBeUndefined();
+    expect(staleSummaryCallback.status).toBe(400);
+    expect(staleSummaryCallback.body.error.code).toBe('invalid-request');
+  });
+
+  it('reserves Azure summary fallback only once across summary lease reclaims', async () => {
+    const repository = new InMemoryRecordingJobRepository();
+    const summaryJob = assignSummaryJobToWorker(
+      attachTranscriptArtifact(
+        attachRecordingArtifact(
+          createRecordingJob({
+            meetingUrl: 'uploaded://summary-fallback-once.wav',
+            platform: 'uploaded-audio',
+            inputSource: 'uploaded-audio',
+            summaryRequested: true
+          }),
+          {
+            storageKey: 'recordings/summary-fallback-once/meeting.wav',
+            downloadUrl: 'https://storage.example.test/summary-fallback-once/meeting.wav',
+            contentType: 'audio/wav'
+          }
+        ),
+        {
+          storageKey: 'transcripts/summary-fallback-once/transcript.json',
+          downloadUrl: 'https://storage.example.test/summary-fallback-once/transcript.json',
+          contentType: 'application/json',
+          language: 'en',
+          segments: [{ startMs: 0, endMs: 1_000, text: 'reserve once' }]
+        }
+      ),
+      'summary-original'
+    );
+    await repository.save(summaryJob);
+    const app = createApp(repository);
+    const reservationUrl = `/recording-jobs/${summaryJob.id}/summary-fallback/reservations`;
+
+    const first = await request(app)
+      .post(reservationUrl)
+      .send({ leaseToken: summaryJob.summaryLeaseToken });
+    const duplicate = await request(app)
+      .post(reservationUrl)
+      .send({ leaseToken: summaryJob.summaryLeaseToken });
+
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual({ reserved: true });
+    expect(duplicate.body).toEqual({ reserved: false });
+
+    await repository.save({
+      ...summaryJob,
+      summaryLeaseHeartbeatAt: '2026-01-01T00:00:00.000Z',
+      summaryLeaseExpiresAt: '2026-01-01T00:15:00.000Z'
+    });
+    const reclaimed = (await repository.claimNextSummaryReady('summary-replacement'))!;
+    const afterReclaim = await request(app)
+      .post(reservationUrl)
+      .send({ leaseToken: reclaimed.summaryLeaseToken });
+
+    expect(afterReclaim.body).toEqual({ reserved: false });
   });
 
   it('reclaims an expired summary lease without counting the stale owner as active capacity', async () => {
@@ -1410,6 +1524,7 @@ describe('recording jobs API', () => {
     const created = await request(app)
       .post('/api/operator/jobs/uploads')
       .field('submitterId', 'operator-a')
+      .field('submissionTemplateId', 'general')
       .field(
         'transcriptionGlossary',
         ' 舌片 = 蛇片 | 社片 \n條碼 = 調碼'
@@ -1524,6 +1639,23 @@ describe('recording jobs API', () => {
       }
       await rm(uploadTempDir, { recursive: true, force: true });
     }
+  });
+
+  it('rejects nested multipart fields before storing an upload', async () => {
+    const uploadedAudioStorage = new FakeUploadedAudioStorage();
+    const app = createApp(undefined, { uploadedAudioStorage });
+
+    const response = await request(app)
+      .post('/api/operator/jobs/uploads')
+      .field('submitterId[nested]', 'operator-a')
+      .attach('audio', Buffer.from('fake-audio'), {
+        filename: 'nested.wav',
+        contentType: 'audio/wav'
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('invalid-upload');
+    expect(uploadedAudioStorage.uploads).toEqual([]);
   });
 
   it('rejects uploaded jobs after the configured transcription backlog limit is reached', async () => {

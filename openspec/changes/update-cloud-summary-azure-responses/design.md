@@ -15,11 +15,11 @@ message-history storage, strict status/output/usage handling, finite
 socket-operation timeouts, attempt-aware settlement, and honest unpriced
 reporting.
 
-Microsoft now publishes exact Azure Retail Prices API meters for the verified
+Microsoft publishes exact Azure Retail Prices API meters for the historical
 `gpt-5.6-luna` Global Standard deployment and the Southeast Asia MAI Fast
-Transcription meter. Those public PAYG meters can change independently from
-OpenAI direct pricing, so the runtime catalog needs a bounded freshness path
-without treating a partial or malformed provider response as authoritative.
+Transcription meter. New summaries default to Local Codex and use Azure only
+for a quota-only fallback, so the runtime freshness path is limited to the
+active MAI USD/TWD meter; the source-attributed Luna catalog stays checked in.
 
 The `model` field sent to Azure is a deployment name, not sufficient billing
 identity by itself. A future catalog row must be backed by the deployment's
@@ -43,8 +43,8 @@ actual transcription cost.
 - Preserve provider usage exactly and make each lease attempt idempotent.
 - Represent unknown USD price honestly, including legacy rows whose meter
   identity cannot be reconstructed.
-- Refresh verified Azure public PAYG meters daily without replacing a valid
-  catalog with incomplete, future-dated, or inconsistent data.
+- Refresh the verified MAI USD/TWD public PAYG meter daily without replacing a
+  valid reference with incomplete, future-dated, or inconsistent data.
 - Make deployment and rollback explicit across code, configuration, runtime
   policy, and the post-migration schema compatibility floor.
 
@@ -55,9 +55,8 @@ actual transcription cost.
 - Invent, scrape, or infer a Luna price.
 - Treat public Azure retail prices as subscription invoice `EffectivePrice`.
 - Reconstruct historical token usage or meter identity that was never stored.
-- Add automatic retries inside the shared Responses transport. The later
-  `improve-uploaded-meeting-note-quality` change permits one summary-caller
-  retry for HTTP 400 only.
+- Add automatic retries inside the shared Responses transport or replay an
+  Azure quota-fallback request after HTTP 400.
 
 ## Decisions
 
@@ -120,11 +119,10 @@ Each HTTP request receives an explicit configurable `urlopen` timeout for
 blocking connection/socket operations. It bounds an individual blocking
 operation but is not a guaranteed end-to-end wall-clock deadline. A timeout is
 a terminal result for that provider call. The shared Responses transport does
-not retry provider calls. The summary caller may make the one
-identical-payload HTTP 400 retry defined by
-`improve-uploaded-meeting-note-quality`; punctuation, timeouts, and every other
-failure remain single-call. Request and unmetered-request counts keep that
-bounded exception attributable within the scheduler-issued summary lease.
+not retry provider calls. The quota-only Azure summary fallback is a single
+reserved request even when it returns HTTP 400; punctuation, timeouts, and
+every other failure also remain single-call. Request-level audit keeps each
+outcome attributable within the scheduler-issued summary lease.
 
 The same finite blocking-operation rule applies to Azure transcription uploads
 and the transcription/summary workers' control-plane claim, read, heartbeat,
@@ -180,10 +178,19 @@ contradictory failure callback.
 
 For fully metered Responses calls, attempt metadata includes `inputTokens`,
 `outputTokens`, `totalTokens`, `cachedInputTokens`, and `reasoningOutputTokens`.
+When Azure returns a separate cache-write quantity, metadata also includes
+`cacheWriteTokens`; its absence is preserved rather than replaced with zero.
 Punctuation is best effort and can span several calls, so its metadata also
 stores request, accepted, fallback, and unmetered-request counts. Token totals
 cover the metered calls only; a non-zero unmetered count prevents those totals
 from being mistaken for complete provider metering.
+
+MAI records raw successful audio duration separately from billable duration.
+Each successful provider upload is rounded up independently to a whole second,
+and those billed durations are summed. Provider-request and unmetered-request
+counts cover retries and failed attempts. Exact settlement requires the summed
+billed duration and zero unmetered requests; otherwise the successful-upload
+cost is only a known lower bound.
 
 Pricing is a second decision. A catalog entry is usable only after its deployment
 name has been tied to verified base model/version, SKU or tier, currency,
@@ -215,8 +222,9 @@ row from its preserved exact model, pricing version, duration/token meter, and
 the current authoritative catalog. A punctuation aggregate with any unmetered
 request exposes the priced metered subtotal as a lower bound while keeping the
 unpriced flag; it never presents that subtotal as the complete attempt cost.
-Reporting also re-resolves historical MAI rows stored with the superseded S1
-rate from their preserved audio duration, without mutating the ledger.
+Historical MAI rows that preserve only raw duration are re-resolved at the
+verified Fast Transcription rate as a lower bound and remain unpriced because
+their per-upload rounding boundaries cannot be reconstructed.
 
 Mechanical catalog validation rejects blank deployment model or pricing
 version, non-USD currency, malformed effective dates, missing provenance,
@@ -225,18 +233,15 @@ validation cannot prove that operator-entered Azure billing identity is truthful
 or still current; activating a row still requires the documented
 deployment/Cost Details verification and a new configuration review.
 
-The control-plane refreshes the exact Luna Global Standard short-context USD
-meters and the exact Southeast Asia MAI Fast Transcription USD and TWD meters
-once before listening, then every 24 hours. It uses the platform `fetch`, a
-finite timeout, and no SDK or retry loop. A Luna snapshot is accepted only when
-input, cached input, cache write, and output rows share one currently effective
-date and each meter has one consistent non-negative USD Consumption rate across
-returned regions. The MAI rows must match their verified meter ID, region, SKU,
-unit, requested currency, and currently effective date; their positive ratio is
-the shared TWD display reference. All values update atomically; any HTTP,
-pagination, shape, future-date, missing-meter, or inconsistent-rate failure
-keeps the last verified in-memory catalog/reference and emits a warning. The
-checked-in verified values remain the cold-start fallback.
+The control-plane refreshes the exact Southeast Asia MAI Fast Transcription USD
+and TWD meters once before listening, then every 24 hours. It uses the platform
+`fetch`, a finite timeout, and no SDK or retry loop. The MAI rows must match
+their verified meter ID, region, SKU, unit, requested currency, and currently
+effective date; their positive ratio is the shared TWD display reference. Both
+values update atomically; any HTTP, pagination, shape, future-date,
+missing-meter, or inconsistent-rate failure keeps the last verified in-memory
+MAI catalog/reference and emits a warning. The source-attributed Luna prices
+remain a checked-in historical catalog and are not part of this refresh.
 
 ### 8. Migrate unverifiable historical cost conservatively
 
@@ -326,12 +331,22 @@ order conflicts.
 
 ## Risks / Trade-offs
 
+- Persisting a request start before provider contact adds one bounded internal
+  control-plane write per inference request. This is the minimum durable seam:
+  if that write fails the provider is not called; if the worker dies later the
+  started row remains an explicit unpriced possible charge. Finalization is an
+  idempotent transition on the same request ID, while the existing immutable
+  usage ledger receives at most one request-level actual row.
+- Request-level actual rows replace the same lease's terminal aggregate charge;
+  legacy workers can keep the aggregate callback path during rollout, but a
+  callback that names request audit IDs must never charge both representations.
+
 - Per-chunk Luna punctuation calls can extend transcription completion. The
   finite socket-operation timeout and raw fallback limit each blocking
   operation, while attempt usage remains visible.
-- No unbounded provider retry reduces surprise cost. The one later-approved
-  summary HTTP 400 replay records provider/unmetered request counts; every other
-  new provider attempt still requires a new scheduler-issued lease. A one-time
+- No hidden provider retry reduces surprise cost. The quota-only Azure summary
+  fallback permits one provider request per job, including HTTP 400 failures;
+  every other new provider attempt still requires a new scheduler-issued lease. A one-time
   identical terminal callback delivery retry does not call the provider again.
 - Unpriced usage makes USD totals incomplete. Reports must surface the unpriced
   count/token volume and must not present partial USD totals as total spend.

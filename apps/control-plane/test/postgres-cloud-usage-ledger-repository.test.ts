@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { newDb } from 'pg-mem';
 
-import type { CloudUsageLedgerEntryInput } from '../src/domain/cloud-usage-ledger-repository.js';
+import type {
+  CloudUsageLedgerEntryInput,
+  ProviderRequestStartInput
+} from '../src/domain/cloud-usage-ledger-repository.js';
 import {
   ensureCloudUsageLedgerSchema,
   PostgresCloudUsageLedgerRepository
@@ -31,6 +34,24 @@ const pricedUsage = (
   usageUnit: 'audio-ms',
   pricingStatus: 'priced',
   costUsd: 0.003,
+  ...overrides
+});
+
+const providerRequest = (
+  overrides: Partial<ProviderRequestStartInput> = {}
+): ProviderRequestStartInput => ({
+  requestId: 'request-1',
+  jobId: 'job-1',
+  submitterId: 'user-1',
+  quotaDayKey: '2026-07-15',
+  stage: 'transcription',
+  provider: 'azure-speech-mai-transcribe-1.5',
+  model: 'mai-transcribe-1.5',
+  pricingVersion: 'v1',
+  leaseTokenHash: 'lease-hash',
+  billingClass: 'metered-api',
+  startedAt: '2026-07-15T00:00:00.000Z',
+  detail: { rawAudioMs: 60_000 },
   ...overrides
 });
 
@@ -66,6 +87,16 @@ describe('ensureCloudUsageLedgerSchema', () => {
         'cloud_usage_ledger_quota_day_created_at_idx',
         'cloud_usage_ledger_submitter_day_created_at_idx',
         'cloud_usage_ledger_pkey'
+      ])
+    );
+    expect(getTableIndexNames('provider_request_ledger')).toEqual(
+      expect.arrayContaining([
+        'provider_request_ledger_job_started_at_idx',
+        'provider_request_ledger_pkey',
+        'provider_request_ledger_quota_day_started_at_idx',
+        'provider_request_ledger_started_at_desc_idx',
+        'provider_request_ledger_status_started_at_idx',
+        'provider_request_ledger_submitter_day_started_at_idx'
       ])
     );
   });
@@ -239,5 +270,53 @@ describe('ensureCloudUsageLedgerSchema', () => {
         hasUnpricedUsage: true
       }
     });
+  });
+
+  it('persists and idempotently finalizes request-level provider usage', async () => {
+    const repository = new PostgresCloudUsageLedgerRepository(pool);
+    const started = await repository.startProviderRequest(providerRequest());
+
+    await expect(
+      repository.startProviderRequest(
+        providerRequest({ startedAt: '2026-07-15T00:00:01.000Z' })
+      )
+    ).resolves.toEqual(started);
+    await expect(
+      repository.startProviderRequest(providerRequest({ model: 'different-model' }))
+    ).rejects.toThrow(/conflict/i);
+    await expect(repository.summarizeActualCostByJobIds(['job-1'])).resolves.toMatchObject({
+      'job-1': {
+        actualTranscriptionCostUsd: 0,
+        hasUnpricedTranscriptionUsage: true,
+        actualCloudCostUsd: null
+      }
+    });
+
+    const finish = {
+      requestId: 'request-1',
+      status: 'succeeded' as const,
+      providerRequestId: 'azure-request-1',
+      httpStatus: 200,
+      usageQuantity: 60_000,
+      usageUnit: 'audio-ms' as const,
+      pricingStatus: 'priced' as const,
+      knownCostUsd: 0.006,
+      costUsd: 0.006,
+      detail: { rawAudioMs: 60_000, billedAudioMs: 60_000 },
+      finishedAt: '2026-07-15T00:00:02.000Z'
+    };
+    const finished = await repository.finishProviderRequest(finish);
+
+    await expect(
+      repository.finishProviderRequest({
+        ...finish,
+        finishedAt: '2026-07-15T00:00:03.000Z'
+      })
+    ).resolves.toEqual(finished);
+    await expect(
+      repository.finishProviderRequest({ ...finish, costUsd: 0.007 })
+    ).rejects.toThrow(/conflict/i);
+    await expect(repository.listProviderRequestsByJob('job-1')).resolves.toEqual([finished]);
+    await expect(repository.listRecentProviderRequests(10)).resolves.toEqual([finished]);
   });
 });

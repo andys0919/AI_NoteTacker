@@ -162,6 +162,7 @@
         <nav class="admin-section-nav" aria-label="治理設定區段">
           <a href="#admin-usage-history-panel">歷史使用紀錄</a>
           <a href="#admin-provider-panel">模型與治理設定</a>
+          <a href="#admin-codex-usage-panel">Codex 每週額度</a>
           <a href="#admin-runtime-health-panel">執行狀態</a>
           <a href="#admin-quota-panel">個人額度</a>
           <a href="#admin-audit-panel">治理異動</a>
@@ -220,7 +221,7 @@
               </div>
             </div>
             <p id="admin-usage-history-copy" class="hero-text admin-provider-copy">
-              這裡列出每一筆雲端處理的輸入 / 輸出 token、使用的模型與已知費用；沒有官方費率的用量會標示「未定價」。
+              每一次模型請求都保留實際 provider、model、結果、音訊或 token 明細；Local Codex 訂閱用量不列入 Azure API 費，無法精確核價的 Azure 用量標示「未定價」。
             </p>
             <p id="admin-currency-reference" class="admin-provider-status"></p>
             <form
@@ -268,13 +269,14 @@
                     <th scope="col" class="usage-num">Output Tokens</th>
                     <th scope="col" class="usage-num">Total Tokens</th>
                     <th scope="col" class="usage-num">費用狀態 (TWD)</th>
+                    <th scope="col">請求明細</th>
                     <th scope="col">提交者</th>
                     <th scope="col">工作</th>
                   </tr>
                 </thead>
                 <tbody id="admin-usage-history-rows">
                   <tr>
-                    <td colspan="10" class="usage-history-empty">尚無使用紀錄。</td>
+                    <td colspan="11" class="usage-history-empty">尚無使用紀錄。</td>
                   </tr>
                 </tbody>
               </table>
@@ -327,23 +329,23 @@
                     autocomplete="off"
                   />
                 </label>
-                <label class="field admin-summary-model-field">
-                  <span>摘要模式</span>
-                  <select
-                    id="admin-summary-provider-select"
-                    name="summaryProvider"
-                    aria-label="Summary provider"
-                  ></select>
-                </label>
+                <div class="field admin-summary-model-field">
+                  <span id="admin-summary-provider-label">摘要模式</span>
+                  <output
+                    id="admin-summary-provider-value"
+                    class="admin-readonly-value"
+                    aria-labelledby="admin-summary-provider-label"
+                  >本機 Codex</output>
+                </div>
               </div>
               <div class="admin-provider-controls">
                 <label class="field admin-summary-model-field">
-                  <span>雲端摘要模型</span>
+                  <span>本機 Codex 摘要模型</span>
                   <input
                     id="admin-summary-model-input"
                     name="summaryModel"
                     type="text"
-                    placeholder="例如 gpt-5.4-nano"
+                    placeholder="例如 gpt-5.6-luna"
                     autocomplete="off"
                   />
                 </label>
@@ -404,19 +406,9 @@
               </div>
               <div class="admin-provider-controls">
                 <label class="field admin-summary-model-field">
-                  <span>Local 摘要併發</span>
+                  <span>Local Codex 摘要併發</span>
                   <input
                     id="admin-local-summary-input"
-                    type="number"
-                    inputmode="numeric"
-                    min="1"
-                    step="1"
-                  />
-                </label>
-                <label class="field admin-summary-model-field">
-                  <span>Cloud 摘要併發</span>
-                  <input
-                    id="admin-cloud-summary-input"
                     type="number"
                     inputmode="numeric"
                     min="1"
@@ -436,6 +428,48 @@
                 正在讀取治理設定...
               </p>
             </form>
+          </section>
+
+          <section id="admin-codex-usage-panel" class="panel admin-governance-panel">
+            <div class="section-heading">
+              <span class="section-heading-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4 19V9" />
+                  <path d="M10 19V5" />
+                  <path d="M16 19v-7" />
+                  <path d="M22 19H2" />
+                </svg>
+              </span>
+              <div class="section-heading-text">
+                <h2>Codex 每週額度</h2>
+              </div>
+            </div>
+            <p class="hero-text admin-provider-copy">
+              直接顯示 Business Codex 官方 7 天使用窗口；不是 API 費用或 token 推估。
+            </p>
+            <div id="admin-codex-usage-card" class="codex-usage-card is-unavailable" aria-live="polite">
+              <div class="codex-usage-heading">
+                <div>
+                  <span class="meta-label">目前使用狀況</span>
+                  <strong id="admin-codex-usage-headline">正在讀取...</strong>
+                </div>
+                <span id="admin-codex-usage-status" class="provider-pill blocked">等待資料</span>
+              </div>
+              <progress
+                id="admin-codex-usage-progress"
+                class="codex-usage-progress"
+                max="100"
+                value="0"
+                aria-label="Codex 本週已使用百分比"
+                hidden
+              >0%</progress>
+              <dl class="codex-usage-details">
+                <div><dt>已用</dt><dd id="admin-codex-usage-used">—</dd></div>
+                <div><dt>剩餘</dt><dd id="admin-codex-usage-remaining">—</dd></div>
+                <div><dt>重置時間</dt><dd id="admin-codex-usage-reset">—</dd></div>
+                <div><dt>資料時間</dt><dd id="admin-codex-usage-checked">—</dd></div>
+              </dl>
+            </div>
           </section>
 
           <section id="admin-runtime-health-panel" class="panel admin-governance-panel">

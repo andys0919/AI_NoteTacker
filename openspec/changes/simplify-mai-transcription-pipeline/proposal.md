@@ -1,5 +1,9 @@
 # Change: Simplify MAI transcription to deterministic Traditional Chinese
 
+> **Summary-route update (2026-08-06):**
+> `use-local-codex-summaries` keeps this MAI transcription design but replaces
+> the Azure-hosted Luna summary request with local Codex.
+
 ## Why
 
 `mai-transcribe-1.5` already provides the canonical transcript. Sending that

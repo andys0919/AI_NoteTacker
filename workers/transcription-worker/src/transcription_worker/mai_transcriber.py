@@ -6,7 +6,10 @@ import uuid
 import urllib.error
 from urllib import request
 
-from transcription_worker.azure_openai_transcriber import AzureOpenAiTranscriber
+from transcription_worker.azure_openai_transcriber import (
+    AzureOpenAiTranscriber,
+    TranscriptionUsageError,
+)
 
 
 MAI_CHUNK_DURATION_MS = 30_000
@@ -35,6 +38,7 @@ class MaiTranscriber(AzureOpenAiTranscriber):
             max_chunk_duration_ms=MAI_CHUNK_DURATION_MS,
             independent_chunk_max_workers=MAI_MAX_WORKERS,
             provider_label="Azure Speech MAI-Transcribe 1.5",
+            provider="azure-speech-mai-transcribe-1.5",
             retry_sleep=retry_sleep,
             **kwargs,
         )
@@ -55,7 +59,17 @@ class MaiTranscriber(AzureOpenAiTranscriber):
             "content-type": f"multipart/form-data; boundary={boundary}",
         }
 
-    def _transcribe_upload(self, upload_path: str, request_prompt: str = "") -> dict:
+    def _billed_audio_ms(self, part: dict) -> int:
+        duration_ms = self._part_duration_ms(part)
+        return ((duration_ms + 999) // 1_000) * 1_000
+
+    def _transcribe_upload(
+        self,
+        upload_path: str,
+        request_prompt: str = "",
+        on_provider_request=None,
+        request_usage: dict | None = None,
+    ) -> dict:
         boundary = f"----AINoteTacker{uuid.uuid4().hex}"
         content_type = mimetypes.guess_type(upload_path)[0] or "application/octet-stream"
         file_name = os.path.basename(upload_path)
@@ -90,7 +104,14 @@ class MaiTranscriber(AzureOpenAiTranscriber):
         http_400_retried = False
         transport_retry_delays = iter(MAI_TRANSPORT_RETRY_DELAYS_SECONDS)
         transport_retry_count = 0
+        provider_request_count = 0
         while True:
+            provider_request_count += 1
+            http_status = None
+            provider_request_id = None
+            request_id = self._start_provider_request(
+                on_provider_request, request_usage
+            )
             http_request = request.Request(
                 self._transcription_url(),
                 method="POST",
@@ -102,11 +123,23 @@ class MaiTranscriber(AzureOpenAiTranscriber):
                     http_request,
                     timeout=self.timeout_seconds,
                 ) as response:
-                    return self._normalize_transcription_payload(
+                    http_status = int(getattr(response, "status", 200))
+                    provider_request_id = self._external_request_id(response)
+                    payload = self._normalize_transcription_payload(
                         json.loads(response.read().decode("utf-8"))
                     )
             except urllib.error.HTTPError as error:
                 details = error.read().decode("utf-8", errors="replace").strip()
+                self._finish_provider_request(
+                    on_provider_request,
+                    {
+                        "requestId": request_id,
+                        "status": "failed",
+                        "providerRequestId": self._external_request_id(error),
+                        "httpStatus": error.code,
+                        "errorCode": f"http-{error.code}",
+                    },
+                )
                 if error.code == 400 and not http_400_retried:
                     http_400_retried = True
                     self.retry_sleep(MAI_HTTP_400_RETRY_DELAY_SECONDS)
@@ -116,17 +149,69 @@ class MaiTranscriber(AzureOpenAiTranscriber):
                 )
                 if details:
                     message = f"{message}: {details}"
-                raise RuntimeError(message) from error
+                raise TranscriptionUsageError(
+                    message,
+                    {
+                        "provider_request_count": provider_request_count,
+                        "unmetered_request_count": provider_request_count,
+                    },
+                ) from error
             except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+                self._finish_provider_request(
+                    on_provider_request,
+                    {
+                        "requestId": request_id,
+                        "status": "failed",
+                        "errorCode": type(error).__name__,
+                    },
+                )
                 try:
                     delay_seconds = next(transport_retry_delays)
                 except StopIteration:
-                    raise RuntimeError(
+                    raise TranscriptionUsageError(
                         f"{self.provider_label} transcription transport failed after "
-                        f"{transport_retry_count} retries: {error}"
+                        f"{transport_retry_count} retries: {error}",
+                        {
+                            "provider_request_count": provider_request_count,
+                            "unmetered_request_count": provider_request_count,
+                        },
                     ) from error
                 transport_retry_count += 1
                 self.retry_sleep(delay_seconds)
+            except Exception as error:
+                self._finish_provider_request(
+                    on_provider_request,
+                    {
+                        "requestId": request_id,
+                        "status": "failed",
+                        "providerRequestId": provider_request_id,
+                        "httpStatus": http_status,
+                        "errorCode": type(error).__name__,
+                    },
+                )
+                raise TranscriptionUsageError(
+                    f"{self.provider_label} transcription returned an invalid response: {error}",
+                    {
+                        "provider_request_count": provider_request_count,
+                        "unmetered_request_count": provider_request_count,
+                    },
+                ) from error
+            else:
+                self._finish_provider_request(
+                    on_provider_request,
+                    {
+                        "requestId": request_id,
+                        "status": "succeeded",
+                        "providerRequestId": provider_request_id,
+                        "httpStatus": http_status,
+                        "usage": request_usage,
+                    },
+                )
+                payload["_transcription_usage"] = {
+                    "provider_request_count": provider_request_count,
+                    "unmetered_request_count": provider_request_count - 1,
+                }
+                return payload
 
     def _normalize_transcription_payload(self, payload: dict) -> dict:
         phrases = payload.get("phrases") or []

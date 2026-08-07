@@ -70,7 +70,10 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
                 ],
                 "usage": {
                     "input_tokens": 1200,
-                    "input_tokens_details": {"cached_tokens": 200},
+                    "input_tokens_details": {
+                        "cached_tokens": 200,
+                        "cache_write_tokens": 100,
+                    },
                     "output_tokens": 300,
                     "output_tokens_details": {"reasoning_tokens": 100},
                     "total_tokens": 1500,
@@ -117,89 +120,25 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
         # Responses usage (input/output tokens) is mapped for cost tracking.
         self.assertEqual(result["usage"]["prompt_tokens"], 1200)
         self.assertEqual(result["usage"].get("cached_prompt_tokens"), 200)
+        self.assertEqual(result["usage"].get("cache_write_prompt_tokens"), 100)
         self.assertEqual(result["usage"]["completion_tokens"], 300)
         self.assertEqual(result["usage"].get("reasoning_completion_tokens"), 100)
         self.assertEqual(result["usage"]["total_tokens"], 1500)
         self.assertEqual(result["usage"]["provider_request_count"], 1)
         self.assertEqual(result["usage"]["unmetered_request_count"], 0)
 
-    def test_retries_one_http_400_with_the_identical_request(self) -> None:
-        request_bodies = []
-
-        def fake_urlopen(http_request, timeout=None):
-            request_bodies.append(http_request.data)
-            if len(request_bodies) == 1:
-                raise urllib.error.HTTPError(
-                    url=http_request.full_url,
-                    code=400,
-                    msg="Bad Request",
-                    hdrs=None,
-                    fp=io.BytesIO(b'{"error":{"message":"temporary failure"}}'),
-                )
-
-            payload = {
-                "status": "completed",
-                "output": [
-                    {
-                        "type": "message",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": json.dumps(
-                                    {
-                                        "title": "測試摘要",
-                                        "summary": "摘要",
-                                        "topics": [],
-                                        "follow_up_groups": [],
-                                        "decisions": [],
-                                        "risks": [],
-                                        "open_questions": [],
-                                        "analysis_notes": [],
-                                    }
-                                ),
-                            }
-                        ],
-                    }
-                ],
-                "usage": {
-                    "input_tokens": 10,
-                    "input_tokens_details": {"cached_tokens": 2},
-                    "output_tokens": 2,
-                    "output_tokens_details": {"reasoning_tokens": 1},
-                    "total_tokens": 12,
-                },
-            }
-            return _FakeResponse(json.dumps(payload).encode("utf-8"))
-
-        result = AzureOpenAiTranscriptSummarizer(
-            endpoint="https://azure.example.test/openai/v1/responses",
-            api_key="secret",
-            model="gpt-5.6-luna",
-            urlopen=fake_urlopen,
-        ).summarize(
-            {"language": "zh", "segments": [{"start_ms": 0, "end_ms": 1, "text": "x"}]}
-        )
-
-        self.assertEqual(len(request_bodies), 2)
-        self.assertEqual(request_bodies[0], request_bodies[1])
-        self.assertEqual(result["usage"]["provider_request_count"], 2)
-        self.assertEqual(result["usage"]["unmetered_request_count"], 1)
-
-    def test_stops_after_the_second_http_400_and_preserves_the_final_body(self) -> None:
+    def test_does_not_retry_an_http_400(self) -> None:
         calls = 0
 
         def fake_urlopen(http_request, timeout=None):
             nonlocal calls
             calls += 1
-            message = "first temporary failure" if calls == 1 else "final Azure detail"
             raise urllib.error.HTTPError(
                 url=http_request.full_url,
                 code=400,
                 msg="Bad Request",
                 hdrs=None,
-                fp=io.BytesIO(
-                    json.dumps({"error": {"message": message}}).encode("utf-8")
-                ),
+                fp=io.BytesIO(b'{"error":{"message":"Azure detail"}}'),
             )
 
         summarizer = AzureOpenAiTranscriptSummarizer(
@@ -209,17 +148,41 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
             urlopen=fake_urlopen,
         )
 
-        with self.assertRaisesRegex(
-            AzureOpenAiSummaryError,
-            "after one HTTP 400 retry.*final Azure detail",
-        ) as raised:
+        with self.assertRaisesRegex(AzureOpenAiSummaryError, "400.*Azure detail") as raised:
             summarizer.summarize(
                 {"language": "zh", "segments": [{"start_ms": 0, "end_ms": 1, "text": "x"}]}
             )
 
-        self.assertEqual(calls, 2)
-        self.assertEqual(raised.exception.usage["provider_request_count"], 2)
-        self.assertEqual(raised.exception.usage["unmetered_request_count"], 2)
+        self.assertEqual(calls, 1)
+        self.assertEqual(raised.exception.usage["provider_request_count"], 1)
+        self.assertEqual(raised.exception.usage["unmetered_request_count"], 1)
+
+    def test_does_not_report_a_provider_request_when_audit_start_fails(self) -> None:
+        provider_called = False
+
+        def fake_urlopen(_http_request, timeout=None):
+            nonlocal provider_called
+            provider_called = True
+            raise AssertionError("provider must not be called")
+
+        def fail_audit_start(_update):
+            raise RuntimeError("request audit unavailable")
+
+        summarizer = AzureOpenAiTranscriptSummarizer(
+            endpoint="https://azure.example.test/openai/v1/responses",
+            api_key="secret",
+            model="gpt-5.6-luna",
+            urlopen=fake_urlopen,
+        )
+
+        with self.assertRaisesRegex(AzureOpenAiSummaryError, "audit unavailable") as raised:
+            summarizer.summarize(
+                {"language": "zh", "segments": [{"start_ms": 0, "end_ms": 1, "text": "x"}]},
+                on_provider_request=fail_audit_start,
+            )
+
+        self.assertFalse(provider_called)
+        self.assertIsNone(raised.exception.usage)
 
     def test_does_not_retry_a_non_400_http_error(self) -> None:
         calls = 0
@@ -454,6 +417,8 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
             )
 
     def test_reports_malformed_output_as_an_azure_error(self) -> None:
+        updates = []
+
         def fake_urlopen(_http_request, timeout=None):
             payload = {
                 "status": "completed",
@@ -482,16 +447,21 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AzureOpenAiSummaryError, "azure openai") as raised:
             summarizer.summarize(
-                {"language": "zh", "segments": [{"start_ms": 0, "end_ms": 1, "text": "x"}]}
+                {"language": "zh", "segments": [{"start_ms": 0, "end_ms": 1, "text": "x"}]},
+                on_provider_request=updates.append,
             )
+
+        self.assertEqual(updates[-1]["status"], "failed")
+        self.assertEqual(updates[-1]["errorCode"], "response-validation-failed")
+        self.assertEqual(updates[-1]["usage"]["totalTokens"], 12)
 
         self.assertEqual(
             raised.exception.usage,
             {
-                "input_tokens": 10,
-                "cached_input_tokens": 2,
-                "output_tokens": 2,
-                "reasoning_output_tokens": 1,
+                "prompt_tokens": 10,
+                "cached_prompt_tokens": 2,
+                "completion_tokens": 2,
+                "reasoning_completion_tokens": 1,
                 "total_tokens": 12,
                 "provider_request_count": 1,
                 "unmetered_request_count": 0,
@@ -566,6 +536,7 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
                     model="gpt-5.6-luna",
                     urlopen=fake_urlopen,
                 )
+                updates = []
 
                 with self.assertRaises(AzureOpenAiSummaryError) as raised:
                     summarizer.summarize(
@@ -574,16 +545,19 @@ class AzureOpenAiTranscriptSummarizerTests(unittest.TestCase):
                             "segments": [
                                 {"start_ms": 0, "end_ms": 1, "text": "x"}
                             ],
-                        }
+                        },
+                        on_provider_request=updates.append,
                     )
+
+                self.assertEqual(updates[-1]["status"], "failed")
 
                 self.assertEqual(
                     raised.exception.usage,
                     {
-                        "input_tokens": 10,
-                        "cached_input_tokens": 2,
-                        "output_tokens": 2,
-                        "reasoning_output_tokens": 1,
+                        "prompt_tokens": 10,
+                        "cached_prompt_tokens": 2,
+                        "completion_tokens": 2,
+                        "reasoning_completion_tokens": 1,
                         "total_tokens": 12,
                         "provider_request_count": 1,
                         "unmetered_request_count": 0,

@@ -6,12 +6,24 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
+import {
+  appendActualUsageFromEvent as settleCloudUsageFromEvent,
+  CloudUsageSettlementMetadataError
+} from './application/cloud-usage-settlement.js';
+import {
+  hashLeaseToken,
+  providerRequestAuditIdsSchema,
+  providerRequestBillingClass,
+  providerRequestFinishSchema,
+  providerRequestIdSchema,
+  providerRequestStartSchema,
+  settleProviderRequest,
+  toProviderRequestApi
+} from './application/provider-request-audit.js';
 import type { AdminAuditLogRepository } from './domain/admin-audit-log-repository.js';
 import type { AuthenticatedUserRepository } from './domain/authenticated-user-repository.js';
 import {
   buildQuotaDayKey,
-  calculateAzureResponsesCost,
-  calculateAzureTranscriptionActualCost,
   calculateRemainingCloudQuotaUsd,
   estimateCloudReservationUsd,
   getAzureRetailPricingSnapshot,
@@ -23,7 +35,10 @@ import {
 } from './domain/cloud-usage.js';
 import {
   CloudUsageLedgerConflictError,
-  type CloudUsageLedgerRepository
+  type CloudUsageLedgerRepository,
+  isSameProviderRequestStart,
+  type ProviderRequestAudit,
+  ProviderRequestAuditConflictError
 } from './domain/cloud-usage-ledger-repository.js';
 import type { JobNotificationSender, TerminalJobNotification } from './domain/job-notification-sender.js';
 import {
@@ -109,6 +124,26 @@ const claimRecordingJobRequestSchema = z.object({
   workerId: z.string().min(1)
 });
 
+const codexWeeklyUsageSchema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('available'),
+    planType: z.string().trim().min(1).max(40).optional(),
+    usedPercent: z.number().finite().min(0).max(100),
+    windowDurationMins: z.literal(7 * 24 * 60),
+    resetsAt: z.number().int().positive(),
+    checkedAt: z.string().datetime({ offset: true })
+  }),
+  z.object({
+    status: z.literal('unavailable'),
+    reason: z.enum(['probe-failed', 'weekly-window-unavailable']),
+    checkedAt: z.string().datetime({ offset: true })
+  })
+]);
+
+const claimSummaryJobRequestSchema = claimRecordingJobRequestSchema.extend({
+  codexUsage: codexWeeklyUsageSchema.optional()
+});
+
 const claimSummarySlotRequestSchema = z.object({
   workerId: z.string().min(1),
   jobId: z.string().min(1)
@@ -176,13 +211,6 @@ const adminUsageHistoryQuerySchema = z.object({
 
 const readFiniteNumber = (value: unknown): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : 0;
-
-class CloudUsageSettlementMetadataError extends Error {
-  constructor(jobId: string) {
-    super(`Cloud usage for job ${jobId} cannot be settled without quota and pricing identity.`);
-    this.name = 'CloudUsageSettlementMetadataError';
-  }
-}
 
 const operatorJobExportQuerySchema = z.object({
   submitterId: z.string().trim().min(1).max(120).optional(),
@@ -276,6 +304,7 @@ const punctuationUsageSchema = z.object({
   model: z.string().min(1),
   inputTokens: z.number().int().nonnegative(),
   cachedInputTokens: z.number().int().nonnegative(),
+  cacheWriteTokens: z.number().int().nonnegative().optional(),
   outputTokens: z.number().int().nonnegative(),
   reasoningOutputTokens: z.number().int().nonnegative(),
   totalTokens: z.number().int().nonnegative(),
@@ -284,11 +313,11 @@ const punctuationUsageSchema = z.object({
   fallbackChunkCount: z.number().int().nonnegative(),
   unmeteredRequestCount: z.number().int().nonnegative()
 }).superRefine((usage, context) => {
-  if (usage.cachedInputTokens > usage.inputTokens) {
+  if (usage.cachedInputTokens + (usage.cacheWriteTokens ?? 0) > usage.inputTokens) {
     context.addIssue({
       code: 'custom',
       path: ['cachedInputTokens'],
-      message: 'Cached input tokens cannot exceed input tokens.'
+      message: 'Cached and cache-write input tokens cannot exceed input tokens.'
     });
   }
 
@@ -329,24 +358,61 @@ const punctuationUsageSchema = z.object({
   }
 });
 
-const transcriptUsageSchema = z.object({
-  audioMs: z.number().int().nonnegative().optional(),
-  punctuation: punctuationUsageSchema.optional(),
-  diarization: z
-    .object({
-      provider: z.literal('azure-openai'),
-      model: z.string().min(1),
-      audioMs: z.number().int().nonnegative(),
-      requestCount: z.number().int().positive(),
-      unmeteredRequestCount: z.number().int().nonnegative(),
-      failedChunkCount: z.number().int().nonnegative()
-    })
-    .refine((usage) => usage.unmeteredRequestCount <= usage.requestCount, {
-      message: 'Unmetered diarization requests cannot exceed total requests.',
-      path: ['unmeteredRequestCount']
-    })
-    .optional()
-});
+const transcriptUsageSchema = z
+  .object({
+    audioMs: z.number().int().nonnegative().optional(),
+    billedAudioMs: z.number().int().nonnegative().optional(),
+    providerRequestCount: z.number().int().nonnegative().optional(),
+    unmeteredRequestCount: z.number().int().nonnegative().optional(),
+    punctuation: punctuationUsageSchema.optional(),
+    diarization: z
+      .object({
+        provider: z.literal('azure-openai'),
+        model: z.string().min(1),
+        audioMs: z.number().int().nonnegative(),
+        requestCount: z.number().int().positive(),
+        unmeteredRequestCount: z.number().int().nonnegative(),
+        failedChunkCount: z.number().int().nonnegative()
+      })
+      .refine((usage) => usage.unmeteredRequestCount <= usage.requestCount, {
+        message: 'Unmetered diarization requests cannot exceed total requests.',
+        path: ['unmeteredRequestCount']
+      })
+      .optional()
+  })
+  .superRefine((usage, context) => {
+    if (
+      (usage.providerRequestCount === undefined) !==
+      (usage.unmeteredRequestCount === undefined)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['providerRequestCount'],
+        message: 'Provider and unmetered request counts must be reported together.'
+      });
+    }
+    if (
+      usage.providerRequestCount !== undefined &&
+      (usage.unmeteredRequestCount ?? 0) > usage.providerRequestCount
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['unmeteredRequestCount'],
+        message: 'Unmetered requests cannot exceed provider requests.'
+      });
+    }
+    if (
+      usage.audioMs !== undefined &&
+      usage.billedAudioMs !== undefined &&
+      usage.billedAudioMs < usage.audioMs
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['billedAudioMs'],
+        message: 'Billed audio duration cannot be less than successful upload duration.'
+      });
+    }
+  });
 
 const summaryArtifactSchema = z.object({
   model: z.string().min(1),
@@ -395,17 +461,21 @@ const summaryArtifactSchema = z.object({
 const summaryUsageSchema = z.object({
   promptTokens: z.number().int().nonnegative(),
   cachedPromptTokens: z.number().int().nonnegative(),
+  cacheWritePromptTokens: z.number().int().nonnegative().optional(),
   completionTokens: z.number().int().nonnegative(),
   reasoningCompletionTokens: z.number().int().nonnegative(),
   totalTokens: z.number().int().nonnegative(),
   providerRequestCount: z.number().int().positive().optional(),
   unmeteredRequestCount: z.number().int().nonnegative().optional()
 }).superRefine((usage, context) => {
-  if (usage.cachedPromptTokens > usage.promptTokens) {
+  if (
+    usage.cachedPromptTokens + (usage.cacheWritePromptTokens ?? 0) >
+    usage.promptTokens
+  ) {
     context.addIssue({
       code: 'custom',
       path: ['cachedPromptTokens'],
-      message: 'Cached prompt tokens cannot exceed prompt tokens.'
+      message: 'Cached and cache-write prompt tokens cannot exceed prompt tokens.'
     });
   }
 
@@ -493,11 +563,14 @@ const recordingJobEventSchema = z.intersection(
     z.object({
       type: z.literal('transcript-artifact-stored'),
       transcriptArtifact: transcriptArtifactSchema,
+      requestAuditIds: providerRequestAuditIdsSchema.optional(),
       usage: transcriptUsageSchema.optional()
     }),
     z.object({
       type: z.literal('summary-artifact-stored'),
+      actualProvider: z.enum(['local-codex', 'azure-openai']).optional(),
       summaryArtifact: summaryArtifactSchema,
+      requestAuditIds: providerRequestAuditIdsSchema.optional(),
       usage: summaryUsageSchema.optional()
     }),
     z.object({
@@ -521,14 +594,17 @@ const recordingJobEventSchema = z.intersection(
         code: z.string().min(1),
         message: z.string().min(1)
       }),
+      requestAuditIds: providerRequestAuditIdsSchema.optional(),
       usage: transcriptUsageSchema.optional()
     }),
     z.object({
       type: z.literal('summary-failed'),
+      actualProvider: z.enum(['local-codex', 'azure-openai']).optional(),
       failure: z.object({
         code: z.string().min(1),
         message: z.string().min(1)
       }),
+      requestAuditIds: providerRequestAuditIdsSchema.optional(),
       usage: summaryUsageSchema.optional()
     })
   ])
@@ -548,6 +624,10 @@ const recordingJobEventSchema = z.intersection(
 
 const leaseHeartbeatRequestSchema = z.object({
   stage: z.enum(['recording', 'transcription', 'summary']),
+  leaseToken: z.string().min(1)
+});
+
+const summaryFallbackReservationSchema = z.object({
   leaseToken: z.string().min(1)
 });
 
@@ -1323,6 +1403,7 @@ export const createApp = (
   const runRecordingClaimSerially = createSerialExecutor();
   const runTranscriptionClaimSerially = createSerialExecutor();
   const runSummaryClaimSerially = createSerialExecutor();
+  let latestCodexWeeklyUsage: z.infer<typeof codexWeeklyUsageSchema> | undefined;
   const adminEmails = new Set(
     (options.adminEmails ?? parseAdminEmails(process.env.ADMIN_EMAILS)).map((email) =>
       email.toLowerCase()
@@ -1337,6 +1418,11 @@ export const createApp = (
   const upload = multer({
     dest: tmpdir(),
     limits: {
+      fieldNestingDepth: 0,
+      // submitter, template, and the schema's 50 supported glossary entries
+      fields: 52,
+      files: 1,
+      parts: 53,
       fileSize: options.maxUploadBytes ?? 512 * 1024 * 1024
     }
   });
@@ -1464,11 +1550,19 @@ export const createApp = (
     const quotaDayKey = buildQuotaDayKey(at);
     const override = await operatorCloudQuotaOverrideRepository.getBySubmitterId(submitterId);
     const dailyQuotaUsd = override?.dailyQuotaUsd ?? currentPolicy.defaultDailyCloudQuotaUsd;
-    const ledgerEntries = await cloudUsageLedgerRepository.listBySubmitterAndDay(
+    const [ledgerEntries, providerRequests] = await Promise.all([
+      cloudUsageLedgerRepository.listBySubmitterAndDay(submitterId, quotaDayKey),
+      cloudUsageLedgerRepository.listProviderRequestsBySubmitterAndDay(
+        submitterId,
+        quotaDayKey
+      )
+    ]);
+    const consumed = sumActualConsumedUsd(
+      ledgerEntries,
       submitterId,
-      quotaDayKey
+      quotaDayKey,
+      providerRequests
     );
-    const consumed = sumActualConsumedUsd(ledgerEntries, submitterId, quotaDayKey);
     const reservedUsd = sumReservedUsd(
       await repository.listBySubmitter(submitterId),
       submitterId,
@@ -1514,188 +1608,6 @@ export const createApp = (
       estimatedCloudReservationUsd,
       quotaStatus
     };
-  };
-
-  const appendActualUsageFromEvent = async (
-    job: RecordingJob,
-    event:
-      | z.infer<typeof recordingJobEventSchema>
-      | Extract<z.infer<typeof recordingJobEventSchema>, { type: 'transcript-artifact-stored' }>
-      | Extract<z.infer<typeof recordingJobEventSchema>, { type: 'summary-artifact-stored' }>
-  ): Promise<void> => {
-    const requiresSettlement =
-      ((event.type === 'transcript-artifact-stored' ||
-        (event.type === 'transcription-failed' && event.usage?.audioMs !== undefined)) &&
-        job.transcriptionProvider !== undefined &&
-        isCloudTranscriptionProvider(job.transcriptionProvider)) ||
-      ((event.type === 'transcript-artifact-stored' || event.type === 'transcription-failed') &&
-        (event.usage?.punctuation !== undefined ||
-          event.usage?.diarization !== undefined)) ||
-      ((event.type === 'summary-artifact-stored' || event.type === 'summary-failed') &&
-        event.usage !== undefined &&
-        job.summaryProvider !== undefined &&
-        isCloudSummaryProvider(job.summaryProvider));
-
-    if (
-      !isValidIsoDate(job.quotaDayKey) ||
-      typeof job.pricingVersion !== 'string' ||
-      job.pricingVersion.trim().length === 0
-    ) {
-      if (requiresSettlement) {
-        throw new CloudUsageSettlementMetadataError(job.id);
-      }
-
-      return;
-    }
-
-    if (
-      (event.type === 'transcript-artifact-stored' ||
-        (event.type === 'transcription-failed' && event.usage?.audioMs !== undefined)) &&
-      job.transcriptionProvider &&
-      isCloudTranscriptionProvider(job.transcriptionProvider)
-    ) {
-      const audioMs =
-        event.usage?.audioMs ?? job.progressTotalMs ?? job.progressProcessedMs ?? 0;
-      const model =
-        job.transcriptionModel ??
-        (event.type === 'transcript-artifact-stored'
-          ? event.transcriptArtifact.language
-          : 'unknown');
-      const pricing = calculateAzureTranscriptionActualCost({
-        provider: job.transcriptionProvider,
-        model,
-        pricingVersion: job.pricingVersion,
-        audioMs
-      });
-
-      await cloudUsageLedgerRepository.append({
-        entryKey: `actual:${job.id}:transcription:${event.leaseToken!}`,
-        jobId: job.id,
-        submitterId: job.submitterId,
-        quotaDayKey: job.quotaDayKey,
-        entryType: 'actual',
-        stage: 'transcription',
-        provider: job.transcriptionProvider,
-        model,
-        pricingVersion: job.pricingVersion,
-        usageQuantity: audioMs,
-        usageUnit: 'audio-ms',
-        ...pricing,
-        detail: { audioMs }
-      });
-    }
-
-    if (
-      (event.type === 'transcript-artifact-stored' || event.type === 'transcription-failed') &&
-      event.usage?.punctuation
-    ) {
-      const usage = event.usage.punctuation;
-      const pricing =
-        usage.unmeteredRequestCount > 0
-          ? ({ costUsd: null, pricingStatus: 'unpriced' } as const)
-          : calculateAzureResponsesCost({
-              model: usage.model,
-              pricingVersion: job.pricingVersion,
-              inputTokens: usage.inputTokens,
-              cachedInputTokens: usage.cachedInputTokens,
-              outputTokens: usage.outputTokens,
-              reasoningOutputTokens: usage.reasoningOutputTokens
-            });
-
-      await cloudUsageLedgerRepository.append({
-        entryKey: `actual:${job.id}:punctuation:${event.leaseToken!}`,
-        jobId: job.id,
-        submitterId: job.submitterId,
-        quotaDayKey: job.quotaDayKey,
-        entryType: 'actual',
-        stage: 'punctuation',
-        provider: usage.provider,
-        model: usage.model,
-        pricingVersion: job.pricingVersion,
-        usageQuantity: usage.totalTokens,
-        usageUnit: 'tokens',
-        ...pricing,
-        detail: usage
-      });
-    }
-
-    if (
-      (event.type === 'transcript-artifact-stored' || event.type === 'transcription-failed') &&
-      event.usage?.diarization
-    ) {
-      const usage = event.usage.diarization;
-      await cloudUsageLedgerRepository.append({
-        entryKey: `actual:${job.id}:diarization:${event.leaseToken!}`,
-        jobId: job.id,
-        submitterId: job.submitterId,
-        quotaDayKey: job.quotaDayKey,
-        entryType: 'actual',
-        stage: 'transcription',
-        provider: 'azure-openai-gpt-4o-transcribe',
-        model: usage.model,
-        pricingVersion: job.pricingVersion,
-        usageQuantity: usage.audioMs,
-        usageUnit: 'audio-ms',
-        costUsd: null,
-        pricingStatus: 'unpriced',
-        detail: usage
-      });
-    }
-
-    if (
-      (event.type === 'summary-artifact-stored' || event.type === 'summary-failed') &&
-      event.usage &&
-      job.summaryProvider &&
-      isCloudSummaryProvider(job.summaryProvider)
-    ) {
-      const {
-        promptTokens,
-        cachedPromptTokens,
-        completionTokens,
-        reasoningCompletionTokens,
-        totalTokens,
-        providerRequestCount,
-        unmeteredRequestCount
-      } = event.usage;
-      const model =
-        job.summaryModel ??
-        (event.type === 'summary-artifact-stored' ? event.summaryArtifact.model : 'unknown');
-      const pricing =
-        (unmeteredRequestCount ?? 0) > 0
-          ? ({ costUsd: null, pricingStatus: 'unpriced' } as const)
-          : calculateAzureResponsesCost({
-              model,
-              pricingVersion: job.pricingVersion,
-              inputTokens: promptTokens,
-              cachedInputTokens: cachedPromptTokens,
-              outputTokens: completionTokens,
-              reasoningOutputTokens: reasoningCompletionTokens
-            });
-
-      await cloudUsageLedgerRepository.append({
-        entryKey: `actual:${job.id}:summary:${event.leaseToken!}`,
-        jobId: job.id,
-        submitterId: job.submitterId,
-        quotaDayKey: job.quotaDayKey,
-        entryType: 'actual',
-        stage: 'summary',
-        provider: job.summaryProvider,
-        model,
-        pricingVersion: job.pricingVersion,
-        usageQuantity: totalTokens,
-        usageUnit: 'tokens',
-        ...pricing,
-        detail: {
-          promptTokens,
-          cachedPromptTokens,
-          completionTokens,
-          reasoningCompletionTokens,
-          totalTokens,
-          ...(providerRequestCount === undefined ? {} : { providerRequestCount }),
-          ...(unmeteredRequestCount === undefined ? {} : { unmeteredRequestCount })
-        }
-      });
-    }
   };
 
   const cleanupStaleMeetingJobsIfIdle = async (): Promise<boolean> => {
@@ -2004,31 +1916,28 @@ export const createApp = (
     return expectedLeaseToken !== event.leaseToken;
   };
 
-  const resolveCloudTerminalLeaseStage = (
+  const resolveTerminalLeaseStage = (
     job: RecordingJob,
     event: z.infer<typeof recordingJobEventSchema>
   ): 'transcription' | 'summary' | undefined => {
+    if (event.type === 'summary-artifact-stored' || event.type === 'summary-failed') {
+      return 'summary';
+    }
+
     if (
       (event.type === 'transcript-artifact-stored' || event.type === 'transcription-failed') &&
       ((job.transcriptionProvider !== undefined &&
         isCloudTranscriptionProvider(job.transcriptionProvider)) ||
-        event.usage?.punctuation !== undefined)
+        event.usage?.punctuation !== undefined ||
+        (event.requestAuditIds?.length ?? 0) > 0)
     ) {
       return 'transcription';
-    }
-
-    if (
-      (event.type === 'summary-artifact-stored' || event.type === 'summary-failed') &&
-      job.summaryProvider !== undefined &&
-      isCloudSummaryProvider(job.summaryProvider)
-    ) {
-      return 'summary';
     }
 
     return undefined;
   };
 
-  const wasCloudTerminalLeaseIssued = (
+  const wasTerminalLeaseIssued = (
     job: RecordingJob,
     stage: 'transcription' | 'summary',
     leaseToken: string
@@ -2043,7 +1952,263 @@ export const createApp = (
     return issuedLeaseTokens?.includes(leaseToken) === true || activeLeaseToken === leaseToken;
   };
 
+  const activeLeaseTokenForStage = (
+    job: RecordingJob,
+    stage: 'transcription' | 'summary'
+  ): string | undefined =>
+    stage === 'transcription' ? job.transcriptionLeaseToken : job.summaryLeaseToken;
+
+  const providerRequestMatchesJob = (
+    job: RecordingJob,
+    input: z.infer<typeof providerRequestStartSchema>
+  ): boolean =>
+    input.stage === 'transcription'
+      ? input.provider === job.transcriptionProvider && input.model === job.transcriptionModel
+      : (input.provider === 'local-codex' || input.provider === 'azure-openai') &&
+        input.model === job.summaryModel;
+
+  const validateTerminalProviderRequests = async (
+    job: RecordingJob,
+    event: z.infer<typeof recordingJobEventSchema>,
+    stage: 'transcription' | 'summary' | undefined
+  ): Promise<{ requests: ProviderRequestAudit[] } | { error: string }> => {
+    const requestAuditIds =
+      'requestAuditIds' in event ? (event.requestAuditIds ?? []) : [];
+    if (!stage || !event.leaseToken) {
+      return requestAuditIds.length === 0
+        ? { requests: [] }
+        : { error: 'Provider request audits require a scheduler-issued stage lease.' };
+    }
+
+    const leaseTokenHash = hashLeaseToken(event.leaseToken);
+    const stageRequests = (await cloudUsageLedgerRepository.listProviderRequestsByJob(job.id)).filter(
+      (request) => request.stage === stage && request.leaseTokenHash === leaseTokenHash
+    );
+    if (stageRequests.length === 0 && requestAuditIds.length === 0) {
+      if (
+        stage === 'summary' &&
+        (event.type === 'summary-artifact-stored' || event.type === 'summary-failed') &&
+        event.actualProvider === 'azure-openai'
+      ) {
+        return {
+          error: 'Azure fallback callbacks require their finalized provider request audit.'
+        };
+      }
+      return { requests: [] };
+    }
+    if (
+      stageRequests.some((request) => request.status === 'started') ||
+      stageRequests.length !== requestAuditIds.length ||
+      stageRequests.some((request) => !requestAuditIds.includes(request.requestId))
+    ) {
+      return {
+        error: 'Terminal callbacks must include every finalized provider request for this lease.'
+      };
+    }
+
+    const expectedModel = stage === 'transcription' ? job.transcriptionModel : job.summaryModel;
+    const expectedProvider =
+      stage === 'transcription'
+        ? job.transcriptionProvider
+        : event.type === 'summary-artifact-stored' || event.type === 'summary-failed'
+          ? (event.actualProvider ?? job.summaryProvider ?? 'local-codex')
+          : undefined;
+    if (
+      stageRequests.some(
+        (request) =>
+          request.model !== expectedModel ||
+          (expectedProvider !== undefined && request.provider !== expectedProvider)
+      )
+    ) {
+      return { error: 'Provider request audits do not match the job provider and model.' };
+    }
+
+    return { requests: stageRequests };
+  };
+
   app.use(express.json({ limit: '10mb' }));
+
+  app.post(
+    '/recording-jobs/:id/provider-requests/:requestId/start',
+    async (request, response) => {
+      if (!requireInternalService(request, response)) {
+        return;
+      }
+
+      const parsedRequestId = providerRequestIdSchema.safeParse(request.params.requestId);
+      const parsedRequest = providerRequestStartSchema.safeParse(request.body);
+      if (!parsedRequestId.success || !parsedRequest.success) {
+        return response.status(400).json({
+          error: {
+            code: 'invalid-request',
+            message:
+              parsedRequestId.error?.issues[0]?.message ??
+              parsedRequest.error?.issues[0]?.message ??
+              'The request payload is invalid.'
+          }
+        });
+      }
+
+      const job = await repository.getById(request.params.id);
+      if (!job) {
+        return response.status(404).json(notFoundResponse(request.params.id));
+      }
+      if (
+        activeLeaseTokenForStage(job, parsedRequest.data.stage) !==
+        parsedRequest.data.leaseToken
+      ) {
+        return response.status(409).json({
+          error: {
+            code: 'provider-request-lease-not-active',
+            message: 'The provider request lease is not active for this job stage.'
+          }
+        });
+      }
+      if (!providerRequestMatchesJob(job, parsedRequest.data)) {
+        return response.status(409).json({
+          error: {
+            code: 'provider-request-runtime-mismatch',
+            message: 'The provider request provider or model does not match the latched job.'
+          }
+        });
+      }
+      if (!isValidIsoDate(job.quotaDayKey) || !job.pricingVersion) {
+        return response.status(409).json({
+          error: {
+            code: 'cloud-usage-settlement-metadata-missing',
+            message: `Cloud usage for job ${job.id} cannot be settled without quota and pricing identity.`
+          }
+        });
+      }
+
+      const existing = await cloudUsageLedgerRepository.getProviderRequest(
+        parsedRequestId.data
+      );
+      const auditInput = {
+        requestId: parsedRequestId.data,
+        jobId: job.id,
+        submitterId: job.submitterId,
+        quotaDayKey: job.quotaDayKey,
+        stage: parsedRequest.data.stage,
+        provider: parsedRequest.data.provider,
+        model: parsedRequest.data.model,
+        pricingVersion: job.pricingVersion,
+        leaseTokenHash: hashLeaseToken(parsedRequest.data.leaseToken),
+        billingClass: providerRequestBillingClass(parsedRequest.data.provider),
+        startedAt: existing?.startedAt ?? new Date().toISOString(),
+        detail:
+          parsedRequest.data.operation || parsedRequest.data.audioMs !== undefined
+            ? {
+                ...(parsedRequest.data.operation
+                  ? { operation: parsedRequest.data.operation }
+                  : {}),
+                ...(parsedRequest.data.audioMs === undefined
+                  ? {}
+                  : { audioMs: parsedRequest.data.audioMs })
+              }
+            : undefined
+      } as const;
+      if (
+        parsedRequest.data.stage === 'summary' &&
+        parsedRequest.data.provider === 'azure-openai'
+      ) {
+        if (existing && !isSameProviderRequestStart(existing, auditInput)) {
+          const error = new ProviderRequestAuditConflictError(parsedRequestId.data);
+          return response.status(409).json({
+            error: { code: 'provider-request-audit-conflict', message: error.message }
+          });
+        }
+        const claimed = await repository.claimSummaryFallbackRequest({
+          jobId: job.id,
+          leaseToken: parsedRequest.data.leaseToken,
+          requestId: parsedRequestId.data
+        });
+        if (!claimed) {
+          return response.status(409).json({
+            error: {
+              code: 'summary-fallback-not-reserved',
+              message: 'No Azure fallback reservation is available for this provider request.'
+            }
+          });
+        }
+      }
+      try {
+        const audit = await cloudUsageLedgerRepository.startProviderRequest(auditInput);
+
+        return response.status(existing ? 200 : 201).json({
+          created: existing === undefined,
+          request: toProviderRequestApi(audit)
+        });
+      } catch (error) {
+        if (error instanceof ProviderRequestAuditConflictError) {
+          return response.status(409).json({
+            error: { code: 'provider-request-audit-conflict', message: error.message }
+          });
+        }
+        throw error;
+      }
+    }
+  );
+
+  app.post(
+    '/recording-jobs/:id/provider-requests/:requestId/finish',
+    async (request, response) => {
+      if (!requireInternalService(request, response)) {
+        return;
+      }
+
+      const parsedRequestId = providerRequestIdSchema.safeParse(request.params.requestId);
+      const parsedRequest = providerRequestFinishSchema.safeParse(request.body);
+      if (!parsedRequestId.success || !parsedRequest.success) {
+        return response.status(400).json({
+          error: {
+            code: 'invalid-request',
+            message:
+              parsedRequestId.error?.issues[0]?.message ??
+              parsedRequest.error?.issues[0]?.message ??
+              'The request payload is invalid.'
+          }
+        });
+      }
+
+      const [job, audit] = await Promise.all([
+        repository.getByIdIncludingHidden(request.params.id),
+        cloudUsageLedgerRepository.getProviderRequest(parsedRequestId.data)
+      ]);
+      if (!job || !audit || audit.jobId !== job.id) {
+        return response.status(404).json(notFoundResponse(request.params.id));
+      }
+      if (
+        audit.leaseTokenHash !== hashLeaseToken(parsedRequest.data.leaseToken) ||
+        !wasTerminalLeaseIssued(job, audit.stage, parsedRequest.data.leaseToken)
+      ) {
+        return response.status(409).json({
+          error: {
+            code: 'provider-request-lease-mismatch',
+            message: 'The provider request was not started under this job lease.'
+          }
+        });
+      }
+
+      try {
+        const finished = await cloudUsageLedgerRepository.finishProviderRequest(
+          settleProviderRequest(
+            audit,
+            parsedRequest.data,
+            audit.finishedAt ?? new Date().toISOString()
+          )
+        );
+        return response.status(200).json({ request: toProviderRequestApi(finished) });
+      } catch (error) {
+        if (error instanceof ProviderRequestAuditConflictError) {
+          return response.status(409).json({
+            error: { code: 'provider-request-audit-conflict', message: error.message }
+          });
+        }
+        throw error;
+      }
+    }
+  );
 
   app.get('/health', (_request, response) => {
     response.status(200).json({ status: 'ok' });
@@ -2268,6 +2433,22 @@ export const createApp = (
     });
   });
 
+  app.get('/api/admin/codex-usage', async (request, response) => {
+    const authenticatedOperator = await requireAdminOperator(request, response);
+
+    if (!authenticatedOperator) {
+      return;
+    }
+
+    return response.status(200).json(
+      latestCodexWeeklyUsage ?? {
+        status: 'unavailable',
+        reason: 'not-reported',
+        checkedAt: null
+      }
+    );
+  });
+
   app.put('/api/admin/cloud-quota/overrides', async (request, response) => {
     const parsedRequest = updateOperatorQuotaOverrideSchema.safeParse(request.body);
 
@@ -2343,19 +2524,32 @@ export const createApp = (
 
     const currentPolicy = await transcriptionProviderSettingsRepository.getCurrent();
     const quotaDayKey = parsedQuery.data.quotaDayKey ?? buildQuotaDayKey(new Date());
-    const [entries, jobs] = await Promise.all([
+    const [entries, jobs, dayProviderRequests] = await Promise.all([
       cloudUsageLedgerRepository.listByQuotaDayKey(quotaDayKey),
-      repository.listByQuotaDayKey(quotaDayKey)
+      repository.listByQuotaDayKey(quotaDayKey),
+      cloudUsageLedgerRepository.listProviderRequestsByQuotaDayKey(quotaDayKey)
     ]);
-    const submitterIds = [...new Set([...entries, ...jobs].map((item) => item.submitterId))].sort();
+    const submitterIds = [
+      ...new Set([...entries, ...jobs, ...dayProviderRequests].map((item) => item.submitterId))
+    ].sort();
 
     const rows = await Promise.all(
       submitterIds.map(async (submitterId) => {
-        const override = await operatorCloudQuotaOverrideRepository.getBySubmitterId(submitterId);
-        const user = await authenticatedUserRepository?.getById(submitterId);
+        const [override, user] = await Promise.all([
+          operatorCloudQuotaOverrideRepository.getBySubmitterId(submitterId),
+          authenticatedUserRepository?.getById(submitterId)
+        ]);
+        const providerRequests = dayProviderRequests.filter(
+          (providerRequest) => providerRequest.submitterId === submitterId
+        );
         const dailyQuotaUsd = override?.dailyQuotaUsd ?? currentPolicy.defaultDailyCloudQuotaUsd;
         const reservedUsd = sumReservedUsd(jobs, submitterId, quotaDayKey);
-        const consumed = sumActualConsumedUsd(entries, submitterId, quotaDayKey);
+        const consumed = sumActualConsumedUsd(
+          entries,
+          submitterId,
+          quotaDayKey,
+          providerRequests
+        );
 
         return {
           submitterId,
@@ -2389,7 +2583,8 @@ export const createApp = (
                 usageUnit: entry.usageUnit,
                 createdAt: entry.createdAt
               };
-            })
+            }),
+          providerRequests: providerRequests.map(toProviderRequestApi)
         };
       })
     );
@@ -2406,11 +2601,26 @@ export const createApp = (
           ? null
           : roundUsd(rows.reduce((total, row) => total + row.pricedConsumedUsd, 0)),
         hasUnpricedUsage: rows.some((row) => row.hasUnpricedUsage),
-        unpricedEntryCount: entries.filter(
-          (entry) =>
-            entry.entryType === 'actual' &&
-            resolveCloudUsageEntryCost(entry).hasUnpricedUsage
-        ).length
+        providerRequestCount: rows.reduce(
+          (total, row) => total + row.providerRequests.length,
+          0
+        ),
+        unpricedEntryCount:
+          entries.filter(
+            (entry) =>
+              entry.entryType === 'actual' &&
+              resolveCloudUsageEntryCost(entry).hasUnpricedUsage
+          ).length +
+          rows.reduce(
+            (total, row) =>
+              total +
+              row.providerRequests.filter(
+                (providerRequest) =>
+                  providerRequest.billingClass === 'metered-api' &&
+                  providerRequest.pricingStatus !== 'priced'
+              ).length,
+            0
+          )
       },
       rows
     });
@@ -2435,9 +2645,12 @@ export const createApp = (
     }
 
     const limit = parsedQuery.data.limit ?? 500;
-    const ledgerEntries = await cloudUsageLedgerRepository.listRecentEntries(limit);
+    const [ledgerEntries, providerRequestAudits] = await Promise.all([
+      cloudUsageLedgerRepository.listRecentEntries(limit),
+      cloudUsageLedgerRepository.listRecentProviderRequests(limit)
+    ]);
 
-    const entries = ledgerEntries.map((entry) => {
+    const legacyEntries = ledgerEntries.map((entry) => {
       const detail = entry.detail ?? {};
       const resolved = resolveCloudUsageEntryCost(entry);
       const inputTokens =
@@ -2445,6 +2658,9 @@ export const createApp = (
       const cachedInputTokens =
         readFiniteNumber(detail.cachedPromptTokens) ||
         readFiniteNumber(detail.cachedInputTokens);
+      const cacheWriteInputTokens =
+        readFiniteNumber(detail.cacheWritePromptTokens) ||
+        readFiniteNumber(detail.cacheWriteTokens);
       const outputTokens =
         readFiniteNumber(detail.completionTokens) || readFiniteNumber(detail.outputTokens);
       const reasoningOutputTokens =
@@ -2456,9 +2672,13 @@ export const createApp = (
         entry.stage === 'transcription'
           ? readFiniteNumber(detail.audioMs) || readFiniteNumber(entry.usageQuantity)
           : 0;
+      const billedAudioMs = readFiniteNumber(detail.billedAudioMs);
+      const providerRequestCount =
+        readFiniteNumber(detail.providerRequestCount) || readFiniteNumber(detail.requestCount);
 
       return {
         id: entry.id,
+        recordKind: 'ledger-entry' as const,
         createdAt: entry.createdAt,
         quotaDayKey: entry.quotaDayKey,
         jobId: entry.jobId,
@@ -2467,19 +2687,69 @@ export const createApp = (
         provider: entry.provider,
         model: entry.model,
         entryType: entry.entryType,
+        billingClass: undefined,
         pricingStatus: resolved.hasUnpricedUsage ? 'unpriced' : 'priced',
         inputTokens,
         cachedInputTokens,
+        cacheWritePromptTokens: cacheWriteInputTokens,
         outputTokens,
         reasoningOutputTokens,
         totalTokens,
         audioMs,
+        billedAudioMs,
+        providerRequestCount,
         costUsd:
           resolved.knownCostUsd > 0 || !resolved.hasUnpricedUsage
             ? resolved.knownCostUsd
             : null
       };
     });
+    const providerRequestEntries = providerRequestAudits.map((providerRequest) => {
+      const detail = providerRequest.detail ?? {};
+      const hasTokenUsage = typeof detail.totalTokens === 'number';
+      const inputTokens = readFiniteNumber(detail.inputTokens);
+      const cachedInputTokens = readFiniteNumber(detail.cachedInputTokens);
+      const cacheWriteInputTokens = readFiniteNumber(detail.cacheWriteInputTokens);
+      const outputTokens = readFiniteNumber(detail.outputTokens);
+      const reasoningOutputTokens = readFiniteNumber(detail.reasoningOutputTokens);
+
+      return {
+        id: providerRequest.requestId,
+        recordKind: 'provider-request' as const,
+        createdAt: providerRequest.startedAt,
+        finishedAt: providerRequest.finishedAt,
+        quotaDayKey: providerRequest.quotaDayKey,
+        jobId: providerRequest.jobId,
+        submitterId: providerRequest.submitterId,
+        stage: providerRequest.stage,
+        provider: providerRequest.provider,
+        model: providerRequest.model,
+        entryType: 'actual' as const,
+        billingClass: providerRequest.billingClass,
+        requestStatus: providerRequest.status,
+        providerRequestId: providerRequest.providerRequestId,
+        httpStatus: providerRequest.httpStatus,
+        errorCode: providerRequest.errorCode,
+        pricingStatus: providerRequest.pricingStatus,
+        hasTokenUsage,
+        inputTokens,
+        cachedInputTokens,
+        cacheWritePromptTokens: cacheWriteInputTokens,
+        outputTokens,
+        reasoningOutputTokens,
+        totalTokens: readFiniteNumber(detail.totalTokens) || inputTokens + outputTokens,
+        audioMs: readFiniteNumber(detail.audioMs),
+        billedAudioMs: readFiniteNumber(detail.billedAudioMs),
+        providerRequestCount: 1,
+        costUsd:
+          providerRequest.knownCostUsd > 0 || providerRequest.pricingStatus === 'priced'
+            ? providerRequest.knownCostUsd
+            : null
+      };
+    });
+    const entries = [...legacyEntries, ...providerRequestEntries]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, limit);
 
     const submitterIds = [...new Set(entries.map((entry) => entry.submitterId))];
     const submitterEmails: Record<string, string> = {};
@@ -2499,12 +2769,16 @@ export const createApp = (
         model: string;
         stage: string;
         provider: string;
+        billingClass: string | undefined;
         entryCount: number;
         inputTokens: number;
         cachedInputTokens: number;
+        cacheWritePromptTokens: number;
         outputTokens: number;
         reasoningOutputTokens: number;
         totalTokens: number;
+        billedAudioMs: number;
+        providerRequestCount: number;
         pricedCostUsd: number;
         totalCostUsd: number | null;
         hasUnpricedUsage: boolean;
@@ -2518,12 +2792,16 @@ export const createApp = (
         model: entry.model,
         stage: entry.stage,
         provider: entry.provider,
+        billingClass: entry.billingClass,
         entryCount: 0,
         inputTokens: 0,
         cachedInputTokens: 0,
+        cacheWritePromptTokens: 0,
         outputTokens: 0,
         reasoningOutputTokens: 0,
         totalTokens: 0,
+        billedAudioMs: 0,
+        providerRequestCount: 0,
         pricedCostUsd: 0,
         totalCostUsd: 0,
         hasUnpricedUsage: false,
@@ -2533,12 +2811,15 @@ export const createApp = (
       current.entryCount += 1;
       current.inputTokens += entry.inputTokens;
       current.cachedInputTokens += entry.cachedInputTokens;
+      current.cacheWritePromptTokens += entry.cacheWritePromptTokens;
       current.outputTokens += entry.outputTokens;
       current.reasoningOutputTokens += entry.reasoningOutputTokens;
       current.totalTokens += entry.totalTokens;
+      current.billedAudioMs += entry.billedAudioMs;
+      current.providerRequestCount += entry.providerRequestCount;
       current.pricedCostUsd = roundUsd(current.pricedCostUsd + (entry.costUsd ?? 0));
 
-      if (entry.pricingStatus === 'unpriced') {
+      if (entry.pricingStatus === 'unpriced' || entry.pricingStatus === 'pending') {
         current.hasUnpricedUsage = true;
         current.unpricedEntryCount += 1;
       }
@@ -2555,9 +2836,12 @@ export const createApp = (
       (accumulator, entry) => {
         accumulator.inputTokens += entry.inputTokens;
         accumulator.cachedInputTokens += entry.cachedInputTokens;
+        accumulator.cacheWritePromptTokens += entry.cacheWritePromptTokens;
         accumulator.outputTokens += entry.outputTokens;
         accumulator.reasoningOutputTokens += entry.reasoningOutputTokens;
         accumulator.totalTokens += entry.totalTokens;
+        accumulator.billedAudioMs += entry.billedAudioMs;
+        accumulator.providerRequestCount += entry.providerRequestCount;
         accumulator.pricedCostUsd = roundUsd(
           accumulator.pricedCostUsd + (entry.costUsd ?? 0)
         );
@@ -2567,7 +2851,7 @@ export const createApp = (
           accumulator.actualEntryCount += 1;
         }
 
-        if (entry.pricingStatus === 'unpriced') {
+        if (entry.pricingStatus === 'unpriced' || entry.pricingStatus === 'pending') {
           accumulator.unpricedEntryCount += 1;
         }
 
@@ -2578,9 +2862,12 @@ export const createApp = (
         actualEntryCount: 0,
         inputTokens: 0,
         cachedInputTokens: 0,
+        cacheWritePromptTokens: 0,
         outputTokens: 0,
         reasoningOutputTokens: 0,
         totalTokens: 0,
+        billedAudioMs: 0,
+        providerRequestCount: 0,
         pricedCostUsd: 0,
         unpricedEntryCount: 0,
         audioMs: 0
@@ -2616,7 +2903,10 @@ export const createApp = (
       return response.status(404).json(notFoundResponse(request.params.id));
     }
 
-    const ledgerEntries = await cloudUsageLedgerRepository.listByJob(job.id);
+    const [ledgerEntries, providerRequests] = await Promise.all([
+      cloudUsageLedgerRepository.listByJob(job.id),
+      cloudUsageLedgerRepository.listProviderRequestsByJob(job.id)
+    ]);
     const costSummary = (await cloudUsageLedgerRepository.summarizeActualCostByJobIds([job.id]))[
       job.id
     ] ?? {
@@ -2658,6 +2948,9 @@ export const createApp = (
           cachedInputTokens:
             readFiniteNumber(detail.cachedPromptTokens) ||
             readFiniteNumber(detail.cachedInputTokens),
+          cacheWritePromptTokens:
+            readFiniteNumber(detail.cacheWritePromptTokens) ||
+            readFiniteNumber(detail.cacheWriteTokens),
           outputTokens:
             readFiniteNumber(detail.completionTokens) || readFiniteNumber(detail.outputTokens),
           reasoningOutputTokens:
@@ -2665,13 +2958,16 @@ export const createApp = (
             readFiniteNumber(detail.reasoningOutputTokens),
           totalTokens: readFiniteNumber(detail.totalTokens),
           requestCount: readFiniteNumber(detail.requestCount),
+          providerRequestCount: readFiniteNumber(detail.providerRequestCount),
           acceptedChunkCount: readFiniteNumber(detail.acceptedChunkCount),
           fallbackChunkCount: readFiniteNumber(detail.fallbackChunkCount),
           unmeteredRequestCount: readFiniteNumber(detail.unmeteredRequestCount),
           audioMs: readFiniteNumber(detail.audioMs),
+          billedAudioMs: readFiniteNumber(detail.billedAudioMs),
           createdAt: entry.createdAt
         };
-      })
+      }),
+      providerRequests: providerRequests.map(toProviderRequestApi)
     });
   });
 
@@ -2713,9 +3009,7 @@ export const createApp = (
         transcriptionCapacity:
           currentPolicy.concurrencyPools.localTranscription +
           currentPolicy.concurrencyPools.cloudTranscription,
-        summaryCapacity:
-          currentPolicy.concurrencyPools.localSummary +
-          currentPolicy.concurrencyPools.cloudSummary
+        summaryCapacity: currentPolicy.concurrencyPools.localSummary
       })
     );
   });
@@ -3883,6 +4177,14 @@ export const createApp = (
 
       const currentPolicy = await transcriptionProviderSettingsRepository.getCurrent();
       const summaryProvider = job.summaryProvider ?? currentPolicy.summaryProvider;
+      if (summaryProvider !== 'local-codex') {
+        return response.status(409).json({
+          error: {
+            code: 'summary-provider-retired',
+            message: 'Azure OpenAI summaries are retired; submit or migrate this job to Local Codex.'
+          }
+        });
+      }
       const summaryJobs = await repository.listGeneratingSummaryJobs();
       const nowMs = Date.now();
       const liveSummaryJobs = summaryJobs.filter((candidate) => {
@@ -3901,14 +4203,8 @@ export const createApp = (
       const activeLocalSummaries = liveSummaryJobs.filter(
         (candidate) => !candidate.summaryProvider || !isCloudSummaryProvider(candidate.summaryProvider)
       );
-      const activeCloudSummaries = liveSummaryJobs.filter(
-        (candidate) =>
-          typeof candidate.summaryProvider === 'string' &&
-          isCloudSummaryProvider(candidate.summaryProvider)
-      );
-      const summaryPoolAvailable = isCloudSummaryProvider(summaryProvider)
-        ? activeCloudSummaries.length < currentPolicy.concurrencyPools.cloudSummary
-        : activeLocalSummaries.length < currentPolicy.concurrencyPools.localSummary;
+      const summaryPoolAvailable =
+        activeLocalSummaries.length < currentPolicy.concurrencyPools.localSummary;
 
       if (!summaryPoolAvailable && job.processingStage !== 'generating-summary') {
         return response.status(204).send();
@@ -3943,7 +4239,7 @@ export const createApp = (
       return;
     }
 
-    const parsedRequest = claimRecordingJobRequestSchema.safeParse(request.body);
+    const parsedRequest = claimSummaryJobRequestSchema.safeParse(request.body);
 
     if (!parsedRequest.success) {
       return response.status(400).json({
@@ -3954,27 +4250,19 @@ export const createApp = (
       });
     }
 
+    if (parsedRequest.data.codexUsage) {
+      latestCodexWeeklyUsage = parsedRequest.data.codexUsage;
+    }
+
     return await runSummaryClaimSerially(async () => {
       const currentPolicy = await transcriptionProviderSettingsRepository.getCurrent();
       const summaryJobs = await repository.listGeneratingSummaryJobs();
       const activeLocalSummaries = summaryJobs.filter(
         (candidate) => !candidate.summaryProvider || !isCloudSummaryProvider(candidate.summaryProvider)
       );
-      const activeCloudSummaries = summaryJobs.filter(
-        (candidate) =>
-          typeof candidate.summaryProvider === 'string' &&
-          isCloudSummaryProvider(candidate.summaryProvider)
-      );
       const localSummaryAvailable =
         activeLocalSummaries.length < currentPolicy.concurrencyPools.localSummary;
-      const cloudSummaryAvailable =
-        activeCloudSummaries.length < currentPolicy.concurrencyPools.cloudSummary;
-
-      const allowedSummaryProviders = summaryProviders.filter((provider) =>
-        isCloudSummaryProvider(provider)
-          ? cloudSummaryAvailable
-          : localSummaryAvailable
-      );
+      const allowedSummaryProviders = localSummaryAvailable ? [...summaryProviders] : [];
 
       if (allowedSummaryProviders.length === 0) {
         return response.status(204).send();
@@ -3991,6 +4279,30 @@ export const createApp = (
 
       return response.status(200).json(toWorkerClaimResponse(claimedJob, 'summary'));
     });
+  });
+
+  app.post('/recording-jobs/:id/summary-fallback/reservations', async (request, response) => {
+    if (!requireInternalService(request, response)) {
+      return;
+    }
+
+    const parsedRequest = summaryFallbackReservationSchema.safeParse(request.body);
+    if (!parsedRequest.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedRequest.error.issues[0]?.message ?? 'The request payload is invalid.'
+        }
+      });
+    }
+
+    const reserved = await repository.reserveSummaryFallback({
+      jobId: request.params.id,
+      leaseToken: parsedRequest.data.leaseToken,
+      reservedAt: new Date().toISOString()
+    });
+
+    return response.status(200).json({ reserved });
   });
 
   app.post('/recording-jobs/:id/leases/heartbeat', async (request, response) => {
@@ -4183,49 +4495,107 @@ export const createApp = (
     }
 
     if (
-      parsedEvent.data.type === 'summary-artifact-stored' &&
-      job.summaryProvider &&
-      isCloudSummaryProvider(job.summaryProvider) &&
-      !parsedEvent.data.usage
+      parsedEvent.data.type === 'summary-artifact-stored' ||
+      parsedEvent.data.type === 'summary-failed'
     ) {
-      return response.status(400).json({
-        error: {
-          code: 'invalid-request',
-          message: 'Cloud summary callbacks must include complete token usage.'
+      const actualSummaryProvider =
+        parsedEvent.data.actualProvider ?? job.summaryProvider ?? 'local-codex';
+      if (isCloudSummaryProvider(actualSummaryProvider) && !parsedEvent.data.usage) {
+        return response.status(400).json({
+          error: {
+            code: 'invalid-request',
+            message: 'Azure summary callbacks must include complete token usage.'
+          }
+        });
+      }
+      if (!isCloudSummaryProvider(actualSummaryProvider) && parsedEvent.data.usage) {
+        return response.status(400).json({
+          error: {
+            code: 'invalid-request',
+            message: 'Local Codex summary callbacks cannot report Azure token usage.'
+          }
+        });
+      }
+      if (
+        parsedEvent.data.actualProvider === 'azure-openai' &&
+        parsedEvent.data.usage
+      ) {
+        const usage = parsedEvent.data.usage;
+        const hasMeteredRequest =
+          usage.providerRequestCount === 1 &&
+          usage.unmeteredRequestCount === 0 &&
+          usage.totalTokens > 0;
+        const hasUnmeteredFailedRequest =
+          parsedEvent.data.type === 'summary-failed' &&
+          usage.providerRequestCount === 1 &&
+          usage.unmeteredRequestCount === 1 &&
+          usage.totalTokens === 0;
+
+        if (
+          (parsedEvent.data.type === 'summary-artifact-stored' && !hasMeteredRequest) ||
+          (parsedEvent.data.type === 'summary-failed' &&
+            !hasMeteredRequest &&
+            !hasUnmeteredFailedRequest)
+        ) {
+          return response.status(400).json({
+            error: {
+              code: 'invalid-request',
+              message: 'Azure fallback callbacks must report exactly one metered or failed request.'
+            }
+          });
         }
-      });
+      }
     }
 
-    const cloudTerminalLeaseStage = resolveCloudTerminalLeaseStage(job, parsedEvent.data);
+    const terminalLeaseStage = resolveTerminalLeaseStage(job, parsedEvent.data);
 
-    if (isOperatorHiddenJob && !cloudTerminalLeaseStage) {
+    if (isOperatorHiddenJob && !terminalLeaseStage) {
       return response.status(404).json(notFoundResponse(request.params.id));
     }
 
-    if (cloudTerminalLeaseStage && !parsedEvent.data.leaseToken) {
+    if (terminalLeaseStage && !parsedEvent.data.leaseToken) {
       return response.status(400).json({
         error: {
           code: 'invalid-request',
-          message: 'Cloud terminal callbacks must include a scheduler-issued lease token.'
+          message: 'Terminal callbacks must include a scheduler-issued lease token.'
         }
       });
     }
 
     if (
-      cloudTerminalLeaseStage &&
+      terminalLeaseStage &&
       parsedEvent.data.leaseToken &&
-      !wasCloudTerminalLeaseIssued(job, cloudTerminalLeaseStage, parsedEvent.data.leaseToken)
+      !wasTerminalLeaseIssued(job, terminalLeaseStage, parsedEvent.data.leaseToken)
     ) {
       return response.status(400).json({
         error: {
           code: 'invalid-request',
-          message: 'The cloud terminal callback lease token was not issued for this job stage.'
+          message: 'The terminal callback lease token was not issued for this job stage.'
+        }
+      });
+    }
+
+    const providerRequestValidation = await validateTerminalProviderRequests(
+      job,
+      parsedEvent.data,
+      terminalLeaseStage
+    );
+    if ('error' in providerRequestValidation) {
+      return response.status(409).json({
+        error: {
+          code: 'provider-request-audit-incomplete',
+          message: providerRequestValidation.error
         }
       });
     }
 
     try {
-      await appendActualUsageFromEvent(job, parsedEvent.data);
+      await settleCloudUsageFromEvent({
+        repository: cloudUsageLedgerRepository,
+        job,
+        event: parsedEvent.data,
+        providerRequests: providerRequestValidation.requests
+      });
     } catch (error) {
       if (error instanceof CloudUsageSettlementMetadataError) {
         return response.status(409).json({
@@ -4289,19 +4659,19 @@ export const createApp = (
 
     const policyRecordedJob = recordTerminalArtifactLifecyclePolicy(updatedJob);
     const leaseGuardedSavedJob =
-      cloudTerminalLeaseStage && parsedEvent.data.leaseToken
+      terminalLeaseStage && parsedEvent.data.leaseToken
         ? await repository.saveIfLeaseActive(policyRecordedJob, {
-            stage: cloudTerminalLeaseStage,
+            stage: terminalLeaseStage,
             leaseToken: parsedEvent.data.leaseToken
           })
         : undefined;
 
-    if (cloudTerminalLeaseStage && !leaseGuardedSavedJob) {
+    if (terminalLeaseStage && !leaseGuardedSavedJob) {
       const latestJob = await repository.getById(job.id);
       return response.status(202).json(toApiRecordingJob(latestJob ?? job));
     }
 
-    const savedJob = cloudTerminalLeaseStage
+    const savedJob = terminalLeaseStage
       ? await maybeSendTerminalJobNotification(leaseGuardedSavedJob!)
       : await saveJob(policyRecordedJob);
 
@@ -4323,11 +4693,14 @@ export const createApp = (
   });
 
   const uploadErrorHandler: ErrorRequestHandler = (error, _request, response, next) => {
-    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
-      response.status(413).json({
+    if (error instanceof multer.MulterError) {
+      const tooLarge = error.code === 'LIMIT_FILE_SIZE';
+      response.status(tooLarge ? 413 : 400).json({
         error: {
-          code: 'uploaded-media-too-large',
-          message: 'Uploaded media exceeds the configured size limit.'
+          code: tooLarge ? 'uploaded-media-too-large' : 'invalid-upload',
+          message: tooLarge
+            ? 'Uploaded media exceeds the configured size limit.'
+            : 'The upload form contains unsupported fields.'
         }
       });
       return;

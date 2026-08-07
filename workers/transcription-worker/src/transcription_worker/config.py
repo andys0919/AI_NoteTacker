@@ -55,7 +55,7 @@ def _read_worker_config(environment: Mapping[str, str | None]) -> dict[str, str 
 
 
 def _read_summary_endpoint(environment: Mapping[str, str | None]) -> str | None:
-    endpoint = environment.get("AZURE_OPENAI_SUMMARY_ENDPOINT")
+    endpoint = environment.get("AZURE_OPENAI_SUMMARY_ENDPOINT") or None
     if endpoint:
         summary_url = urlparse(endpoint)
         if (
@@ -132,15 +132,28 @@ def read_transcription_worker_config(
 def read_summary_worker_config(
     environment: Mapping[str, str | None],
 ) -> dict[str, str | int | None]:
+    azure_summary_endpoint_value = environment.get("AZURE_OPENAI_SUMMARY_ENDPOINT") or None
+    azure_summary_api_key = environment.get("AZURE_OPENAI_SUMMARY_API_KEY") or None
+    azure_summary_endpoint = (
+        _read_summary_endpoint(environment)
+        if azure_summary_endpoint_value and azure_summary_api_key
+        else None
+    )
+    if not azure_summary_endpoint:
+        azure_summary_api_key = None
+
     return {
         **_read_worker_config(environment),
         "summary_model": environment.get("SUMMARY_MODEL") or "gpt-5.6-luna",
         "summary_reasoning_effort": _read_reasoning_effort(
             environment, "SUMMARY_REASONING_EFFORT", "max"
         ),
+        "summary_timeout_seconds": _read_positive_int(
+            environment, "SUMMARY_TIMEOUT_SECONDS", 900
+        ),
         "codex_cli_path": environment.get("CODEX_CLI_PATH") or "codex",
-        "azure_openai_summary_endpoint": _read_summary_endpoint(environment),
-        "azure_openai_summary_api_key": environment.get("AZURE_OPENAI_SUMMARY_API_KEY"),
+        "azure_openai_summary_endpoint": azure_summary_endpoint,
+        "azure_openai_summary_api_key": azure_summary_api_key,
         "azure_openai_summary_timeout_seconds": _read_positive_int(
             environment, "AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS", 900
         ),

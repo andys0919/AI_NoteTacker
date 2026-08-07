@@ -92,6 +92,7 @@ let currentJobsPageInfo = {
   nextCursor: null
 };
 let progressPollInFlight = false;
+let jobsRequestGeneration = 0;
 
 const applyDefaultJoinNameToForm = () => {
   elements.joinName.value = operatorConfig.defaultJoinName;
@@ -973,21 +974,38 @@ const fetchJobsPayload = async ({ append = false, pageSize } = {}) => {
 };
 
 const fetchJobs = async ({ append = false } = {}) => {
-  const payload = await fetchJobsPayload({ append });
-  currentJobStats = payload.stats || null;
-  currentJobsPageInfo = payload.pageInfo
-    ? {
-        pageSize: payload.pageInfo.pageSize || 25,
-        hasMore: Boolean(payload.pageInfo.hasMore),
-        nextCursor: payload.pageInfo.nextCursor || null
-      }
-    : {
-        pageSize: 25,
-        hasMore: false,
-        nextCursor: null
-      };
-  currentJobs = append ? mergeJobsById(currentJobs, payload.jobs) : payload.jobs;
-  renderJobs(currentJobs);
+  const requestGeneration = ++jobsRequestGeneration;
+  elements.jobList.setAttribute('aria-busy', 'true');
+
+  try {
+    const payload = await fetchJobsPayload({ append });
+    if (requestGeneration !== jobsRequestGeneration) {
+      return;
+    }
+
+    currentJobStats = payload.stats || null;
+    currentJobsPageInfo = payload.pageInfo
+      ? {
+          pageSize: payload.pageInfo.pageSize || 25,
+          hasMore: Boolean(payload.pageInfo.hasMore),
+          nextCursor: payload.pageInfo.nextCursor || null
+        }
+      : {
+          pageSize: 25,
+          hasMore: false,
+          nextCursor: null
+        };
+    currentJobs = append ? mergeJobsById(currentJobs, payload.jobs) : payload.jobs;
+    renderJobs(currentJobs);
+  } catch (error) {
+    if (requestGeneration === jobsRequestGeneration) {
+      throw error;
+    }
+  } finally {
+    if (requestGeneration === jobsRequestGeneration) {
+      elements.jobList.setAttribute('aria-busy', 'false');
+    }
+  }
 };
 
 const fetchJobSnapshot = async (jobId) => {
@@ -1108,7 +1126,11 @@ const applyPolledJob = (snapshot) => {
 };
 
 const refreshJobProgress = async () => {
-  if (document.hidden || progressPollInFlight) {
+  if (
+    document.hidden ||
+    progressPollInFlight ||
+    elements.jobList.getAttribute('aria-busy') === 'true'
+  ) {
     return;
   }
 
@@ -1126,9 +1148,13 @@ const refreshJobProgress = async () => {
       return;
     }
 
+    const requestGeneration = jobsRequestGeneration;
     const payload = await fetchJobsPayload({
       pageSize: Math.min(100, Math.max(currentJobsPageInfo.pageSize || 25, currentJobs.length))
     });
+    if (requestGeneration !== jobsRequestGeneration) {
+      return;
+    }
     payload.jobs
       .filter((job) => pendingJobIds.has(job.id))
       .forEach(applyPolledJob);

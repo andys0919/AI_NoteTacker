@@ -114,7 +114,7 @@ const getTotalCostDisplay = (job) => {
   const knownCostUsd = getKnownCloudCostUsd(job);
 
   return knownCostUsd > 0
-    ? { label: '總費用', value: `${formatTwdFromUsd(knownCostUsd)}（含未定價用量）` }
+    ? { label: '已知費用', value: `${formatTwdFromUsd(knownCostUsd)}（含未定價用量）` }
     : { label: '總費用', value: '未定價' };
 };
 

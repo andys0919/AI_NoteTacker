@@ -1,14 +1,15 @@
-# Handoff — MAI 主轉錄、正體中文顯示、Luna max 摘要與誠實計價
+# Handoff — MAI 主轉錄、Local Codex 主摘要、quota-only Azure fallback
 
-_更新：2026-08-05（Asia/Taipei）_
+_更新：2026-08-07（Asia/Taipei）_
 
 ## 目標與已核准架構
 
 使用者已核准把 Azure Speech `mai-transcribe-1.5` 改為新工作的主轉錄，並於
 2026-07-30 決定正式系統不再做 Speaker 分類；Qwen、Azure OpenAI
-transcription 與 Whisper 保留為 operator 可選 fallback。轉寫 worker 不再
-取得或使用 Luna 設定；Luna 只由摘要 worker 以
-`gpt-5.6-luna`、`reasoning.effort=max` 呼叫。
+transcription 與 Whisper 保留為 operator 可選 fallback。轉寫 worker 不取得或
+使用 Azure Luna 設定；summary worker 預設透過本機 Codex CLI，以
+`gpt-5.6-luna`、`reasoning.effort=max` 執行。只有 Codex 結構化 quota 狀態明確
+回報 reached 時才單次 fallback 到 Azure Luna。產品不接收或保存 OAuth token。
 
 處理鏈如下：
 
@@ -21,20 +22,283 @@ transcription 與 Whisper 保留為 operator 可選 fallback。轉寫 worker 不
 3. Speaker 分類：轉寫 worker 不接 diarization 設定，也不發出
    `gpt-4o-transcribe-diarize` request；歷史 metadata 保留相容，但不進摘要
    prompt、閱讀畫面、管理台逐字稿或文字匯出。
-4. 摘要：獨立 `gpt-5.6-luna` Responses request、
-   `reasoning.effort=max`、900 秒 socket-operation timeout；輸出、狀態、
-   schema 或 usage 不完整時整次失敗，不儲存半成品。
-5. Cloud usage：新工作只有 `transcription` 與 `summary` provider stage；
-   歷史 `punctuation`／diarization ledger 仍保留相容。沒有官方可驗證費率時以
-   `pricingStatus: unpriced`、`costUsd: null` 表示。
-
-Responses endpoint 只記錄形狀，不記錄真實 hostname：
-
-```text
-https://<resource-host>/openai/v1/responses
-```
+4. 摘要：獨立 Local Codex CLI request，model `gpt-5.6-luna`、
+   `reasoning.effort=max`；只有 preflight Codex `rateLimitReachedType` 明確為
+   reached，才先原子保留並做最多一個 Azure Responses request。其他錯誤與
+   不完整輸出不得 fallback 或儲存半成品。
+5. Cloud usage：每個外部推論 request 在呼叫 provider 前先建立 durable audit，
+   再以同一 request ID 保存 actual provider/model、成功或失敗、provider request
+   ID、token／raw 與 billed audio、計價狀態與時間。Local Codex 保存 subscription
+   request/token 稽核但不建立 Azure/API actual-cost row，也不宣稱訂閱呼叫為 `$0`；
+   Azure quota fallback 只允許單次 request，依實際 provider 與 usage 入帳。
 
 ## 目前 checkpoint
+
+### 2026-08-07 Codex weekly allowance in admin settings
+
+- 管理設定新增「Codex 每週額度」區塊，只顯示官方
+  `account/rateLimits/read` 的 10,080 分鐘窗口：已用、剩餘、重置時間與資料時間；
+  沒有 weekly bucket 或 probe 失敗時顯示不可用，不以 5 小時窗口或 token 數推估。
+- summary worker 每 60 秒讀一次並隨既有 claim poll 回報 sanitized snapshot；
+  control-plane 不掛 Codex volume、不讀 OAuth，admin API 仍需管理員 session。
+- focused Python 32/32、control-plane 35/35、TypeScript build、Python compile、
+  `admin.js` syntax 與 strict OpenSpec 通過。canonical scoped deploy 已重建
+  control-plane／summary-worker；live admin API 為 `team`、7 天、已用 0%，未登入
+  回 401，兩個服務 running／restart count 0，`/health=ok`。
+- live page source 已從 `http://10.1.2.158:3000/admin` 讀回新區塊。此 session 缺少
+  in-app Browser 控制介面，因此尚未宣稱 desktop／mobile rendered visual inspection。
+
+### 2026-08-07 Local Codex Business runtime identity isolation
+
+- `summary-worker` 已從主機 `/home/solomon/.codex` bind mount 切換為唯一的外部
+  Docker volume `ai_notetacker_summary_codex_home`；主機登入仍為 `pro`，runtime
+  volume 的安全 plan claim 為 `team`（ChatGPT Business），兩份登入互不覆蓋。
+- 新帳號透過官方 device-code flow 直接登入 volume；沒有複製、顯示或保存任何
+  OAuth token 到產品設定。獨立 volume 的 `codex login status` 為 ChatGPT，且
+  `gpt-5.6-luna|max` 最小 smoke 回覆 `BUSINESS_AUTH_OK`。
+- canonical production 只重建 `summary-worker`。live mount 為 read/write named
+  volume、worker running／restart count 0、control-plane `/health=ok`；Azure summary
+  endpoint/key 仍固定為空，因此 Business 額度、登入或網路失敗都不會轉走 Azure。
+
+### 2026-08-07 Azure summary fallback runtime disable
+
+- 使用者要求保留 Azure fallback 程式與既有設定，但正式 runtime 不得切換到
+  Azure。canonical production Compose 現在固定向 summary-worker 注入空白
+  `AZURE_OPENAI_SUMMARY_ENDPOINT`／`AZURE_OPENAI_SUMMARY_API_KEY`；`.env` 原值沒有
+  被讀取、輸出、刪除或修改，fallback 實作也沒有刪除。
+- production Compose 防回歸測試 1/1 通過；部署前 active summary job／lease 為 0。
+  `./scripts/deploy.sh restart --no-deps --force-recreate summary-worker` 只重建摘要
+  worker。部署後 config 讀回 Azure fallback disabled、Local Codex 為
+  `gpt-5.6-luna|max|900` 且 `Logged in using ChatGPT`；worker running、restart count
+  0，control-plane `/health=ok`，DB policy 為 `local-codex|gpt-5.6-luna`。
+- 此段部署當時沒有 provider smoke call，且仍掛載主機預設 Codex home；該暫態
+  已由上方 2026-08-07 Business runtime identity isolation checkpoint 取代。
+
+### 2026-08-06 23:42 ticket #8 contract/UI review remediation（尚未部署）
+
+- GitHub issue `andys0919/AI_NoteTacker#8` 固定本次三項範圍：重新打開
+  `update-cloud-summary-azure-responses` 6.7 rollback 演練、把歷史 Azure summary
+  credential revoke/rotation 拆成 `simplify-mai-transcription-pipeline` 3.6 未完成
+  security action，以及移除只有一個選項的摘要 provider selector。
+- 管理台現在以 semantic `output` 顯示固定的「本機 Codex」primary route；儲存治理
+  設定時仍從已載入 singleton policy 送出 `summaryProvider`，沒有改 API schema 或
+  Azure quota-only fallback。OpenSpec 新增 operator-view scenario，明定不得呈現沒有
+  真實替代選項的 selector。
+- Focused UI/governance tests 18/18、control-plane TypeScript build、public
+  `admin.js` syntax、37/37 all strict OpenSpec 與 `git diff --check HEAD` 通過。
+- 本次未讀取、輸出、驗證、修改或輪替 credential，未演練 rollback，未觸發付費
+  provider call，也未部署、commit、push 或 archive。`browser` skill 所需的 in-app
+  控制介面在本 session 不可用，因此沒有冒充 rendered desktop／390px／keyboard
+  證據；`update-cloud-summary-azure-responses` 6.16 正確維持未完成。
+
+### 2026-08-06 23:00 request-binding / cost-trust post-review canonical deployment
+
+- 修正 Azure quota fallback 的最後三個費用信任邊界：reservation 會原子綁定
+  第一個 Azure request ID，未保留或第二個 ID 在 provider contact 前回 `409`；
+  terminal callback 必須列出該 lease 的全部 finalized request audits，且每筆
+  provider/model 都要等於 actual provider/model；explicit `azure-openai` callback
+  若沒有 finalized audit ID 會在 usage／lifecycle mutation 前回 `409`，不得退回
+  legacy aggregate 產生 phantom cost。
+- Azure audit-start 前失敗只保留 reservation，不回報 Azure attribution、usage 或
+  request ID；Local Codex 空白或 schema-invalid output 會把同一 request audit
+  finalize 為 `failed`／`response-validation-failed`，仍保存可信 token usage，且不會
+  先標成功。provider request schema、hash、billing／settlement projection 已從大型
+  `app.ts` 抽到單一 `provider-request-audit.ts`；最後一層無價值 middle-man 亦已刪除。
+- 最終完整 repo 驗證：control-plane 355、recording-worker 13、Python 130，合計
+  498/498 tests；最後 trust-boundary targeted run 55/55；全 repo TypeScript/Python
+  build、37/37 strict OpenSpec、`npm audit --omit=dev` 0 vulnerabilities、本機與兩個
+  production Python image `pip check` 均通過。Standards／Spec 修後雙軸 review 最終
+  都是 no findings；`git diff --check HEAD` 通過。
+- 最終 `./scripts/deploy.sh up` 於 22:59 完成，exit 0；control-plane image
+  `sha256:4194460323c2...`。全棧 running、restart count 0，control-plane／PostgreSQL
+  healthy，PostgreSQL 與 MinIO 仍只暴露 container-private port；`/health=ok`，
+  summary/transcription worker 都可從容器內到達 control-plane。
+- live migration 讀回 `20260806-summary-fallback-request-binding-v1`，
+  `summary_fallback_reservations.request_id` 已存在；singleton policy 為
+  `local-codex|gpt-5.6-luna`。部署後 provider request rows、仍為 `started` 的
+  possible-unpriced rows 與 fallback reservations 均為 0。Compose stage-isolation
+  檢查只輸出 `true`；
+  summary-worker `Logged in using ChatGPT`，model／effort／timeout 為
+  `gpt-5.6-luna`／`max`／`900`。control-plane dist/public、summary/transcription
+  Python source 與 recording-worker dist 的 host/container tree hashes 全部一致。
+- Azure CLI Cost Management read-only 對帳（截至本次查詢）：Fast Transcription
+  2026-08-05 為 6,668 billed seconds／TWD 21.5883168；舊 app raw aggregate 為
+  6,603.792 秒／USD 0.660379，依 legacy row 逐筆向上取整為 6,607 秒／USD
+  0.660700，仍差 61 秒，因歷史資料沒有 provider-upload request boundary，不能
+  回推歸因。2026-08-06 已 ingest 550 billed seconds／TWD 1.78068，與 app 5 筆
+  legacy row 逐筆向上取整 550 秒／USD 0.055000 完全一致；舊 raw-duration aggregate
+  USD 0.054880 少 USD 0.000120，正是缺少逐 request 秒數進位造成。
+- 同一 Cost Management 查詢顯示 Luna resource-level 2026-08-05 cached/input/output
+  分別 11.499136M／46.433639M／260.294702M tokens，費用 TWD
+  37.2296027136／1503.335496264／50563.807631712；2026-08-06 分別
+  3.153408M／8.796075M／52.341604M，費用 TWD
+  10.2094737408／284.7817242／10167.670626624。反推仍為 USD
+  0.10／1.00／6.00 每百萬 tokens（invoice FX 32.376），證明 catalog 單價運算；
+  但這些列是 subscription/resource-level，不是本 app 專屬。app 舊 summary ledger
+  只有 2026-08-05 8 rows／139,183 tokens、2026-08-06 4 rows／96,880 tokens，且舊列
+  未定價；新 request ledger 查詢當時尚無這兩日 summary request rows，不能把 Azure
+  resource totals 硬配給 app。新 request-level ledger 從本次版本起提供可配對邊界。
+- 本次沒有觸發任何付費 provider call，沒有讀取、輸出、修改、驗證或輪替任何 key，
+  沒有新增 OAuth token 輸入／儲存，也沒有 commit、push、tag、PR 或 archive。
+  in-app Browser 所需的 Node REPL tool 本次不可用，因此 UI 完成靜態 accessibility、
+  responsive contract 與 live asset/hash 驗證，但沒有冒充新的 rendered screenshot。
+
+### 2026-08-06 21:50 request-level cost audit canonical production deployment
+
+- `./scripts/deploy.sh up` 以 base + ScreenApp canonical topology 完成，exit 0。
+  control-plane、summary-worker、transcription-worker image 分別為
+  `sha256:fe5d25feaf60...`、`sha256:5c285dfc761f...`、
+  `sha256:52164653d09c...`；全棧 running、restart count 0，control-plane 與
+  PostgreSQL healthy，PostgreSQL／MinIO 維持 container-private ports。
+- `/health=ok`；summary、transcription、recording worker 從容器內讀取
+  control-plane 都成功。summary-worker 為 Codex CLI `0.146.0`、
+  `Logged in using ChatGPT`、`gpt-5.6-luna`／`max`；有效 singleton policy 讀回
+  `local-codex|gpt-5.6-luna`。部署映像內 6 個 control-plane 檔與 6 個 worker
+  檔 SHA-256 均逐檔等於工作樹。
+- live migration 為 `20260806-provider-request-ledger-v1`；
+  `provider_request_ledger` 與 5 個查詢索引均存在。以 synthetic subscription row
+  在同一 transaction 驗證 `started -> failed -> readback` 後 ROLLBACK，殘留 0；
+  部署後尚未有真實 provider request，故正式 ledger baseline 仍為 0。
+- 完整 repo 驗證為 493/493 tests、全 repo build、37/37 strict OpenSpec、
+  `git diff --check`、production `npm audit` 0 vulnerabilities、兩個 Python production
+  image 的 `pip check` 無 broken requirements，以及 Standards／Spec 雙軸 review
+  0 個 correctness finding。
+  in-app browser control 仍未提供，因此 request-detail UI 只有 live asset/hash、
+  DOM/accessibility contract 與測試證據，沒有新的 responsive rendered screenshot。
+- 2026-08-06 晚間 Azure CLI read-only 對帳：2026-08-05 Cost Management 的 Fast
+  Transcription 為 `1.8522222222` 小時（6,668 秒）、TWD `21.5883168`；舊 app
+  ledger 是 raw 6,603.792 秒、逐 legacy row 向上取整 6,607 秒、USD `0.660379`，
+  resource metrics 為 226 calls／225 success／1 client error。差 61 秒無法由舊
+  job 聚合資料回推，因為歷史 row 沒有逐 request billed boundary／request ID。
+- 2026-08-06 Cost Management 目前只 ingest 110 秒、TWD `0.356136`，但 app 已有
+  raw 548.8 秒、USD `0.054880`，resource metrics 為 20/20 success，顯示帳單
+  ingestion 尚未完成，不能拿當日未封帳列判定少記。Luna deployment 的同日
+  resource-level request metrics 為 2026-08-05 286、2026-08-06 610，app 舊 ledger
+  僅 8、4 個 summary rows；因該 resource metric 不是 app-exclusive 且歷史 ledger
+  沒有 provider request ID，不能做逐 request 歷史配對。2026-08-05 同一 Luna
+  resource 的 Cost Management 封帳列為 cached input 11.499136M／TWD
+  37.2296027136、input 46.433639M／TWD 1503.335496264、output
+  260.294702M／TWD 50563.807631712；反推 TWD/M 分別為 3.2376、32.376、
+  194.256，恰好對應 catalog 的 USD 0.10、1.00、6.00/M 加該日 invoice 匯率。
+  這確認 USD 單價正確，但不把 retail TWD 參考換算冒充 Azure invoice。新 request
+  ledger 從本次 deployment 起保存 request identity、實際 provider/model、
+  token/audio、成功失敗與 pricing status，Local Codex 標為 subscription，不混入
+  Azure/API actual cost。
+- 本次沒有觸發任何付費 provider call，沒有讀取、輸出、修改或輪替 key，也沒有
+  commit、push、archive、tag 或 PR。mode 0600 rollback backup：
+  `/tmp/ai-notetacker-predeploy-provider-audit.zRe46d.dump`，SHA-256
+  `e00ab0056b9765cfbb1c130c678245af810d94766a02c805dbbe63682cf03034`。
+
+### 2026-08-06 17:39 quota-only Azure summary fallback production deployment
+
+- `local-codex` 維持唯一可選與可 claim 的 primary provider；Azure 不回到管理 UI
+  或 policy。worker 只信 Codex app-server `account/rateLimits/read` 的結構化
+  `rateLimitReachedType`，不比對錯誤字串。
+- preflight 已耗盡會略過 doomed local turn；一旦 local turn 開始，後續失敗不再
+  重新解讀為 quota。probe timeout／錯誤／malformed、登入、網路、schema、model
+  或一般 timeout 都 fail closed，不觸發 Azure。
+- Azure fallback 先以 active summary lease 在資料庫原子保留；job 即使 crash、lease
+  expiry 或被重領，也不能做第二個 Azure request。terminal callback 帶 actual
+  provider，control-plane 將成功或失敗 usage 記為 `azure-openai`。
+- 若 process／host 在 Azure request 開始後、terminal callback 前硬中斷，reservation
+  會保留並阻止重送，但 token usage 無法憑空補造；這個窄窗必須以 provider request
+  log 人工核對，不能宣稱已完整 settlement。
+- Azure endpoint/key 僅允許成對進入 summary-worker；control-plane、transcription
+  worker、browser、Codex exec 與 quota probe 都不接收。沒有新增 OAuth token UI。
+- targeted worker widest run 62/62；最後 handshake source 受影響的 21/21 與 causal
+  wire-order file 10/10 通過。control-plane 相關五檔共 147 tests 通過，TypeScript
+  build、Python compile、Compose isolation、37/37 strict OpenSpec 與雙軸 review 通過。
+- 17:33 canonical `./scripts/deploy.sh up` 完成後，live gate 正確攔下舊 migration ID
+  會跳過 reservation table；修成 `20260806-azure-summary-fallback-v1`、22 tests/build
+  通過後，17:35 以同一 canonical helper scoped recreate control-plane。接著 live
+  Codex 0.146.0 gate 發現 app-server 必須等待 initialize response；完成 causal
+  regression 後於 17:39 scoped recreate summary-worker。兩個問題都在宣稱完成前修復。
+- `/health=ok`；policy 為 `local-codex|gpt-5.6-luna`；migration 與
+  `summary_fallback_reservations` table 已從真實 PostgreSQL 讀回，reservation、active
+  summary job/lease 都是 0。control-plane、summary、transcription、recording worker
+  全部 running、restart count 0，穩定兩分鐘 error count 0，worker 對 control-plane
+  都是 HTTP 200；抽查的 5 個 control-plane／worker 改動檔 live/source SHA-256
+  全部一致。
+- summary-worker 使用 Codex CLI 0.146.0 且 `Logged in using ChatGPT`；結構化 live
+  snapshot 為 `ok=true`、`reached=false`、2 buckets，production helper 1.225 秒回傳
+  not exhausted。去識別 Local Codex synthetic summary 以 `gpt-5.6-luna`／`max`
+  成功產生 title、summary、topic、action、decision；無殘留 Codex process。
+- rollout 沒有繞過條件或觸發付費 Azure。部署後 Azure summary ledger row 與 fallback
+  reservation 都是 0；只有 summary-worker 有三個 `AZURE_OPENAI_SUMMARY_*` 變數名稱。
+  沒有讀取、輸出、修改、驗證或輪替 key，也沒有 commit、push、archive、tag 或 PR。
+- mode 0600 rollback backup：`/tmp/ai-notetacker-predeploy-quota-fallback.43Qwt6.dump`，
+  SHA-256 `348f7f864e6aa29b03d5f4d2da66663c58233552467063acf990810716698682`。
+
+### 2026-08-06 Local Codex summary cutover
+
+- 使用者核准把所有 active Azure Luna 摘要路由改為 `local-codex`，保留
+  `gpt-5.6-luna`／`max`，沿用 host-managed Codex ChatGPT login；不新增 OAuth
+  token 輸入、儲存或顯示。
+- active provider catalog、管理 API、新工作 snapshot 與 summary claim 只允許
+  `local-codex`；singleton policy 若仍是 `azure-openai`，啟動讀取時會正規化並
+  持久化為 `local-codex`。已完成 job snapshot 與 ledger 不改寫。
+- 16:26 部署的 summary worker 曾刪除 Azure Responses transport 與 summary
+  endpoint/key/timeout；17:39 部署已只恢復內部 quota-only fallback。
+  Azure Speech MAI 與 Azure OpenAI transcription fallback 不受影響。
+- 每日 Azure Retail Prices refresh 只更新 MAI USD/TWD meter；上方後續 change 會
+  讓 checked-in Luna catalog 同時支援歷史與新 fallback usage readback。
+
+### 2026-08-06 16:26 Local Codex canonical production deployment
+
+- deploy 前匿名化 DB preflight：非終態 Azure summary job、active summary lease、
+  pending/generating summary 均為 0；舊 singleton policy 為
+  `azure-openai|gpt-5.6-luna`。mode 0600 rollback backup 位於
+  `/tmp/ai-notetacker-predeploy-local-codex.KEYnv9.dump`，SHA-256
+  `d689ade6764de67f20c63822d956f6630cd80dabd2fd9a67a2728dd3df7c0ad4`。
+- `./scripts/deploy.sh up` 以 base + ScreenApp canonical topology build/recreate
+  完成，exit 0。control-plane、summary-worker、transcription-worker image 分別為
+  `sha256:b4ac443b5268...`、`sha256:e4d14eeb430d...`、
+  `sha256:c9642a35ba3a...`；全棧 running、restart count 0，既有 PostgreSQL／
+  MinIO private ports 與 meeting-bot topology 保持不變。
+- `/health` 為 `ok`；summary、transcription、recording worker 從容器內讀取
+  control-plane 都是 HTTP 200。DB singleton 已持久化為
+  `local-codex|gpt-5.6-luna`，active/pending summary 維持 0；migration ledger
+  最新為 `20260805-runtime-hardening-v1`。
+- control-plane 與 summary-worker effective env 的
+  `AZURE_OPENAI_SUMMARY*` key count 都是 0；summary worker 顯示
+  `Logged in using ChatGPT`。production image 以去識別 synthetic transcript 實際
+  呼叫 `gpt-5.6-luna`／`max`，完整產生 title、summary、topic、follow-up、
+  decision 與 open question；沒有寫入 DB 或 cloud usage ledger，結束後殘留 Codex
+  process count 為 0。
+- live `admin.html`、`admin.js`、`app.js`、`styles.css` 與 summary worker 兩個
+  Python entrypoint 的 SHA-256 均逐檔等於工作樹；control-plane、summary-worker、
+  transcription-worker 最近 10 分鐘 error count 為 0。recording-worker 只在
+  recreate 視窗出現 12 行 transient connection error，部署完成後最近 60 秒為 0。
+- 本次沒有讀取、輸出、修改或輪替任何 key，也沒有新增 OAuth token 輸入；沒有
+  commit、push、archive、tag 或 pull request。
+
+> 下方 2026-08-05 以前的 Azure Luna 內容是舊 primary route 的歷史部署／稽核
+> 證據；目前只規劃在 summary-worker 內做 quota-only fallback，不恢復該 primary route。
+
+### 2026-08-06 10:15 control-plane-only production deployment
+
+- 使用者明確要求不處理 summary key 並繼續部署；本次沒有讀取、輸出或修改
+  key，也沒有 provider 測試。部署來源是 branch `chore/summary-effort-max` 上尚未
+  commit／push 的 7 檔 WIP，不能視為遠端 release 證據。
+- 部署前 PostgreSQL 只有 86 個 completed 與 32 個 failed job，沒有非終態
+  工作。以 canonical base + screenapp Compose 執行
+  `./scripts/deploy.sh up --no-deps control-plane`，只 build/recreate
+  control-plane；summary、transcription、recording worker 的 container ID 與
+  restart count 均未改變。
+- 新 control-plane image 為
+  `sha256:21def8872380b06634b12556108512b3686b28db04982809bc15f806315d0d96`，
+  container 為 `ddb50cdebf52...`，health 為 healthy、restart count 0；`/health`、
+  dashboard 與 operator config 分別為 200，startup log 沒有錯誤。
+- migration ledger 讀回 `20260805-runtime-hardening-v1`；PostgreSQL 與 MinIO
+  仍只有 container-private 5432／9000 port，control-plane 沒有 host runtime
+  mount。停止中的 `qwen3-asr` 是 Compose 明確定義的可選 `qwen` profile，模型
+  cache 保留，不是 orphan。
+- live `app.js` 與 `styles.css` SHA-256 均逐 byte 等於工作樹；production image
+  讀回 Multer `2.2.0` 與 Nodemailer `9.0.4`。部署前相關測試 4 files、97 tests、
+  control-plane TypeScript build、public JS syntax、Nodemailer JSON transport、
+  `npm ci` audit 0 vulnerabilities 與 `git diff --check` 均通過。
+- in-app browser connector 本次仍未提供，因此沒有新的 rendered screenshot
+  證據；只確認 live HTTP、asset hash 與既有 renderer／CSS contract tests。
 
 ### 2026-08-05 18:34 canonical production deployment
 
@@ -126,8 +390,8 @@ https://<resource-host>/openai/v1/responses
   `未定價` 與 lower-bound 警告不因換算而消失。
 - production compose override 不再把 `SUMMARY_MODEL` 硬改回舊模型；canonical production file set 仍是 base + screenapp。
 - OpenSpec change `update-cloud-summary-azure-responses` 已補 proposal、design、tasks
-  與三個 capability delta，但目前仍有 6.6、6.7、6.8 三個 gate，尚未
-  archive-ready。
+  與三個 capability delta；此歷史 checkpoint 當時仍有 6.6、6.7、6.8 三個 gate，
+  目前狀態以下方 OpenSpec 狀態段為準。
 - OpenSpec change `use-qwen-primary-transcription` 已完成 provider、adapter、
   Compose profile 與盲比對契約；Qwen 現保留為明確啟用的可選方案，不是正式
   global default，也不阻塞 MAI worker 啟動。
@@ -162,8 +426,8 @@ https://<resource-host>/openai/v1/responses
 
 以下項目是 2026-07-29 至 2026-07-31 當時保留的執行紀錄；除非在目前工作樹
 重新執行，不能用來宣稱 2026-08-04 source、image、database 或 live runtime
-已通過。它們也不會自動關閉 `update-cloud-summary-azure-responses` 的 6.6、
-6.7、6.8。
+已通過。它們在當時也不能自動關閉 `update-cloud-summary-azure-responses` 的 6.6、
+6.7、6.8；目前狀態以下方 OpenSpec 狀態段為準。
 
 - 2026-07-29 fresh transcription-worker full suite 為 148/148；最後 diarization
   retry／cancel／usage focused file 為 32/32。
@@ -291,7 +555,7 @@ https://<resource-host>/openai/v1/responses
   契約不會被較舊 delta 加回；本次尚未執行任何 archive，task 6.8 仍未完成且
   archive 仍需另行授權。
 - PostgreSQL repository 目前由 pg-mem integration 與受控 interleaving tests 驗證；startup schema 已改由 `schema_migrations`、transaction 與 advisory lock 序列化，但尚未在真實 PostgreSQL 上做 concurrent callback／claim 或 multi-instance rolling-migration 演練。
-- migration 之後的 rollback 必須保留懂得 `pricing_status`／nullable `cost_usd` 的 control-plane 與目前 callback contract；上一版 control-plane 不能直接重新上線。目前沒有已演練的 schema-compatible full-code rollback image，所以 task 6.7 仍未完成。
+- migration 之後的 rollback 必須保留懂得 `pricing_status`／nullable `cost_usd` 的 control-plane 與目前 callback contract；上一版 control-plane 不能直接重新上線。目前仍沒有已演練的 schema-compatible full-code rollback image，此項保留為獨立 residual，不再誤稱為已改義的 task 6.7。
 - Summary stale lease reclaim 已進入目前 live image 且既有 focused regressions 通過；
   本次沒有在 live DB 注入過期 lease，因此只確認 release 已部署，不宣稱完成真實
   stale-lease reclaim 演練。
@@ -299,74 +563,49 @@ https://<resource-host>/openai/v1/responses
   removal 已讀回。尚未實際觸發 private meeting-bot stop/restart，因此
   `add-runtime-operations-hardening` task 2.4 保持未完成。
 
-## Responses runtime 與設定契約
+## Local Codex runtime 與設定契約
 
-必填設定：
+摘要必填／預設設定：
 
-- `AZURE_OPENAI_SUMMARY_ENDPOINT`：HTTPS，path 必須是 `/openai/v1/responses`；不得接受 `chat/completions`。
-- `AZURE_OPENAI_SUMMARY_API_KEY`：只從明確的 summary 設定讀取；不得 fallback 到 transcription key。
+- dedicated `ai_notetacker_summary_codex_home` Docker volume：受保護的 Business
+  `codex login` 狀態；不得掛入 host 預設 Codex home，產品不接收 OAuth token。
 - `SUMMARY_MODEL=gpt-5.6-luna`。
 - `SUMMARY_REASONING_EFFORT=max`。
-- `AZURE_SPEECH_MAI_ENDPOINT`、`AZURE_SPEECH_MAI_API_KEY` 與
-  `AZURE_SPEECH_MAI_MODEL=mai-transcribe-1.5` 必須成組設定。
+- `SUMMARY_TIMEOUT_SECONDS=900`：Codex CLI 的 wall-clock timeout。
+- `CONTROL_PLANE_TIMEOUT_SECONDS=30`：worker 對 control-plane 的 HTTP timeout。
 
-可選設定／程式預設值：
+canonical production 固定把 `AZURE_OPENAI_SUMMARY_ENDPOINT`、
+`AZURE_OPENAI_SUMMARY_API_KEY` 設為空；`AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS`
+預設 `900`。三個名稱只可出現在 summary-worker，不能出現在 control-plane 或
+transcription worker。Local Codex 額度或登入失敗時必須明確失敗，不發 Azure
+request。Azure
+Speech MAI 轉錄仍要求
+`AZURE_SPEECH_MAI_ENDPOINT`、`AZURE_SPEECH_MAI_API_KEY` 與
+`AZURE_SPEECH_MAI_MODEL=mai-transcribe-1.5` 成組設定。
 
-- `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS=900`。
-- `AZURE_SPEECH_MAI_TIMEOUT_SECONDS=300`。
-- `AZURE_OPENAI_TRANSCRIBE_TIMEOUT_SECONDS=300`。
-- `CONTROL_PLANE_TIMEOUT_SECONDS=30`。
+逐字稿是未受信任資料。summary worker 以 stdin 傳給 `codex exec`，忽略 user
+config 與 rules、停用 `shell_tool`／`unified_exec`／`code_mode_host`、使用空的
+暫存 cwd，並以環境白名單啟動 Codex 子程序；`INTERNAL_SERVICE_TOKEN` 與 Azure
+key 都不會傳給 Codex exec 或 quota app-server。CLI 超過 timeout 時沿既有
+`summary-failed` 流程結束，heartbeat 不會永久續租。摘要 JSON 仍必須完整包含
+`title`、`summary`、`topics`、
+`follow_up_groups`、`decisions`、`risks`、`open_questions` 與
+`analysis_notes`；缺欄、錯型或空輸出均不得儲存半成品。
 
-摘要 Luna request 的有效 body 為 `model`、`instructions`、`input`、
-`reasoning: {"effort":"max"}`、`store: false`；以 `api-key` header 驗證。
-轉寫 worker 不取得這組 endpoint/key。`store: false` 會關閉 Responses
-application state／message history 儲存；它本身**不等於** Zero Data
-Retention，也不控制
-獨立的 abuse-monitoring retention，後者仍須依 Azure resource 的資料隱私設定核對。
+Local Codex 摘要不建立 API actual-cost row，也不標示為 `$0` provider charge；
+Azure fallback usage 依 actual provider 另建 summary actual row。歷史與新 fallback
+Azure Luna ledger 都沿用 checked-in pricing provenance；無完整 meter 資訊時維持
+`unpriced`，不捏造 `$0`。
 
-每次 provider HTTP call 都設定 `urlopen` 的 connection/socket-operation
-timeout：摘要 900 秒、Azure transcription upload 300 秒，Python
-transcription／summary workers 對 control-plane 的 GET／POST／heartbeat 30
-秒。這會限制個別阻塞 I/O 操作，並不是保證整段流程在該秒數內結束的
-wall-clock deadline。明確 retry 只有：MAI HTTP 400 會以完全相同的 request
-重送一次；DNS／timeout／reset／broken connection 會以相同 request 在
-2／10／30 秒後有限重送；正式配置不呼叫 speaker diarize 或 Luna 潤稿；
-Luna 摘要 HTTP 400 會重送一次；
-transcription 內容品質失敗最多重送兩次。內容品質失敗包括
-可聽但稀疏的五分鐘 span，以及至少 20 秒、HTTP 200 但正規化文字 gzip ratio
-大於 4.0 的高重複 span；後者從同一原音訊切成最多 30 秒重跑，保留 base
-prompt／job glossary，但不帶前段生成文字。retry 都不改音訊或加入答案提示；
-持續失敗時明確終止，不保存可疑文字。provider 已完成後，terminal
-control-plane callback 的第一次傳送若失敗，worker 只會把完全相同的 payload
-重送一次，不會再呼叫 provider，也不會把成功改報成失敗。
-
-Response 契約：
-
-- 只有 `status == "completed"` 可接受；`incomplete`、`failed` 或缺少 status 都不能持久化為成功摘要。
-- 依 `output[]` 原順序，只讀 `type == "message"` 的 `content[]`，再依原順序取每個字串型 `type == "output_text"`。
-- 所有 fragment 直接 `"".join(parts)`，**不得自行插入換行或空白**；只在最後對完整字串 trim。
-- `reasoning` 與其他 item type 一律跳過。
-- 摘要輸出 trim 後必須非空。
-- Azure 摘要 JSON 必須完整包含非空字串 `title`、`summary`，以及
-  `topics`、`follow_up_groups`、`decisions`、`risks`、`open_questions`、
-  `analysis_notes` 陣列。每個 topic 必須有非空 `title`、
-  `confirmed|mixed|open` 狀態、至少一個含非空 `title` 與 `details` 的 subtopic，
-  以及非空 `conclusion`；每個 follow-up group 必須有非空 `title` 與 `items`。
-  `key_points` 與 `action_items` 由 topics／follow-up groups 相容推導，不是
-  provider 必填欄位。頂層分類陣列可為空，但缺欄、錯型或非法空值都使該
-  attempt 失敗；若 usage 已合法解析，仍須在 failure callback 結算。
-
-完整 usage 必須包含非負整數：
-
-```text
-input_tokens
-input_tokens_details.cached_tokens
-output_tokens
-output_tokens_details.reasoning_tokens
-total_tokens
-```
-
-並要求 `total_tokens == input_tokens + output_tokens`、`cached_tokens <= input_tokens`、`reasoning_tokens <= output_tokens`。缺欄位、型別錯誤或不一致不能默認成 0，摘要因此失敗。
+每個 MAI、Azure OpenAI、Qwen 或 Local Codex 推論 request 都先在
+`provider_request_ledger` 建立 `started` row；start 失敗即不得呼叫 provider。
+完成或失敗後以同一 request ID 做 idempotent finalization，保存 actual
+provider/model、external request ID、HTTP status／error class、token、raw／billed
+audio、billing/pricing status 與時間。process 在 provider 回應前後中斷時，該 row
+維持 `started` 且明確標為可能未定價費用；terminal callback 若漏列、列到未完成
+request，或 provider/model 不符，會被拒絕。request-level Azure actual row 取代同
+lease 的舊 terminal aggregate，避免重複收費；Local Codex 與 Qwen audit 分別標為
+`subscription`／`self-hosted`，不併入 Azure spend。
 
 ## 歷史 Punctuation usage 與 lifecycle settlement
 
@@ -400,7 +639,7 @@ callback 若帶有必須結算的 provider usage，但 job 的 `quotaDayKey` 不
 
 這不是跨 repository transaction。若 append 失敗，lifecycle 不得先保存；若 append 成功而後續 job save 失敗，callback retry 會命中相同 immutable entry，再完成 save。append 進行期間若 operator cancellation 或新 lease 已寫入，repository 的 atomic compare-and-save 必須失敗，保留已結算 usage、不得覆寫較新的 job state 或保存 stale artifact。單純先 re-read 再 unconditional save 不足以防止 race。
 
-## 官方費率查核與目前 pricing truth
+## 歷史 Azure Luna 費率與目前 pricing truth
 
 截至 2026-07-31，live Azure deployment 已確認為 `gpt-5.6-luna`、model
 version `2026-07-09`、SKU `GlobalStandard`。Microsoft 已公布短 context
@@ -418,16 +657,12 @@ Southeast Asia 的 `mai-transcribe-1.5` 使用 Azure Speech Fast Transcription�
 該訂閱 usage detail 的 meter ID
 `e366297b-9194-5c2f-91f9-2b6472d890b3` 對應 US$0.36 / audio hour。
 
-control-plane 會在開始 listen 前查詢上述 exact Luna USD 與 MAI USD/TWD
-Consumption meters，之後每 24 小時再查一次。Luna 必須同時取得 input、
-cached input、cache write、output 四種同一生效日且跨回傳 region 費率一致的
-short-context Global Standard rows；MAI 必須符合 exact meter ID、
-`southeastasia`、SKU、unit、要求幣別與生效日。三組結果只會一起原子更新；
-HTTP 錯誤、10 秒 timeout、pagination、錯誤幣別／單位、缺 meter、跨區費率
-衝突或只有未來生效資料時，會保留最後一份已驗證 catalog/TWD reference 並寫
-warning，不套用部分資料、零價或 OpenAI 直連價。程式內已查核值仍是
-cold-start fallback；`/api/operator/config` 會提供目前 rate、來源與 refresh
-timestamp，owner/admin 在顯示費用前套用，無效回應則保留 bundled fallback。
+control-plane 現在只在開始 listen 前與每 24 小時查詢 MAI USD/TWD meter。
+上述 Luna 費率留在 checked-in catalog，僅供歷史 Azure summary ledger 在讀取時
+解析；不再對 live Azure Luna meter 做 refresh，也不能推導 Local Codex 訂閱成本。
+MAI refresh 若遇到 HTTP 錯誤、10 秒 timeout、pagination、錯誤幣別／單位、缺
+meter、跨區費率衝突或只有未來生效資料，會保留最後一份已驗證 catalog/TWD
+reference 並寫 warning，不套用部分資料或零價。
 
 同一 exact meter 於 2026-07-31 查詢 Azure Retail Prices API 的 TWD
 參考零售價為 NT$11.4903 / audio hour，對應
@@ -447,16 +682,17 @@ subscription invoice 的 `EffectivePrice`。
 Responses 已知 token 計價公式是：
 
 ```text
-(input - cached_input) * input_rate
+(input - cached_input - cache_write) * input_rate
 + cached_input * cached_input_rate
 + cache_write * cache_write_rate
 + output * output_rate
 ```
 
 `cached_tokens` 已包含在 input，`reasoning_tokens` 已包含在 output，兩者都不能再重複加總。
-但 Azure Responses usage 目前不回傳另行計費的 cache-write token 數量。
-因此 Luna 的 input/cached-input/output 可作為已知 lower bound，完整 billed total
-仍須標示含未定價用量；不能把缺少的 cache-write meter 當成 0。
+2026-07-30 live Azure Responses usage 沒有回傳另行計費的 cache-write token
+數量；worker 現在會在 provider 回傳時保留該欄位並精確計價，缺少時仍不得補 0。
+因此缺欄位的 Luna input/cached-input/output 只能作為已知 lower bound，完整
+billed total 仍須標示含未定價用量。
 
 Retail Prices API 可查到 `gpt-4o-transcribe` 公開 PAYG meter，但它們是
 token 單位而不是目前程式舊用的 per-minute actual：
@@ -474,16 +710,19 @@ subscription 的 `EffectivePrice`；而且目前 callback 沒有這三種 billed
 
 - immutable settlement row 不回填新價格；reporting 以保存的 exact model、
   pricing version 與 duration/token meter 在讀取時解析目前已知金額。
-- MAI audio duration 可完整套用 Fast Transcription hourly meter；歷史上以
-  S1 US$1.00/hour 儲存的列由 reporting read-time 依完整 audio duration
-  重算，不修改 immutable ledger。
-- 新工作只有 Luna 摘要可計算 input/cached-input/output lower bound，但
-  cache-write quantity 不存在於 provider response，所以仍保留 unpriced
-  flag；歷史 Luna 潤稿 row 同樣依舊資料處理。
+- 新 MAI usage 以每次成功 upload 各自向上取整到整秒後加總，再套用 Fast
+  Transcription hourly meter；只要 retry／失敗 request 的 billed quantity 不確定，
+  complete cost 維持 unpriced，成功 upload subtotal 只作為 lower bound。
+- 歷史 MAI row 沒有保存每次 upload 邊界，reporting 只依 raw audio duration
+  解析 USD 0.36/hour 的 known lower bound，仍保留 unpriced 且不修改 immutable ledger。
+- 新工作通常只有 Azure 轉錄進入 cloud usage；Local Codex summary 不建立
+  actual usage row。只有結構化 quota exhaustion 觸發的單次 Azure Luna fallback
+  會以實際 `azure-openai` provider 建立 summary usage；歷史 Luna summary／潤稿
+  row 仍依保存的 provider/model 資料處理。
 - `gpt-4o-transcribe-diarize` 舊 row 只有 `audioMs`，不足以重建三種 billed
   token charge，因此仍是 unpriced。
 - 任一 actual entry 未完整定價時，完整 `totalCostUsd` 必須是 `null` 並設
-  `hasUnpricedUsage=true`；UI 顯示已知 lower bound 與
+  `hasUnpricedUsage=true`；UI 以「已知費用」顯示 lower bound 與
   `（含未定價用量）`，不再把可計算的金額整欄隱藏。
 - daily quota 的 `remainingUsd` 只能扣除已知 lower bound 與仍在途 reservation；
   它不是 Azure 實際支出的 hard cap，仍須搭配 Azure Budget／Cost Management。
@@ -499,24 +738,31 @@ subscription 的 `EffectivePrice`；而且目前 callback 沒有這三種 billed
 - 不能證明 lease duplicate／superseded callback 在 live 環境只結算一次。
 - 沒有保留目前版本的完整 audio upload → transcription → punctuation → summary E2E artifact。
 
-## Canonical deploy 與安全 rollback
+## Canonical Local Codex + quota fallback deploy 與 rollback
 
-production 一律使用 `docker-compose.yml` + `docker-compose.screenapp.yml`；不要執行 bare `docker compose up`，否則 recording worker 會掉回 stub。worker source baked into image，所以 code 修改一定要 rebuild 並 recreate。
+production 一律使用 `docker-compose.yml` + `docker-compose.screenapp.yml`；不要執行
+bare `docker compose up`，否則 recording worker 會掉回 stub。worker source baked
+into image，所以 code 修改一定要 rebuild 並 recreate。本次只授權部署；目前沒有
+commit、push、archive、tag 或 pull request 權限。
 
-2026-08-05 使用者已明確授權本次 commit、push `main` 與 canonical deploy；
-archive、tag 與 pull request 仍未授權。18:34 使用者又明確要求本次不處理
-summary key 並立即正式部署；部署已依該指示完成，但沒有 key 輪替證據，也沒有
-live provider call。後續安全收斂的 forward order 為：
+forward order：
 
-1. 先停止新 claim／provider routing，但讓舊 control-plane 保持可接收已核發 attempt 的 callback；drain 或明確處理這些 attempt。此步驟只處理既有 attempt／callback，不得以已曝露的 key 啟動新的 provider call。
-2. 在任何新 live provider call 或部署前輪替已曝露的 summary key；把新值只寫入 secret store／gitignored `.env`，不輸出、不提交。
-3. 保存上一版 immutable release/image IDs、相容的安全 env snapshot 與 DB backup；snapshot 不放 repo。上一版 bundle 只可用於 migration 前的 abort，不能在新 schema 生效後直接恢復舊 control-plane。
-4. 確認舊 attempt 已 drain／處理後，啟動一個新 control-plane；它會在 transaction-scoped advisory lock 下執行尚未記錄的 additive migration，並把版本寫入 `schema_migrations`。確認版本、health 與 callback compatibility 後才替換其餘 replica／worker。
-5. 設定完整 Responses URL、rotated key、Luna model，以及摘要 900 秒、
-   transcription 300 秒、Python worker control-plane 30 秒的 socket-operation timeout，但
-   先不要把尚未驗證的 routing 宣告完成。
-6. 用同一個 release bundle rebuild/recreate transcription-worker 與 summary-worker；禁止把 chat endpoint 與 Responses caller 混搭。
-7. compatibility/health 通過後才切換 runtime policy，接著執行已去識別的 live flow 並保留 ledger evidence。
+1. 讀回 DB，確認沒有非終態 `summary_provider='azure-openai'` job、active summary
+   lease 或等待中的 summary。若存在，只遷移非終態 snapshot，不改歷史完成資料。
+2. render Compose，確認只有 summary-worker 有 Azure summary env key names，且
+   endpoint/key 都是空白；control-plane／transcription worker 均沒有。另確認
+   Local Codex Luna/max、有限 timeout 與 dedicated named-volume `CODEX_HOME`
+   mount；不讀取、輸出或修改 credential 值。
+3. 保存可回復的 DB backup 與前一版 image identifiers 後，執行 canonical deploy。
+4. 讀取 operator policy 觸發 singleton normalization，再由 DB 確認
+   `summary_provider='local-codex'` 已持久化。
+5. 驗證 health、worker-to-control-plane reachability、restart count、Codex ChatGPT
+   login、structured rate-limit read、model availability、effective env key names 與
+   近期錯誤日誌。跑去識別 Local Codex summary，但不為驗證刻意觸發付費 fallback。
+
+rollback：停止新 claim，保留 schema-aware control-plane，回復上一個已驗證的
+Local Codex-only image/config。fallback 只有結構化 reached-limit 分支，不得擴大為
+generic-error Azure retry。
 
 canonical 指令：
 
@@ -525,32 +771,27 @@ canonical 指令：
 ./scripts/deploy.sh ps
 ```
 
-rollback 有明確的 schema compatibility floor：
+## Historical security action
 
-- **migration 前 abort**：若新 schema 尚未生效，可停止 rollout，從保存的 immutable release 與相容 env snapshot 恢復上一版完整 bundle。
-- **migration 後 feature rollback**：停止新 claim，drain／明確處理 in-flight lease，將 summary、punctuation 與 cloud transcription 切回相容的 local／disabled policy；保留目前 schema-aware control-plane 與目前 worker images，並使用 canonical Compose 驗證 health。
-- **migration 後 full-code rollback**：只有另行建立並演練過、能寫入 `pricing_status`／nullable `cost_usd`、理解 issued-token history 且符合目前 callback schema 的 compatibility image 才可部署。目前不存在這項已驗證證據，因此不能直接恢復上一版 control-plane 或舊 worker。
-- additive DB columns 與既有 ledger entry 保留，不刪除、不改寫。
-
-舊 control-plane 的 INSERT 不含 NOT NULL `pricing_status`，而且會把 nullable cost 誤讀成 0，所以 migration 後禁止上線。舊 chat endpoint 只能隨 migration 前 abort 的舊 bundle 一起恢復；絕不能交給 Responses caller。新 Responses endpoint 也不能交給只會送 chat body 的舊 worker。
-
-## Security action
-
-一次診斷輸出曾顯示真實 `AZURE_OPENAI_SUMMARY_API_KEY`。即使該值未寫入本文件，也必須視為 compromised：**在任何下一次 live call 或部署前於 Azure 輪替／撤銷舊 key**，更新 secret store／gitignored `.env`，重建受影響 worker，並檢查 shell history、CI artifact 與協作紀錄是否另有副本。不得在 issue、commit、測試 fixture 或驗證輸出中貼出新 key。
-
-2026-08-05 18:34 仍未取得已輪替證據；使用者明確要求不處理 key 並正式部署，
-所以 runtime-hardening 已使用既有 gitignored `.env` 上線。這不解除 compromised
-判定；key 輪替、外部副本檢查與輪替後 provider 驗證仍是未完成 security action。
+一次舊診斷輸出曾顯示 Azure summary key；該 credential 應視為 compromised，若
+Azure resource 仍保留，應在另一個明確授權的 security action 撤銷或輪替。本次只
+依使用者要求恢復 quota-only worker wiring，不讀取、輸出、修改、驗證或宣稱該 key
+安全／有效，也不把值放入 issue、commit、測試 fixture 或驗證輸出。credential
+rotation 與真實付費 provider call 仍是分離且未完成的 security action。
 
 ## OpenSpec 狀態
 
-`update-cloud-summary-azure-responses` 目前 **not archive-ready**，即使 selected-change strict validation 已通過，仍有以下 gate：
-
-- tasks 為 42/45；只剩 6.6 current-release durable live evidence、6.7 rollback
-  drill、6.8 archive-order rebase/revalidation 未勾選。
-- 目前 release 已部署，但沒有可關閉 6.6 的 current-release retained redacted
-  provider end-to-end evidence，也沒有可關閉 6.7 的 rollback drill；上方
-  2026-07-29 至 2026-07-31 provider 紀錄只代表當時版本。
+`use-local-codex-summaries` 的 implementation、static verification 與 canonical
+live deployment tasks 已完成，selected/all strict validation 通過。archive 未獲
+授權，且仍須處理下列 overlap/order；完成部署不等於自動 archive。被取代的
+`update-cloud-summary-azure-responses` 6.6 已由 replacement live evidence 關閉；
+6.7 schema-compatible rollback 演練與 6.8 archive/rebase 仍未完成。
+`simplify-mai-transcription-pipeline` 3.5 只關閉被 Local Codex 取代的 Azure-primary
+`max` 部署 gate；3.6 credential revoke/rotation 仍是未完成且需另行授權的 security
+action。GitHub issue `andys0919/AI_NoteTacker#8` 追蹤本次契約與唯讀 UI 修正，並未
+授權或執行 credential 操作、rollback 演練、archive、部署、commit 或 push。
+`add-azure-summary-quota-fallback` 的 implementation、review、canonical deploy 與
+live local-default evidence 已完成；archive 未獲授權，change 仍保持 unarchived。
 - `add-codex-transcript-summaries`、`add-cloud-usage-governance`、
   `update-cloud-summary-azure-responses`、`use-mai-luna-transcription-pipeline`、
   `simplify-mai-transcription-pipeline`、`add-admin-summary-model-switch` 與
@@ -574,14 +815,22 @@ archive、tag 與 pull request 仍需另行授權。
 
 ## 可重跑的 verification / deployment
 
-下列本地 verification 已於 2026-07-29 通過，可在 repo root 重跑且不碰 live：
+目前 Local Codex + quota fallback 可在 repo root 重跑且不碰 live：
 
 ```bash
-git diff --check
-npm run test:python
-npm run test --workspace @ai-notetacker/control-plane
+PYTHONPATH=workers/transcription-worker/src:workers/transcription-worker \
+  python3 -m unittest tests.test_config tests.test_codex_transcript_summarizer \
+  tests.test_summary_worker_loop tests.test_azure_openai_responses \
+  tests.test_azure_openai_transcript_summarizer tests.test_production_compose
+npm test --workspace @ai-notetacker/control-plane -- --run \
+  test/admin-shell.test.ts test/admin-console-api.test.ts \
+  test/cloud-usage-governance-api.test.ts test/cloud-usage-event-settlement-api.test.ts \
+  test/recording-jobs-api.test.ts \
+  test/summary-provider-catalog.test.ts
 npm run build
-openspec validate update-cloud-summary-azure-responses --strict --no-interactive
+git diff --check
+openspec validate use-local-codex-summaries --strict --no-interactive
+openspec validate add-azure-summary-quota-fallback --strict --no-interactive
 openspec validate --all --strict --no-interactive
 ```
 
@@ -602,14 +851,20 @@ docker compose -f docker-compose.yml -f docker-compose.screenapp.yml config --fo
           == "gpt-5.6-luna")
         and ($services["summary-worker"].environment.SUMMARY_REASONING_EFFORT
           == "max")
+        and ($services["summary-worker"].environment.SUMMARY_TIMEOUT_SECONDS
+          == "900")
+        and ($services["summary-worker"].environment.CODEX_HOME == "/codex-home")
         and ($services["summary-worker"].environment.AZURE_OPENAI_SUMMARY_ENDPOINT
-          | test("^https://[^/]+/openai/v1/responses/?$"))
-        and (($services["summary-worker"].environment.AZURE_OPENAI_SUMMARY_API_KEY
-          | length) > 0)
+          | length > 0)
+        and ($services["summary-worker"].environment.AZURE_OPENAI_SUMMARY_API_KEY
+          | length > 0)
+        and (($services["control-plane"].environment | keys
+          | map(select(startswith("AZURE_OPENAI_SUMMARY"))) | length) == 0)
     '
 ```
 
-只有在 key 已輪替後；目前已有部署授權，但付費 provider 測試仍需另行授權：
+canonical deployment 使用既有 `.env` 的 Azure summary pair；只驗證成對非空，
+不要讀取、輸出、修改或宣稱驗證既有 credential：
 
 ```bash
 ./scripts/deploy.sh up
@@ -617,38 +872,22 @@ docker compose -f docker-compose.yml -f docker-compose.screenapp.yml config --fo
 curl -fsS http://127.0.0.1:3000/health
 docker compose -f docker-compose.yml -f docker-compose.screenapp.yml \
   logs --tail=200 control-plane transcription-worker summary-worker
+docker compose -f docker-compose.yml -f docker-compose.screenapp.yml \
+  exec -T summary-worker codex login status
 ```
 
-再用一個已去識別的測試音檔跑完整 flow，保留 job id，並在 DB 確認三個 stage、nullable price 與 entry-key 唯一性：
+部署後先讀回 singleton policy，必須已持久化為 `local-codex`：
 
 ```sql
-SELECT
-  stage,
-  md5(entry_key) AS entry_key_hash,
-  provider,
-  model,
-  pricing_status,
-  cost_usd,
-  usage_quantity,
-  usage_unit,
-  detail
-FROM cloud_usage_ledger
-WHERE job_id = '<redacted-test-job-id>'
-  AND entry_type = 'actual'
-ORDER BY created_at ASC;
-
-SELECT
-  stage,
-  COUNT(*) AS attempt_count,
-  COUNT(DISTINCT entry_key) AS distinct_entry_keys
-FROM cloud_usage_ledger
-WHERE job_id = '<redacted-test-job-id>'
-  AND entry_type = 'actual'
-GROUP BY stage
-ORDER BY stage;
+SELECT summary_provider, summary_model
+FROM ai_processing_policy_settings
+WHERE singleton_key = 'global';
 ```
 
-live evidence 必須遮蔽 transcript、summary、hostname、key 與使用者識別資料；保留 stage/model/token counts、lease-key hash、pricing status、null cost 與重送前後 row count 即可。
+若另跑一筆已去識別的 controlled summary，確認 job snapshot 為
+`local-codex`／`gpt-5.6-luna`、產生完整 structured summary，且
+`cloud_usage_ledger` 沒有該 job 的 `stage='summary'` actual row。live evidence
+必須遮蔽 transcript、summary、hostname、token、key 與使用者識別資料。
 
 ## 2026-08-05 runtime-hardening 本機驗證
 

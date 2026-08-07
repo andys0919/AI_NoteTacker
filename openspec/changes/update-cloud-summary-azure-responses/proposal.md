@@ -1,5 +1,10 @@
 # Change: Harden Azure Responses Summary, Punctuation, and Usage Accounting
 
+> **Superseded for active summary routing on 2026-08-06:**
+> `use-local-codex-summaries` removes the Azure summary transport and live Luna
+> price refresh. The accounting and schema work here remains historical
+> compatibility for existing ledger rows.
+
 ## Why
 The cloud meeting-AI pipeline is moving to `gpt-5.6-luna` on an Azure AI
 Foundry resource that is exposed through the Responses API rather than the
@@ -24,14 +29,14 @@ inheriting or guessing a price.
   `output_text` parts in response order, and reject invalid, empty, or
   schema-incomplete summary responses.
 - Apply an explicit configurable socket-operation timeout. Provider calls do
-  not retry except for the separately approved, identical-payload, summary-only
-  HTTP 400 retry in `improve-uploaded-meeting-note-quality`.
+  not retry; the quota-only Azure summary fallback reserves and issues at most
+  one provider request, including when that request returns HTTP 400.
 - Keep transcript punctuation best-effort and fidelity-guarded, while defining
   it as its own `punctuation` cloud stage rather than summary or transcription
   usage.
-- Preserve provider-reported input, output, cached-input, reasoning, and total
-  token metadata, and keep metered token subtotals distinct from punctuation
-  requests whose usage could not be read.
+- Preserve provider-reported input, output, cached-input, optional cache-write,
+  reasoning, and total token metadata, and keep metered token subtotals distinct
+  from punctuation requests whose usage could not be read.
 - Make reported usage settlement attempt-aware and idempotent by lease token,
   and append usage carried by success, failure, cancellation, or superseded
   callbacks before applying or rejecting their lifecycle transition.
@@ -46,10 +51,14 @@ inheriting or guessing a price.
 - Configure the now-published `gpt-5.6-luna` Global Standard rates for the
   verified `2026-07-09` deployment, and configure MAI Transcribe 1.5 against
   the verified Azure Speech Fast Transcription hourly meter.
-- Refresh those exact USD meters plus the exact TWD reference meter at
+- Settle MAI from the sum of each successful upload rounded up to a whole billed
+  second; keep retries or failed attempts with uncertain billing visibly
+  unpriced while retaining the successful-upload subtotal.
+- Refresh the exact MAI USD meter plus its exact TWD reference meter at
   control-plane startup and every 24 hours, accepting only a complete,
   internally consistent, currently effective Consumption snapshot and
-  otherwise retaining the last verified catalog.
+  otherwise retaining the last verified catalog. Keep the historical Luna
+  catalog source-attributed and checked in; do not refresh it for new work.
 - Resolve historical unpriced rows from their preserved meter details at read
   time without mutating the immutable usage ledger. Preserve an unpriced flag
   when only a metered lower bound is known.

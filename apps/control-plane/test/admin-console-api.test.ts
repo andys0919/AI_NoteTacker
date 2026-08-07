@@ -40,10 +40,7 @@ describe('admin console (username/password) API', () => {
         azureOpenAiDeployment: 'gpt-4o-transcribe',
         azureOpenAiApiKey: 'secret'
       }),
-      summaryProviderCatalog: createSummaryProviderCatalog({
-        azureOpenAiSummaryEndpoint: 'https://azure-summary.example.test/openai/v1/responses',
-        azureOpenAiSummaryApiKey: 'secret'
-      })
+      summaryProviderCatalog: createSummaryProviderCatalog()
     });
 
   const login = async (
@@ -120,6 +117,43 @@ describe('admin console (username/password) API', () => {
     expect(response.body.transcriptionProvider).toBeTruthy();
   });
 
+  it('shows only the sanitized Codex weekly usage to an administrator', async () => {
+    const app = buildApp();
+    const checkedAt = '2026-08-07T04:00:00.000Z';
+
+    expect((await request(app).get('/api/admin/codex-usage')).status).toBe(401);
+
+    const report = await request(app).post('/summary-workers/claims').send({
+      workerId: 'summary-alpha',
+      codexUsage: {
+        status: 'available',
+        planType: 'team',
+        usedPercent: 37.5,
+        windowDurationMins: 10_080,
+        resetsAt: 1_786_680_000,
+        checkedAt
+      }
+    });
+    expect(report.status).toBe(204);
+
+    const { body: loginBody } = await login(app);
+    const response = await request(app)
+      .get('/api/admin/codex-usage')
+      .set('authorization', `Bearer ${loginBody.token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      status: 'available',
+      planType: 'team',
+      usedPercent: 37.5,
+      windowDurationMins: 10_080,
+      resetsAt: 1_786_680_000,
+      checkedAt
+    });
+    expect(response.body).not.toHaveProperty('accountId');
+    expect(response.body).not.toHaveProperty('auth');
+  });
+
   it('accepts the token via the x-admin-console-token header too', async () => {
     const app = buildApp();
     const { body } = await login(app);
@@ -142,7 +176,7 @@ describe('admin console (username/password) API', () => {
       .send({
         transcriptionProvider: 'self-hosted-whisper',
         transcriptionModel: 'large-v3',
-        summaryProvider: 'azure-openai',
+        summaryProvider: 'local-codex',
         summaryModel: 'gpt-5.4-nano',
         pricingVersion: 'v1',
         defaultDailyCloudQuotaUsd: 5,
@@ -288,6 +322,101 @@ describe('admin console (username/password) API', () => {
     expect(punctuationModelBreakdown.totalCostUsd).toBeNull();
     expect(punctuationModelBreakdown.hasUnpricedUsage).toBe(true);
     expect(punctuationModelBreakdown.unpricedEntryCount).toBe(1);
+  });
+
+  it('returns request-level billed audio, cache-write tokens, and subscription identity', async () => {
+    const ledger = seedLedger();
+    await ledger.startProviderRequest({
+      requestId: 'request-mai-history',
+      jobId: 'job-mai',
+      submitterId: 'operator-user',
+      quotaDayKey: '2026-08-06',
+      stage: 'transcription',
+      provider: 'azure-speech-mai-transcribe-1.5',
+      model: 'mai-transcribe-1.5',
+      pricingVersion: 'v1',
+      leaseTokenHash: 'hash-mai',
+      billingClass: 'metered-api',
+      startedAt: '2026-08-06T01:00:00.000Z',
+      detail: { audioMs: 60_001 }
+    });
+    await ledger.finishProviderRequest({
+      requestId: 'request-mai-history',
+      status: 'succeeded',
+      httpStatus: 200,
+      usageQuantity: 61_000,
+      usageUnit: 'audio-ms',
+      pricingStatus: 'priced',
+      knownCostUsd: 0.0061,
+      costUsd: 0.0061,
+      detail: { audioMs: 60_001, billedAudioMs: 61_000 },
+      finishedAt: '2026-08-06T01:00:02.000Z'
+    });
+    await ledger.startProviderRequest({
+      requestId: 'request-local-history',
+      jobId: 'job-local',
+      submitterId: 'operator-user',
+      quotaDayKey: '2026-08-06',
+      stage: 'summary',
+      provider: 'local-codex',
+      model: 'gpt-5.6-luna',
+      pricingVersion: 'v1',
+      leaseTokenHash: 'hash-local',
+      billingClass: 'subscription',
+      startedAt: '2026-08-06T01:01:00.000Z'
+    });
+    await ledger.finishProviderRequest({
+      requestId: 'request-local-history',
+      status: 'succeeded',
+      usageQuantity: 1_300,
+      usageUnit: 'tokens',
+      pricingStatus: 'not-applicable',
+      knownCostUsd: 0,
+      costUsd: null,
+      detail: {
+        inputTokens: 1_000,
+        cachedInputTokens: 200,
+        cacheWriteInputTokens: 100,
+        outputTokens: 300,
+        reasoningOutputTokens: 50,
+        totalTokens: 1_300
+      },
+      finishedAt: '2026-08-06T01:01:03.000Z'
+    });
+
+    const app = buildApp(ledger);
+    const { body } = await login(app);
+    const response = await request(app)
+      .get('/api/admin/usage/history')
+      .set('authorization', `Bearer ${body.token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.totals).toMatchObject({
+      providerRequestCount: 2,
+      billedAudioMs: 61_000,
+      cacheWritePromptTokens: 100,
+      pricedCostUsd: 0.0061,
+      totalCostUsd: 0.0061
+    });
+    expect(response.body.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'request-mai-history',
+          recordKind: 'provider-request',
+          hasTokenUsage: false,
+          billedAudioMs: 61_000,
+          providerRequestCount: 1
+        }),
+        expect.objectContaining({
+          id: 'request-local-history',
+          billingClass: 'subscription',
+          pricingStatus: 'not-applicable',
+          hasTokenUsage: true,
+          cacheWritePromptTokens: 100,
+          providerRequestCount: 1
+        })
+      ])
+    );
   });
 
   it('rejects the usage history endpoint without a token', async () => {

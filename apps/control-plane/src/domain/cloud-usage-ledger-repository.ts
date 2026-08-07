@@ -8,6 +8,13 @@ export type CloudUsageEntryType = 'estimate' | 'actual';
 export type CloudUsageUnit = 'usd' | 'audio-ms' | 'tokens';
 export type CloudUsageProvider = TranscriptionProvider | SummaryProvider;
 export type CloudUsagePricingStatus = 'priced' | 'unpriced';
+export type ProviderRequestBillingClass = 'metered-api' | 'subscription' | 'self-hosted';
+export type ProviderRequestStatus = 'started' | 'succeeded' | 'failed';
+export type ProviderRequestPricingStatus =
+  | 'pending'
+  | 'priced'
+  | 'unpriced'
+  | 'not-applicable';
 
 type CloudUsageLedgerEntryBase = {
   id: string;
@@ -40,6 +47,66 @@ type WithoutPersistenceFields<T> = T extends unknown ? Omit<T, 'id' | 'createdAt
 
 export type CloudUsageLedgerEntryInput = WithoutPersistenceFields<CloudUsageLedgerEntry>;
 
+export type ProviderRequestAudit = {
+  requestId: string;
+  jobId: string;
+  submitterId: string;
+  quotaDayKey: string;
+  stage: Extract<CloudUsageStage, 'transcription' | 'summary'>;
+  provider: CloudUsageProvider;
+  model: string;
+  pricingVersion: string;
+  leaseTokenHash: string;
+  billingClass: ProviderRequestBillingClass;
+  status: ProviderRequestStatus;
+  providerRequestId?: string;
+  httpStatus?: number;
+  errorCode?: string;
+  usageQuantity?: number;
+  usageUnit?: Extract<CloudUsageUnit, 'audio-ms' | 'tokens'>;
+  pricingStatus: ProviderRequestPricingStatus;
+  knownCostUsd: number;
+  costUsd: number | null;
+  detail?: Record<string, unknown>;
+  startedAt: string;
+  finishedAt?: string;
+};
+
+export type ProviderRequestStartInput = Pick<
+  ProviderRequestAudit,
+  | 'requestId'
+  | 'jobId'
+  | 'submitterId'
+  | 'quotaDayKey'
+  | 'stage'
+  | 'provider'
+  | 'model'
+  | 'pricingVersion'
+  | 'leaseTokenHash'
+  | 'billingClass'
+  | 'startedAt'
+  | 'detail'
+>;
+
+export type ProviderRequestFinishInput = Pick<
+  ProviderRequestAudit,
+  | 'requestId'
+  | 'status'
+  | 'providerRequestId'
+  | 'httpStatus'
+  | 'errorCode'
+  | 'usageQuantity'
+  | 'usageUnit'
+  | 'pricingStatus'
+  | 'knownCostUsd'
+  | 'costUsd'
+  | 'detail'
+  | 'finishedAt'
+> & {
+  status: Extract<ProviderRequestStatus, 'succeeded' | 'failed'>;
+  finishedAt: string;
+};
+
 export type CloudUsageCostSummary = {
   actualTranscriptionCostUsd: number;
   hasUnpricedTranscriptionUsage: boolean;
@@ -57,6 +124,57 @@ export class CloudUsageLedgerConflictError extends Error {
     this.name = 'CloudUsageLedgerConflictError';
   }
 }
+
+export class ProviderRequestAuditConflictError extends Error {
+  constructor(requestId: string) {
+    super(`Provider request audit conflict: ${requestId}`);
+    this.name = 'ProviderRequestAuditConflictError';
+  }
+}
+
+const comparableProviderRequestStart = (
+  request: ProviderRequestAudit | ProviderRequestStartInput
+) => ({
+  requestId: request.requestId,
+  jobId: request.jobId,
+  submitterId: request.submitterId,
+  quotaDayKey: request.quotaDayKey,
+  stage: request.stage,
+  provider: request.provider,
+  model: request.model,
+  pricingVersion: request.pricingVersion,
+  leaseTokenHash: request.leaseTokenHash,
+  billingClass: request.billingClass,
+  detail: request.detail ?? undefined
+});
+
+const comparableProviderRequestFinish = (
+  request: ProviderRequestAudit | ProviderRequestFinishInput
+) => ({
+  requestId: request.requestId,
+  status: request.status,
+  providerRequestId: request.providerRequestId ?? undefined,
+  httpStatus: request.httpStatus ?? undefined,
+  errorCode: request.errorCode ?? undefined,
+  usageQuantity: request.usageQuantity ?? undefined,
+  usageUnit: request.usageUnit ?? undefined,
+  pricingStatus: request.pricingStatus,
+  knownCostUsd: request.knownCostUsd,
+  costUsd: request.costUsd,
+  detail: request.detail ?? undefined
+});
+
+export const isSameProviderRequestStart = (
+  existing: ProviderRequestAudit,
+  input: ProviderRequestStartInput
+): boolean => isDeepStrictEqual(comparableProviderRequestStart(existing), comparableProviderRequestStart(input));
+
+export const isSameProviderRequestFinish = (
+  existing: ProviderRequestAudit,
+  input: ProviderRequestFinishInput
+): boolean =>
+  existing.status !== 'started' &&
+  isDeepStrictEqual(comparableProviderRequestFinish(existing), comparableProviderRequestFinish(input));
 
 const comparablePayload = (entry: CloudUsageLedgerEntry | CloudUsageLedgerEntryInput) => ({
   entryKey: entry.entryKey ?? undefined,
@@ -93,5 +211,15 @@ export interface CloudUsageLedgerRepository {
     quotaDayKey: string
   ): Promise<CloudUsageLedgerEntry[]>;
   listByJob(jobId: string): Promise<CloudUsageLedgerEntry[]>;
+  listProviderRequestsByQuotaDayKey(quotaDayKey: string): Promise<ProviderRequestAudit[]>;
+  startProviderRequest(input: ProviderRequestStartInput): Promise<ProviderRequestAudit>;
+  finishProviderRequest(input: ProviderRequestFinishInput): Promise<ProviderRequestAudit>;
+  getProviderRequest(requestId: string): Promise<ProviderRequestAudit | undefined>;
+  listProviderRequestsByJob(jobId: string): Promise<ProviderRequestAudit[]>;
+  listProviderRequestsBySubmitterAndDay(
+    submitterId: string,
+    quotaDayKey: string
+  ): Promise<ProviderRequestAudit[]>;
+  listRecentProviderRequests(limit: number): Promise<ProviderRequestAudit[]>;
   summarizeActualCostByJobIds(jobIds: string[]): Promise<Record<string, CloudUsageCostSummary>>;
 }

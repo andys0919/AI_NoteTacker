@@ -17,6 +17,9 @@ describe('admin shell markup', () => {
     expect(html).toContain('admin-provider-panel');
     expect(html).toContain('admin-usage-report-list');
     expect(html).toContain('admin-runtime-health-panel');
+    expect(html).toContain('admin-codex-usage-panel');
+    expect(html).toContain('id="admin-codex-usage-progress"');
+    expect(html).toContain('<progress');
     expect(html).toContain('/admin.js');
     expect(html).toContain('id="admin-session-status"');
     expect(html).toContain('id="admin-login-overlay" class="admin-login-overlay" hidden');
@@ -41,8 +44,9 @@ describe('admin shell markup', () => {
       'utf-8'
     );
 
-    expect(html).toContain('沒有官方費率的用量會標示「未定價」');
+    expect(html).toContain('無法精確核價的 Azure 用量標示「未定價」');
     expect(html).toContain('費用狀態 (TWD)');
+    expect(html).toContain('<th scope="col">請求明細</th>');
     expect(html).toContain('每日預設額度 (TWD)');
     expect(html).not.toContain('費用狀態 (USD)');
     expect(html).toContain('<span class="meta-label">歷史費用</span>');
@@ -60,8 +64,27 @@ describe('admin shell markup', () => {
     expect(html).toContain('href="#admin-usage-history-panel"');
     expect(html).toContain('href="#admin-provider-panel"');
     expect(html).toContain('href="#admin-runtime-health-panel"');
+    expect(html).toContain('href="#admin-codex-usage-panel"');
     expect(html).not.toContain('admin-topbar');
     expect(html).not.toContain('admin-rail-points');
+  });
+
+  it('shows the fixed Local Codex route without a fake provider choice', () => {
+    const html = readFileSync(
+      resolve(import.meta.dirname, '../public/admin.html'),
+      'utf-8'
+    );
+    const javascript = readFileSync(
+      resolve(import.meta.dirname, '../public/admin.js'),
+      'utf-8'
+    );
+
+    expect(html).toContain('id="admin-summary-provider-value"');
+    expect(html).toContain('>本機 Codex</output>');
+    expect(html).not.toContain('id="admin-summary-provider-select"');
+    expect(javascript).toContain('adminSummaryProviderValue');
+    expect(javascript).toContain('summaryProvider: adminProviderState.summaryProvider');
+    expect(javascript).not.toContain('adminSummaryProviderSelect');
   });
 
   it('provides accessible table, modal, and asynchronous form state', () => {
@@ -90,5 +113,23 @@ describe('admin shell markup', () => {
     expect(javascript).toContain('setFormBusy(elements.adminProviderForm');
     expect(javascript).toContain('setFormBusy(elements.adminOverrideForm');
     expect(javascript).toContain('sanitizeAnonymousSpeakerLabels');
+    expect(javascript).toContain("details.className = 'usage-request-details'");
+    expect(javascript).toContain("appendUsageDetail(list, 'Provider'");
+    expect(javascript).toContain("appendUsageDetail(list, 'Model'");
+    expect(javascript).toContain("buildModalSection('Provider request audit'");
+  });
+
+  it('keeps the administrator bearer token inside the current browser session', () => {
+    const javascript = readFileSync(
+      resolve(import.meta.dirname, '../public/admin.js'),
+      'utf-8'
+    );
+
+    expect(javascript).toContain('window.localStorage.removeItem(TOKEN_STORAGE_KEY)');
+    expect(javascript).toContain('window.sessionStorage.getItem(TOKEN_STORAGE_KEY)');
+    expect(javascript).toContain('window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token)');
+    expect(javascript).toContain('window.sessionStorage.removeItem(TOKEN_STORAGE_KEY)');
+    expect(javascript).not.toContain('window.localStorage.getItem(TOKEN_STORAGE_KEY)');
+    expect(javascript).not.toContain('window.localStorage.setItem(TOKEN_STORAGE_KEY, token)');
   });
 });

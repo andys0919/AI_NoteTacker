@@ -1,7 +1,7 @@
 ## 1. Contract and issue
 
 - [x] 1.1 Validate this OpenSpec change strictly and create tracking issue #3 with the live failure and redacted PLAUD comparison evidence.
-- [x] 1.2 Amend `update-cloud-summary-azure-responses` so its retry contract permits only one identical summary HTTP 400 retry.
+- [x] 1.2 Superseded on 2026-08-06: align `update-cloud-summary-azure-responses` with one observable Azure fallback request and no HTTP 400 replay.
 
 ## 2. Job-specific recognition context
 
@@ -17,9 +17,9 @@
 
 ## 4. Azure summary resilience
 
-- [x] 4.1 Add tests for HTTP error-body preservation, one identical HTTP 400 retry, no retry for other failures, and retry request-count metadata.
-- [x] 4.2 Implement the typed Responses HTTP error and summary-only bounded retry.
-- [x] 4.3 Persist provider/unmetered summary request counts and keep partially metered retried usage unpriced.
+- [x] 4.1 Preserve the redacted HTTP error body and prove HTTP 400 does not issue a second Azure summary request.
+- [x] 4.2 Keep the typed Responses HTTP error and remove the superseded summary replay.
+- [x] 4.3 Persist the single request outcome and keep failed or incompletely metered usage unpriced.
 - [x] 4.4 Add a focused prompt regression and keep operator-verified aliases authoritative while tentative or later-to-be-confirmed points remain out of decisions.
 
 ## 5. Upload boundary

@@ -339,6 +339,15 @@ const recordingJobSchemaSql = `
   ALTER TABLE recording_jobs
   ADD COLUMN IF NOT EXISTS operator_hidden_at TIMESTAMPTZ;
 
+  CREATE TABLE IF NOT EXISTS summary_fallback_reservations (
+    job_id TEXT PRIMARY KEY REFERENCES recording_jobs(id) ON DELETE CASCADE,
+    lease_token TEXT NOT NULL,
+    request_id TEXT,
+    reserved_at TIMESTAMPTZ NOT NULL
+  );
+  ALTER TABLE summary_fallback_reservations
+  ADD COLUMN IF NOT EXISTS request_id TEXT;
+
   CREATE TABLE IF NOT EXISTS meeting_share_links (
     job_id TEXT PRIMARY KEY REFERENCES recording_jobs(id) ON DELETE CASCADE,
     share_id TEXT NOT NULL UNIQUE,
@@ -971,6 +980,60 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
     );
 
     return result.rows.length > 0 ? mapRowToRecordingJob(result.rows[0]) : undefined;
+  }
+
+  async reserveSummaryFallback(input: {
+    jobId: string;
+    leaseToken: string;
+    reservedAt: string;
+  }): Promise<boolean> {
+    try {
+      const result = await this.database.query<{ job_id: string }>(
+        `
+          INSERT INTO summary_fallback_reservations (job_id, lease_token, reserved_at)
+          SELECT id, $2, $3::timestamptz
+          FROM recording_jobs
+          WHERE id = $1
+            AND summary_lease_token = $2
+            AND (
+              summary_lease_expires_at IS NULL
+              OR summary_lease_expires_at > $3::timestamptz
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM summary_fallback_reservations WHERE job_id = $1
+            )
+          RETURNING job_id
+        `,
+        [input.jobId, input.leaseToken, input.reservedAt]
+      );
+
+      return result.rows.length > 0;
+    } catch (error) {
+      if ((error as { code?: string }).code === '23505') {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async claimSummaryFallbackRequest(input: {
+    jobId: string;
+    leaseToken: string;
+    requestId: string;
+  }): Promise<boolean> {
+    const result = await this.database.query<{ job_id: string }>(
+      `
+        UPDATE summary_fallback_reservations
+        SET request_id = COALESCE(request_id, $3)
+        WHERE job_id = $1
+          AND lease_token = $2
+          AND (request_id IS NULL OR request_id = $3)
+        RETURNING job_id
+      `,
+      [input.jobId, input.leaseToken, input.requestId]
+    );
+
+    return result.rows.length > 0;
   }
 
   async heartbeatLease(input: {

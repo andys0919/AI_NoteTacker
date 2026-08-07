@@ -1,6 +1,6 @@
-export const summaryProviders = ['local-codex', 'azure-openai'] as const;
+export const summaryProviders = ['local-codex'] as const;
 
-export type SummaryProvider = (typeof summaryProviders)[number];
+export type SummaryProvider = (typeof summaryProviders)[number] | 'azure-openai';
 
 export const defaultSummaryProvider: SummaryProvider = 'local-codex';
 

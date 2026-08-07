@@ -8,7 +8,7 @@ This project lets an operator:
 - let an admin switch future transcription jobs among MAI-Transcribe 1.5, Qwen,
   local Whisper, and Azure OpenAI `gpt-4o-transcribe`
 - let an admin manage AI routing defaults and review cloud usage
-- read full transcripts and Codex or Azure OpenAI summaries in separate,
+- read full transcripts and local Codex summaries in separate,
   responsive dashboard tabs
 - export completed jobs as Markdown, TXT, SRT, or JSON
 - stop a live meeting bot or interrupt an upload/transcription job
@@ -24,13 +24,12 @@ This project lets an operator:
   - `qwen3-asr-1.7b`
   - `azure-speech-mai-transcribe-1.5`
   - `azure-openai-gpt-4o-transcribe`
-- Independent summary routing defaults:
-  - `local-codex`
-  - `azure-openai`
+- Local Codex summary routing with a submission-time model snapshot and an
+  explicit-quota-only Azure fallback
 - Submission-time AI policy snapshots for future jobs
 - Cloud reservation estimates and daily usage reporting without submission blocking
 - Cloud usage ledger and admin audit history for governance changes
-- Codex or Azure OpenAI summary generation with a content-derived title,
+- Local Codex summary generation with a content-derived title,
   confirmed/mixed/open topics, topic subtopics, grouped follow-ups, decisions,
   risks, open questions, and evidence-backed analysis notes
 - Archive search, history timeline, and export
@@ -42,11 +41,12 @@ This project lets an operator:
 
 - Docker and Docker Compose
 - NVIDIA driver + `nvidia-smi` if you want GPU transcription
-- `CODEX_HOME` on the host only if you want local Codex summaries inside the summary worker
+- A dedicated ChatGPT login in Docker volume `ai_notetacker_summary_codex_home`
 - Optional:
   - Supabase project for backend operator bearer-token verification
   - SMTP provider for notification emails
-  - Azure OpenAI deployments if you want hosted transcription or summaries
+  - Azure OpenAI deployment if you want hosted transcription or quota-only
+    summary fallback
 
 ## Configure
 
@@ -57,9 +57,9 @@ OpenAI keys, admin emails, etc.):
 cp .env.example .env
 ```
 
-Docker Compose uses `.env` (gitignored) for interpolation. The transcription and
-summary services receive explicit stage-specific values; other services load
-the file directly. `.env.example` is the committed development template — never
+Docker Compose uses `.env` (gitignored) for interpolation and passes explicit,
+service-specific environment values to every container. `.env.example` is the
+committed development template — never
 put real secrets there. Before exposing a production deployment, replace the
 sample admin, session, internal service, database, and object-storage
 credentials.
@@ -211,14 +211,14 @@ Important:
 - usage whose model/version has no authoritative pricing-catalog entry is shown as
   `unpriced`, not `NT$0.00`; the known priced subtotal remains a lower bound until a rate is supplied
 
-As of 2026-07-31, pricing catalog `v1` includes the verified
-`gpt-5.6-luna` Global Standard rates and the Azure Speech Fast Transcription rate
-used by `mai-transcribe-1.5`. Azure does not return Luna cache-write token
-quantity in the Responses usage payload, so the UI shows the calculable
-input/cached-input/output amount as `（含未定價用量）` instead of hiding the
-known amount. Historical `gpt-4o-transcribe-diarize` rows that preserve only
-audio duration also remain unpriced because that model is billed through
-separate token meters.
+Pricing catalog `v1` keeps the verified Azure Luna rates for historical rows and
+the internal quota-only fallback. New summaries normally run through the host's
+Codex subscription and create no Azure/API actual-cost row; a structurally proven
+quota exhaustion may make one reserved Azure request, which is recorded under
+the actual Azure provider instead of as a fabricated zero-dollar charge.
+The active daily retail refresh covers Azure Speech MAI and its TWD reference;
+historical `gpt-4o-transcribe-diarize` rows with duration-only evidence remain
+unpriced.
 
 The ledger, quota enforcement, and APIs remain in USD. Operator and admin
 screens display TWD through one reference conversion verified against the
@@ -231,7 +231,7 @@ entered in TWD and converted back to the existing USD API precision on save.
 
 Completed jobs can show:
 - Full Transcript
-- Codex or Azure OpenAI Summary
+- Local Codex Summary
 - a content-derived meeting title and topic/subtopic notes with confirmed,
   mixed, or open status
 - only the non-empty grouped follow-up, decision, risk, open-question, and
@@ -255,10 +255,11 @@ Important defaults from [`.env.example`](.env.example):
 - `WHISPER_DEVICE=cuda`
 - `WHISPER_COMPUTE_TYPE=float16`
 - `DEFAULT_TRANSCRIPTION_PROVIDER=azure-speech-mai-transcribe-1.5`
-- `DEFAULT_SUMMARY_PROVIDER=azure-openai`
 - `SUMMARY_MODEL=gpt-5.6-luna`
 - `SUMMARY_REASONING_EFFORT=max`
-- `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS=900`
+- `SUMMARY_TIMEOUT_SECONDS=900`
+- optional paired `AZURE_OPENAI_SUMMARY_ENDPOINT` /
+  `AZURE_OPENAI_SUMMARY_API_KEY` for quota-only fallback
 - `MAX_CONCURRENT_TRANSCRIPTION_JOBS=1`
 - `MAX_MEETING_JOB_BACKLOG=2`
 - `MAX_TRANSCRIPTION_JOB_BACKLOG=10`
@@ -267,9 +268,9 @@ Important defaults from [`.env.example`](.env.example):
 - `AI_PRICING_VERSION=v1`
 - `MEETING_BOT_STOP_TIMEOUT_SECONDS=90`
 
-The template selects the cloud providers but leaves their endpoint/key values
-blank. Fill the required Azure values before using those routes, or switch the
-default policies to the local providers.
+The template selects Azure Speech MAI for transcription and Local Codex for
+primary summary generation. The separate Azure summary pair is optional and is
+used only after Codex reports a structured reached-limit state.
 
 ## Backend Operator Auth And Email
 
@@ -302,6 +303,9 @@ transient DNS, timeout, reset, or broken-connection failures use bounded
 2/10/30-second identical-request retries. MAI provider wording is preserved as
 `rawText`; when its locale is Chinese, only `displayText` is deterministically
 converted to Traditional Chinese and the segment language becomes `zh-Hant`.
+Actual MAI cost sums each successful upload rounded up to a whole billed second;
+any retry or failed request with uncertain billing keeps the attempt unpriced
+while preserving the successful-upload subtotal as a lower bound.
 The transcription worker does not call Luna or speaker diarization.
 
 The bundled Qwen service is an optional Compose profile and does not start or
@@ -322,27 +326,43 @@ questions. Evidence-backed analysis notes are optional. Compatibility
 model request. The prompt contains no PLAUD answer or meeting-specific topic
 list.
 
-Azure hosted summary requires explicit Responses API configuration on the
-control-plane and summary worker:
+Local summary generation reads its ChatGPT login only from the external Docker
+volume `ai_notetacker_summary_codex_home`, mounted read/write at `/codex-home`.
+The host user's default Codex home is not mounted, and the application does not
+accept or store an OAuth token. See
+[`docs/research/2026-08-07-local-codex-auth-isolation.md`](docs/research/2026-08-07-local-codex-auth-isolation.md)
+for the one-time device-login procedure.
 
-- `AZURE_OPENAI_SUMMARY_ENDPOINT` — HTTPS URL whose normalized path is exactly `/openai/v1/responses`
-- `AZURE_OPENAI_SUMMARY_API_KEY`
-- `SUMMARY_MODEL`
-- `SUMMARY_REASONING_EFFORT=max`
-- optional `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS` (default `900`)
+The authenticated admin settings page shows the provider-reported Codex
+seven-day usage, remaining percentage, reset time, and observation time. This
+comes from app-server `account/rateLimits/read`; if the weekly bucket is absent,
+the UI reports it as unavailable instead of estimating from a shorter window.
+`SUMMARY_MODEL` defaults to `gpt-5.6-luna` and
+`SUMMARY_REASONING_EFFORT` defaults to `max`. The Codex subprocess receives the
+transcript on stdin, ignores user configuration/rules, has command tools
+disabled, excludes worker service credentials, and times out after
+`SUMMARY_TIMEOUT_SECONDS` (default `900`). Before the call, the worker reads
+Codex's structured rate-limit state. Only a non-null `rateLimitReachedType` may
+authorize an atomically reserved Azure Responses request; timeout,
+authentication, network, schema, configuration, and unclassified failures do
+not fall back. A durable job reservation prevents another Azure call after a
+worker crash or lease reclaim, and Azure HTTP 400 is preserved without replay.
+
+The Azure fallback implementation and settings are retained, but canonical
+production Compose injects empty endpoint/key values, so the current deployment
+cannot fall back even when `.env` still contains them. The application still
+does not accept an OAuth token. Before every provider contact, the worker durably starts a request
+audit and finalizes the same row with actual provider/model, outcome, external
+request ID, usage, billed audio, and pricing status. Azure fallback usage is
+recorded as Azure spend; normal Local Codex subscription summaries retain token
+and outcome evidence under `subscription` billing but do not create an
+Azure/API cost row.
 
 Python transcription/summary worker GET/POST/heartbeat calls use
 `CONTROL_PLANE_TIMEOUT_SECONDS` (default `30`).
 
-The summary endpoint/key are not inferred from the transcription endpoint/key
-and are not exposed to the transcription worker. The summary caller sends
-`store: false` to disable Responses application-state/message-history storage
-and requires a finite positive socket-operation timeout. Azure transcription
-uploads and Python
-transcription/summary worker-to-control-plane calls have the same finite-timeout
-rule. These settings bound blocking socket
-operations rather than the entire workflow. `store: false` is not by itself a
-zero-data-retention guarantee.
+Azure transcription, Azure fallback summaries, and Python
+worker-to-control-plane calls use finite socket-operation timeouts.
 
 Notification email is enabled when:
 - `SMTP_HOST`
@@ -380,7 +400,6 @@ node scripts/fix_uploaded_audio_filenames.mjs
 Run the docker-compose runtime smoke:
 
 ```bash
-export CODEX_HOME="${CODEX_HOME:-$HOME/.local/share/codex}"
 docker compose -f docker-compose.yml -f docker-compose.smoke.yml up -d --build --remove-orphans
 node scripts/run_runtime_smoke.mjs --base-url http://127.0.0.1:3000 --timeout-ms 300000
 ```
@@ -391,15 +410,14 @@ node scripts/run_runtime_smoke.mjs --base-url http://127.0.0.1:3000 --timeout-ms
 
 For local Codex, check the summary worker environment:
 
-- `CODEX_HOME` is mounted into the container
+- `/codex-home` comes from the dedicated `ai_notetacker_summary_codex_home` volume
 - `CODEX_CLI_PATH` resolves to the Codex executable
-
-For Azure OpenAI, also check:
-
-- `AZURE_OPENAI_SUMMARY_ENDPOINT` ends at `/openai/v1/responses`
-- `AZURE_OPENAI_SUMMARY_API_KEY` is set independently of the transcription key
-- `SUMMARY_MODEL` names the Azure deployment
-- the control-plane and summary-worker were recreated after summary env changes
+- `codex login status` reports a ChatGPT login inside the worker
+- `SUMMARY_MODEL` is available to that Codex account
+- `account/rateLimits/read` returns a structured snapshot
+- `/api/admin/codex-usage` returns the latest sanitized seven-day snapshot after admin login
+- the Azure summary endpoint/key pair is either both configured or both absent
+- the summary worker was rebuilt and recreated after code or model changes
 
 ### Chinese upload file names look wrong
 

@@ -65,7 +65,7 @@ const withRetry = async <T>(operation: () => Promise<T>, attempts: number, delay
   throw lastError;
 };
 
-export const CURRENT_SCHEMA_MIGRATION = '20260805-runtime-hardening-v1';
+export const CURRENT_SCHEMA_MIGRATION = '20260806-summary-fallback-request-binding-v1';
 
 type MigrationClient = {
   query: <TRow extends Record<string, unknown>>(

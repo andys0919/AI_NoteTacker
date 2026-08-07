@@ -1,5 +1,10 @@
 # Change: Use MAI-Transcribe 1.5 with separate Luna polishing and summary
 
+> **Historical implementation note (2026-08-06):**
+> `simplify-mai-transcription-pipeline` removed Luna polishing, and
+> `use-local-codex-summaries` replaces the Azure-hosted summary transport.
+> MAI transcription evidence below remains valid; its active Luna routing does not.
+
 ## Why
 
 Blind validation on the correct HDD meeting WAV showed that

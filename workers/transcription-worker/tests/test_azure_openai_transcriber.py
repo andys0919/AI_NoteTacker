@@ -17,6 +17,41 @@ class _FakeResponse(io.BytesIO):
 
 
 class AzureOpenAiTranscriberTests(unittest.TestCase):
+    def test_audits_the_actual_runtime_model_before_provider_contact(self) -> None:
+        updates = []
+
+        def fake_urlopen(_http_request, timeout=None):
+            response = _FakeResponse(
+                json.dumps({"language": "zh", "text": "逐字稿"}).encode("utf-8")
+            )
+            response.status = 200
+            response.headers = {"apim-request-id": "azure-transcribe-1"}
+            return response
+
+        transcriber = AzureOpenAiTranscriber(
+            endpoint="https://azure.example.test",
+            deployment="gpt-4o-transcribe",
+            api_key="secret",
+            urlopen=fake_urlopen,
+            upload_plan_builder=lambda path: [
+                {"path": path, "start_ms": 0, "end_ms": 1_250, "cleanup": False}
+            ],
+        )
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as source:
+            source.write(b"source")
+            source_path = source.name
+
+        try:
+            transcriber.transcribe(source_path, on_provider_request=updates.append)
+        finally:
+            os.remove(source_path)
+
+        self.assertEqual([update["action"] for update in updates], ["start", "finish"])
+        self.assertEqual(updates[0]["model"], "gpt-4o-transcribe")
+        self.assertEqual(updates[0]["audioMs"], 1_250)
+        self.assertEqual(updates[1]["providerRequestId"], "azure-transcribe-1")
+        self.assertEqual(updates[1]["usage"], {"audioMs": 1_250})
+
     def test_applies_configured_socket_operation_timeout(self) -> None:
         captured = {}
 

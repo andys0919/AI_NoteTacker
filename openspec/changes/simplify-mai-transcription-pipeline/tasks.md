@@ -25,5 +25,9 @@
 - [x] 3.3 Deploy the approved `high` summary effort and verify the live worker.
 - [x] 3.4 Verify the resolved recording-worker environment excludes AI, admin,
   and sharing credentials without printing secret values.
-- [ ] 3.5 Deploy the approved `max` summary effort after the summary-key rotation
-  gate and verify the live worker.
+- [x] 3.5 Supersede the Azure-primary `max` deployment gate with the verified
+  2026-08-06 Local Codex `max` deployment in `use-local-codex-summaries`.
+- [ ] 3.6 Revoke or rotate the historically exposed Azure summary credential
+  before treating the quota-only fallback credential as safe. This remains a
+  separately authorized security action; implementation ticket #8 does not
+  read, validate, modify, or rotate the credential.

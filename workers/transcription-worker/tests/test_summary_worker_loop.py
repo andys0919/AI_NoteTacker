@@ -1,16 +1,23 @@
 import time
 import unittest
 
+from transcription_worker.azure_openai_transcript_summarizer import AzureOpenAiSummaryError
 from transcription_worker.summary_worker_loop import run_summary_worker_iteration
 
 
 class FakeSummaryClient:
-    def __init__(self, claimed_job):
+    def __init__(self, claimed_job, fallback_reserved=True):
         self.claimed_job = claimed_job
+        self.fallback_reserved = fallback_reserved
+        self.fallback_reservations = []
         self.events = []
         self.heartbeats = []
+        self.provider_request_starts = []
+        self.provider_request_finishes = []
+        self.codex_usage_reports = []
 
-    def claim_next_summary_job(self, worker_id):
+    def claim_next_summary_job(self, worker_id, codex_usage=None):
+        self.codex_usage_reports.append(codex_usage)
         return self.claimed_job
 
     def post_job_event(self, job_id, payload, lease_token=None):
@@ -18,8 +25,20 @@ class FakeSummaryClient:
             payload = {**payload, "leaseToken": lease_token}
         self.events.append((job_id, payload))
 
+    def reserve_summary_fallback(self, job_id, lease_token):
+        self.fallback_reservations.append((job_id, lease_token))
+        return self.fallback_reserved
+
     def post_lease_heartbeat(self, job_id, stage, lease_token=None):
         self.heartbeats.append((job_id, stage, lease_token))
+
+    def start_provider_request(self, job_id, request_id, **payload):
+        self.provider_request_starts.append((job_id, request_id, payload))
+        return {"created": True}
+
+    def finish_provider_request(self, job_id, request_id, **payload):
+        self.provider_request_finishes.append((job_id, request_id, payload))
+        return {}
 
 
 class FailOnceSummaryEventClient(FakeSummaryClient):
@@ -42,7 +61,13 @@ class FakeSummarizer:
         self.summary_profiles = []
         self.model_overrides = []
 
-    def summarize(self, transcript_result, summary_profile="general", model_override=None):
+    def summarize(
+        self,
+        transcript_result,
+        summary_profile="general",
+        model_override=None,
+        on_provider_request=None,
+    ):
         self.inputs.append(transcript_result)
         self.summary_profiles.append(summary_profile)
         self.model_overrides.append(model_override)
@@ -71,7 +96,13 @@ class SlowSummarizer(FakeSummarizer):
         )
         self.delay_seconds = delay_seconds
 
-    def summarize(self, transcript_result, summary_profile="general", model_override=None):
+    def summarize(
+        self,
+        transcript_result,
+        summary_profile="general",
+        model_override=None,
+        on_provider_request=None,
+    ):
         self.inputs.append(transcript_result)
         self.summary_profiles.append(summary_profile)
         self.model_overrides.append(model_override)
@@ -79,21 +110,64 @@ class SlowSummarizer(FakeSummarizer):
         return self.summary_result
 
 
-class MeteredSummaryError(RuntimeError):
-    def __init__(self, message, usage):
-        super().__init__(message)
-        self.usage = usage
+class AuditedSummarizer(FakeSummarizer):
+    def summarize(
+        self,
+        transcript_result,
+        summary_profile="general",
+        model_override=None,
+        on_provider_request=None,
+    ):
+        on_provider_request(
+            {
+                "action": "start",
+                "requestId": "request-summary-worker-1",
+                "provider": "local-codex",
+                "model": model_override,
+                "operation": "summary",
+            }
+        )
+        on_provider_request(
+            {
+                "action": "finish",
+                "requestId": "request-summary-worker-1",
+                "status": "succeeded",
+                "usage": {
+                    "inputTokens": 100,
+                    "cachedInputTokens": 20,
+                    "outputTokens": 30,
+                    "reasoningOutputTokens": 5,
+                    "totalTokens": 130,
+                },
+            }
+        )
+        return super().summarize(
+            transcript_result,
+            summary_profile=summary_profile,
+            model_override=model_override,
+            on_provider_request=on_provider_request,
+        )
 
 
 class RunSummaryWorkerIterationTests(unittest.TestCase):
     def test_returns_idle_when_no_summary_job_is_available(self) -> None:
+        client = FakeSummaryClient(None)
+        codex_usage = {
+            "status": "available",
+            "usedPercent": 12,
+            "windowDurationMins": 10_080,
+            "resetsAt": 1_786_680_000,
+            "checkedAt": "2026-08-07T04:00:00+00:00",
+        }
         result = run_summary_worker_iteration(
             worker_id="summary-alpha",
-            client=FakeSummaryClient(None),
+            client=client,
             summarizer=FakeSummarizer(),
+            codex_usage=codex_usage,
         )
 
         self.assertEqual(result, {"kind": "idle"})
+        self.assertEqual(client.codex_usage_reports, [codex_usage])
 
     def test_claims_summary_work_and_posts_summary_artifact(self) -> None:
         client = FakeSummaryClient(
@@ -101,7 +175,7 @@ class RunSummaryWorkerIterationTests(unittest.TestCase):
                 "id": "job_summary",
                 "leaseToken": "lease_summary_1",
                 "summaryProfile": "sales",
-                "summaryProvider": "azure-openai",
+                "summaryProvider": "local-codex",
                 "summaryModel": "gpt-5.4-nano",
                 "transcriptArtifact": {
                     "language": "zh",
@@ -144,15 +218,6 @@ class RunSummaryWorkerIterationTests(unittest.TestCase):
                     "risks": [],
                     "open_questions": [],
                 },
-                "usage": {
-                    "prompt_tokens": 120,
-                    "cached_prompt_tokens": 20,
-                    "completion_tokens": 80,
-                    "reasoning_completion_tokens": 30,
-                    "total_tokens": 200,
-                    "provider_request_count": 2,
-                    "unmetered_request_count": 1,
-                },
             }
         )
 
@@ -166,6 +231,7 @@ class RunSummaryWorkerIterationTests(unittest.TestCase):
         self.assertEqual(summarizer.summary_profiles, ["sales"])
         self.assertEqual(summarizer.model_overrides, ["gpt-5.4-nano"])
         self.assertEqual(client.events[0][1]["type"], "summary-artifact-stored")
+        self.assertEqual(client.events[0][1]["actualProvider"], "local-codex")
         self.assertEqual(client.events[0][1]["leaseToken"], "lease_summary_1")
         self.assertEqual(
             client.events[0][1]["summaryArtifact"]["structured"]["topics"][0]["status"],
@@ -181,18 +247,320 @@ class RunSummaryWorkerIterationTests(unittest.TestCase):
             client.events[0][1]["summaryArtifact"]["structured"]["analysisNotes"],
             ["正式日期仍是執行依賴。"],
         )
-        self.assertEqual(
-            client.events[0][1]["usage"],
+        self.assertNotIn("usage", client.events[0][1])
+
+    def test_tracks_local_codex_subscription_request_before_terminal_callback(self) -> None:
+        client = FakeSummaryClient(
             {
-                "promptTokens": 120,
-                "cachedPromptTokens": 20,
-                "completionTokens": 80,
-                "reasoningCompletionTokens": 30,
-                "totalTokens": 200,
-                "providerRequestCount": 2,
-                "unmeteredRequestCount": 1,
+                "id": "job_summary_audited",
+                "leaseToken": "lease_summary_audited",
+                "summaryModel": "gpt-5.6-luna",
+                "transcriptArtifact": {
+                    "language": "zh",
+                    "segments": [{"startMs": 0, "endMs": 1_000, "text": "摘要"}],
+                },
+            }
+        )
+        summarizer = AuditedSummarizer(
+            {
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "max",
+                "text": "Audited summary",
+                "structured": {
+                    "summary": "Audited summary",
+                    "key_points": [],
+                    "action_items": [],
+                    "decisions": [],
+                    "risks": [],
+                    "open_questions": [],
+                },
+            }
+        )
+
+        result = run_summary_worker_iteration(
+            worker_id="summary-alpha",
+            client=client,
+            summarizer=summarizer,
+        )
+
+        self.assertEqual(
+            result, {"kind": "processed", "job_id": "job_summary_audited"}
+        )
+        self.assertEqual(
+            client.provider_request_starts[0][2]["provider"], "local-codex"
+        )
+        self.assertEqual(
+            client.provider_request_finishes[0][2]["usage"]["totalTokens"], 130
+        )
+        self.assertEqual(
+            client.events[0][1]["requestAuditIds"], ["request-summary-worker-1"]
+        )
+
+    def test_uses_azure_once_when_structured_preflight_reports_exhaustion(self) -> None:
+        client = FakeSummaryClient(
+            {
+                "id": "job_summary_quota",
+                "leaseToken": "lease_summary_quota",
+                "summaryModel": "gpt-5.6-luna",
+                "transcriptArtifact": {
+                    "language": "zh",
+                    "segments": [{"startMs": 0, "endMs": 1000, "text": "額度測試"}],
+                },
+            }
+        )
+        local = FakeSummarizer(error=RuntimeError("local should not run"))
+        azure = FakeSummarizer(
+            {
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "max",
+                "text": "Azure fallback summary",
+                "structured": {
+                    "summary": "Azure fallback summary",
+                    "key_points": [],
+                    "action_items": [],
+                    "decisions": [],
+                    "risks": [],
+                    "open_questions": [],
+                },
+                "usage": {
+                    "prompt_tokens": 10,
+                    "cached_prompt_tokens": 2,
+                    "cache_write_prompt_tokens": 1,
+                    "completion_tokens": 5,
+                    "reasoning_completion_tokens": 1,
+                    "total_tokens": 15,
+                    "provider_request_count": 1,
+                    "unmetered_request_count": 0,
+                },
+            }
+        )
+
+        result = run_summary_worker_iteration(
+            worker_id="summary-alpha",
+            client=client,
+            summarizer=local,
+            azure_fallback_summarizer=azure,
+            quota_is_exhausted=lambda: True,
+        )
+
+        self.assertEqual(result, {"kind": "processed", "job_id": "job_summary_quota"})
+        self.assertEqual(local.inputs, [])
+        self.assertEqual(len(azure.inputs), 1)
+        self.assertEqual(
+            client.fallback_reservations,
+            [("job_summary_quota", "lease_summary_quota")],
+        )
+        self.assertEqual(azure.model_overrides, ["gpt-5.6-luna"])
+        self.assertEqual(client.events[0][1]["actualProvider"], "azure-openai")
+        self.assertEqual(client.events[0][1]["usage"]["providerRequestCount"], 1)
+        self.assertEqual(client.events[0][1]["usage"]["cacheWritePromptTokens"], 1)
+
+    def test_does_not_fall_back_after_a_generic_local_failure(self) -> None:
+        client = FakeSummaryClient(
+            {
+                "id": "job_summary_quota_race",
+                "leaseToken": "lease_summary_quota_race",
+                "transcriptArtifact": {
+                    "language": "en",
+                    "segments": [{"startMs": 0, "endMs": 1000, "text": "quota race"}],
+                },
+            }
+        )
+        local = FakeSummarizer(error=RuntimeError("turn failed"))
+        azure = FakeSummarizer(
+            {
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "max",
+                "text": "Fallback",
+                "structured": {
+                    "summary": "Fallback",
+                    "key_points": [],
+                    "action_items": [],
+                    "decisions": [],
+                    "risks": [],
+                    "open_questions": [],
+                },
+            }
+        )
+        quota_checks = []
+
+        result = run_summary_worker_iteration(
+            worker_id="summary-alpha",
+            client=client,
+            summarizer=local,
+            azure_fallback_summarizer=azure,
+            quota_is_exhausted=lambda: quota_checks.append(False) or False,
+        )
+
+        self.assertEqual(
+            result, {"kind": "failed", "job_id": "job_summary_quota_race"}
+        )
+        self.assertEqual(len(local.inputs), 1)
+        self.assertEqual(azure.inputs, [])
+        self.assertEqual(len(quota_checks), 1)
+        self.assertEqual(client.events[0][1]["actualProvider"], "local-codex")
+
+    def test_does_not_repeat_an_already_reserved_azure_fallback(self) -> None:
+        client = FakeSummaryClient(
+            {
+                "id": "job_summary_reclaimed",
+                "leaseToken": "lease_summary_reclaimed",
+                "transcriptArtifact": {
+                    "language": "en",
+                    "segments": [{"startMs": 0, "endMs": 1000, "text": "retry"}],
+                },
+            },
+            fallback_reserved=False,
+        )
+        azure = FakeSummarizer()
+
+        result = run_summary_worker_iteration(
+            worker_id="summary-alpha",
+            client=client,
+            summarizer=FakeSummarizer(),
+            azure_fallback_summarizer=azure,
+            quota_is_exhausted=lambda: True,
+        )
+
+        self.assertEqual(
+            result, {"kind": "failed", "job_id": "job_summary_reclaimed"}
+        )
+        self.assertEqual(azure.inputs, [])
+        self.assertEqual(client.events[0][1]["actualProvider"], "local-codex")
+
+    def test_reports_an_unmetered_failed_azure_fallback(self) -> None:
+        client = FakeSummaryClient(
+            {
+                "id": "job_summary_azure_failure",
+                "leaseToken": "lease_summary_azure_failure",
+                "transcriptArtifact": {
+                    "language": "en",
+                    "segments": [{"startMs": 0, "endMs": 1000, "text": "failure"}],
+                },
+            }
+        )
+        azure_error = AzureOpenAiSummaryError(
+            "Azure request failed",
+            {
+                "prompt_tokens": 0,
+                "cached_prompt_tokens": 0,
+                "completion_tokens": 0,
+                "reasoning_completion_tokens": 0,
+                "total_tokens": 0,
+                "provider_request_count": 1,
+                "unmetered_request_count": 1,
             },
         )
+
+        class AuditedAzureFailure(FakeSummarizer):
+            def summarize(self, *args, on_provider_request=None, **kwargs):
+                on_provider_request(
+                    {
+                        "action": "start",
+                        "requestId": "request-azure-summary-failed",
+                        "provider": "azure-openai",
+                        "model": "gpt-5.6-luna",
+                        "operation": "summary",
+                    }
+                )
+                on_provider_request(
+                    {
+                        "action": "finish",
+                        "requestId": "request-azure-summary-failed",
+                        "status": "failed",
+                        "errorCode": "TimeoutError",
+                    }
+                )
+                raise self.error
+
+        result = run_summary_worker_iteration(
+            worker_id="summary-alpha",
+            client=client,
+            summarizer=FakeSummarizer(),
+            azure_fallback_summarizer=AuditedAzureFailure(error=azure_error),
+            quota_is_exhausted=lambda: True,
+        )
+
+        self.assertEqual(
+            result, {"kind": "failed", "job_id": "job_summary_azure_failure"}
+        )
+        self.assertEqual(client.events[0][1]["actualProvider"], "azure-openai")
+        self.assertEqual(
+            client.events[0][1]["requestAuditIds"],
+            ["request-azure-summary-failed"],
+        )
+        self.assertEqual(client.events[0][1]["usage"]["providerRequestCount"], 1)
+        self.assertEqual(client.events[0][1]["usage"]["unmeteredRequestCount"], 1)
+
+    def test_omits_azure_attribution_when_fallback_fails_before_request_audit(self) -> None:
+        client = FakeSummaryClient(
+            {
+                "id": "job_summary_azure_preflight_failure",
+                "leaseToken": "lease_summary_azure_preflight_failure",
+                "transcriptArtifact": {
+                    "language": "en",
+                    "segments": [{"startMs": 0, "endMs": 1000, "text": "failure"}],
+                },
+            }
+        )
+        error = AzureOpenAiSummaryError(
+            "request audit unavailable",
+            {
+                "prompt_tokens": 0,
+                "cached_prompt_tokens": 0,
+                "completion_tokens": 0,
+                "reasoning_completion_tokens": 0,
+                "total_tokens": 0,
+                "provider_request_count": 1,
+                "unmetered_request_count": 1,
+            },
+        )
+
+        result = run_summary_worker_iteration(
+            worker_id="summary-alpha",
+            client=client,
+            summarizer=FakeSummarizer(),
+            azure_fallback_summarizer=FakeSummarizer(error=error),
+            quota_is_exhausted=lambda: True,
+        )
+
+        self.assertEqual(
+            result,
+            {"kind": "failed", "job_id": "job_summary_azure_preflight_failure"},
+        )
+        self.assertNotIn("actualProvider", client.events[0][1])
+        self.assertNotIn("usage", client.events[0][1])
+        self.assertNotIn("requestAuditIds", client.events[0][1])
+
+    def test_does_not_fall_back_for_a_generic_local_failure(self) -> None:
+        client = FakeSummaryClient(
+            {
+                "id": "job_summary_generic_failure",
+                "leaseToken": "lease_summary_generic_failure",
+                "transcriptArtifact": {
+                    "language": "en",
+                    "segments": [{"startMs": 0, "endMs": 1000, "text": "failure"}],
+                },
+            }
+        )
+        local = FakeSummarizer(error=RuntimeError("authentication failed"))
+        azure = FakeSummarizer()
+        quota_checks = []
+
+        result = run_summary_worker_iteration(
+            worker_id="summary-alpha",
+            client=client,
+            summarizer=local,
+            azure_fallback_summarizer=azure,
+            quota_is_exhausted=lambda: quota_checks.append(False) or False,
+        )
+
+        self.assertEqual(
+            result, {"kind": "failed", "job_id": "job_summary_generic_failure"}
+        )
+        self.assertEqual(len(quota_checks), 1)
+        self.assertEqual(azure.inputs, [])
+        self.assertEqual(client.events[0][1]["actualProvider"], "local-codex")
 
     def test_passes_display_text_and_unresolved_review_flags_to_the_summarizer(self) -> None:
         client = FakeSummaryClient(
@@ -288,50 +656,6 @@ class RunSummaryWorkerIterationTests(unittest.TestCase):
         self.assertEqual(client.events[0][1]["type"], "summary-failed")
         self.assertEqual(client.events[0][1]["leaseToken"], "lease_summary_fail")
 
-    def test_posts_valid_provider_usage_with_a_failed_summary(self) -> None:
-        client = FakeSummaryClient(
-            {
-                "id": "job_summary_metered_fail",
-                "leaseToken": "lease_summary_metered_fail",
-                "summaryProvider": "azure-openai",
-                "summaryModel": "gpt-5.6-luna",
-                "transcriptArtifact": {
-                    "language": "en",
-                    "segments": [{"startMs": 0, "endMs": 1000, "text": "hello"}],
-                },
-            }
-        )
-        summarizer = FakeSummarizer(
-            error=MeteredSummaryError(
-                "summary JSON was invalid",
-                {
-                    "input_tokens": 120,
-                    "cached_input_tokens": 20,
-                    "output_tokens": 80,
-                    "reasoning_output_tokens": 30,
-                    "total_tokens": 200,
-                },
-            )
-        )
-
-        result = run_summary_worker_iteration(
-            worker_id="summary-alpha",
-            client=client,
-            summarizer=summarizer,
-        )
-
-        self.assertEqual(result, {"kind": "failed", "job_id": "job_summary_metered_fail"})
-        self.assertEqual(
-            client.events[0][1]["usage"],
-            {
-                "promptTokens": 120,
-                "cachedPromptTokens": 20,
-                "completionTokens": 80,
-                "reasoningCompletionTokens": 30,
-                "totalTokens": 200,
-            },
-        )
-
     def test_retries_the_exact_success_callback_instead_of_sending_summary_failed(self) -> None:
         client = FailOnceSummaryEventClient(
             {
@@ -355,13 +679,6 @@ class RunSummaryWorkerIterationTests(unittest.TestCase):
                     "decisions": [],
                     "risks": [],
                     "open_questions": [],
-                },
-                "usage": {
-                    "prompt_tokens": 1,
-                    "cached_prompt_tokens": 0,
-                    "completion_tokens": 1,
-                    "reasoning_completion_tokens": 0,
-                    "total_tokens": 2,
                 },
             }
         )

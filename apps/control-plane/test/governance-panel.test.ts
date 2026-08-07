@@ -7,11 +7,41 @@ import {
   getAdminGovernanceViewModel,
   getAuditEntryViewModels,
   getCloudCostDisplayModel,
+  getCodexWeeklyUsageViewModel,
   getUsageHistoryCostViewModel,
   getUsageReportRowViewModels
 } from '../public/governance-panel.js';
 
 describe('governance panel helpers', () => {
+  it('formats provider-reported Codex weekly usage without inventing missing data', () => {
+    expect(
+      getCodexWeeklyUsageViewModel(
+        {
+          status: 'available',
+          planType: 'team',
+          usedPercent: 37.5,
+          resetsAt: 1_786_680_000,
+          checkedAt: '2026-08-07T04:00:00.000Z'
+        },
+        (value) => value
+      )
+    ).toMatchObject({
+      available: true,
+      headline: '本週剩餘 62.5%',
+      statusText: 'ChatGPT Business',
+      usedText: '37.5%',
+      remainingText: '62.5%',
+      checkedText: '2026-08-07T04:00:00.000Z'
+    });
+
+    expect(getCodexWeeklyUsageViewModel({ status: 'unavailable' })).toMatchObject({
+      available: false,
+      headline: '暫時無法取得每週額度',
+      usedText: '—',
+      remainingText: '—'
+    });
+  });
+
   it('formats provider labels for transcription and summary routes', () => {
     expect(formatProviderLabel('self-hosted-whisper')).toBe('Whisper 自架');
     expect(formatProviderLabel('qwen3-asr-1.7b')).toBe('Qwen3-ASR 1.7B');
@@ -19,8 +49,7 @@ describe('governance panel helpers', () => {
       'Azure Speech MAI 1.5'
     );
     expect(formatProviderLabel('azure-openai-gpt-4o-transcribe')).toBe('Azure OpenAI');
-    expect(formatSummaryModeLabel('local-codex')).toBe('地端 Codex');
-    expect(formatSummaryModeLabel('azure-openai')).toBe('雲端');
+    expect(formatSummaryModeLabel('local-codex')).toBe('本機 Codex');
   });
 
   it('formats known cost separately from unpriced usage', () => {
@@ -119,6 +148,48 @@ describe('governance panel helpers', () => {
     });
   });
 
+  it('separates subscription request usage from Azure API spend', () => {
+    const model = getUsageHistoryCostViewModel({
+      byModel: [
+        {
+          model: 'gpt-5.6-luna',
+          stage: 'summary',
+          billingClass: 'subscription',
+          totalCostUsd: 0,
+          hasUnpricedUsage: false
+        }
+      ],
+      entries: [
+        {
+          id: 'request-local-1',
+          recordKind: 'provider-request',
+          stage: 'summary',
+          requestStatus: 'succeeded',
+          pricingStatus: 'not-applicable',
+          costUsd: null
+        },
+        {
+          id: 'request-azure-1',
+          recordKind: 'provider-request',
+          stage: 'summary',
+          requestStatus: 'started',
+          pricingStatus: 'pending',
+          costUsd: null
+        }
+      ]
+    });
+
+    expect(model.byModel[0].costLabel).toBe('不計 Azure API 費');
+    expect(model.entries[0]).toMatchObject({
+      requestStatusLabel: '成功',
+      costLabel: '訂閱／自架，不計 Azure API 費'
+    });
+    expect(model.entries[1]).toMatchObject({
+      requestStatusLabel: '進行中',
+      costLabel: '待結算'
+    });
+  });
+
   it('builds an enabled admin governance view model when providers are ready', () => {
     const model = getAdminGovernanceViewModel({
       state: {
@@ -128,14 +199,11 @@ describe('governance panel helpers', () => {
           { value: 'self-hosted-whisper', ready: true },
           { value: 'azure-openai-gpt-4o-transcribe', ready: true }
         ],
-        summaryOptions: [
-          { value: 'local-codex', ready: true },
-          { value: 'azure-openai', ready: true }
-        ],
+        summaryOptions: [{ value: 'local-codex', ready: true }],
         overrides: [{ submitterId: 'user-1', dailyQuotaUsd: 2 }]
       },
       selectedTranscriptionProvider: 'azure-openai-gpt-4o-transcribe',
-      selectedSummaryProvider: 'azure-openai',
+      selectedSummaryProvider: 'local-codex',
       transcriptionModelInput: 'gpt-4o-transcribe',
       summaryModelInput: 'gpt-5.4-nano',
       pricingVersionInput: 'v1',
@@ -143,7 +211,7 @@ describe('governance panel helpers', () => {
       overrideQuotaInput: '2.5'
     });
 
-    expect(model.currentLabel).toBe('Whisper 自架 / 地端 Codex');
+    expect(model.currentLabel).toBe('Whisper 自架 / 本機 Codex');
     expect(model.pillText).toBe('可用');
     expect(model.pillTone).toBe('ready');
     expect(model.submitDisabled).toBe(false);
@@ -165,14 +233,11 @@ describe('governance panel helpers', () => {
             reason: 'Azure transcription is not configured.'
           }
         ],
-        summaryOptions: [
-          { value: 'local-codex', ready: true },
-          { value: 'azure-openai', ready: true }
-        ],
+        summaryOptions: [{ value: 'local-codex', ready: true }],
         overrides: []
       },
       selectedTranscriptionProvider: 'azure-openai-gpt-4o-transcribe',
-      selectedSummaryProvider: 'azure-openai',
+      selectedSummaryProvider: 'local-codex',
       transcriptionModelInput: 'gpt-4o-transcribe',
       summaryModelInput: 'gpt-5.4-nano',
       pricingVersionInput: 'v1',
@@ -189,7 +254,7 @@ describe('governance panel helpers', () => {
     expect(model.summaryModelInputDisabled).toBe(false);
   });
 
-  it('does not require a summary model when local codex is selected', () => {
+  it('requires an explicit local Codex summary model', () => {
     const model = getAdminGovernanceViewModel({
       state: {
         transcriptionProvider: 'self-hosted-whisper',
@@ -200,28 +265,6 @@ describe('governance panel helpers', () => {
       },
       selectedTranscriptionProvider: 'self-hosted-whisper',
       selectedSummaryProvider: 'local-codex',
-      transcriptionModelInput: 'large-v3',
-      summaryModelInput: '',
-      pricingVersionInput: 'v1',
-      overrideSubmitterId: '',
-      overrideQuotaInput: ''
-    });
-
-    expect(model.submitDisabled).toBe(false);
-    expect(model.summaryModelInputDisabled).toBe(true);
-  });
-
-  it('requires a summary model when cloud summary is selected', () => {
-    const model = getAdminGovernanceViewModel({
-      state: {
-        transcriptionProvider: 'self-hosted-whisper',
-        summaryProvider: 'azure-openai',
-        transcriptionOptions: [{ value: 'self-hosted-whisper', ready: true }],
-        summaryOptions: [{ value: 'azure-openai', ready: true }],
-        overrides: []
-      },
-      selectedTranscriptionProvider: 'self-hosted-whisper',
-      selectedSummaryProvider: 'azure-openai',
       transcriptionModelInput: 'large-v3',
       summaryModelInput: '',
       pricingVersionInput: 'v1',

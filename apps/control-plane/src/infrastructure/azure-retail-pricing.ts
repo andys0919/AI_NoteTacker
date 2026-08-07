@@ -8,12 +8,6 @@ const AZURE_RETAIL_PRICES_ENDPOINT =
 const AZURE_RETAIL_PRICING_REFRESH_MS = 24 * 60 * 60 * 1_000;
 const AZURE_RETAIL_PRICING_TIMEOUT_MS = 10_000;
 const MAI_METER_ID = 'e366297b-9194-5c2f-91f9-2b6472d890b3';
-const LUNA_SKUS = {
-  input: '5.6 luna ShortCo Inp Std Gl',
-  cachedInput: '5.6 luna ShortCo Cd Inp Std Gl',
-  cacheWrite: '5.6 luna ShortCo Cd Wr Std Gl',
-  output: '5.6 luna ShortCo Opt Std Gl'
-} as const;
 
 type RetailPriceItem = Record<string, unknown>;
 type RetailPriceResponse = {
@@ -35,11 +29,6 @@ const buildRetailPriceUrl = (
   url.searchParams.set('$filter', filter);
   return url.toString();
 };
-
-export const AZURE_LUNA_RETAIL_PRICE_URL = buildRetailPriceUrl(
-  "productName eq 'Azure OpenAI GPT5' and priceType eq 'Consumption' " +
-    "and contains(skuName, '5.6 luna ShortCo') and contains(skuName, 'Std Gl')"
-);
 
 export const AZURE_MAI_RETAIL_PRICE_URL = buildRetailPriceUrl(
   `meterId eq '${MAI_METER_ID}' and armRegionName eq 'southeastasia' ` +
@@ -105,97 +94,6 @@ const readItems = async (
   return payload.Items as RetailPriceItem[];
 };
 
-const readConsistentRate = (
-  items: RetailPriceItem[],
-  skuName: string,
-  effectiveDate: string
-): number | undefined => {
-  const rows = items.filter(
-    (item) =>
-      item.skuName === skuName &&
-      readEffectiveDate(item)?.date === effectiveDate
-  );
-  const rates = rows.map(readRetailPrice);
-  if (rates.length === 0 || rates.some((rate) => rate === undefined)) {
-    return undefined;
-  }
-
-  const uniqueRates = new Set(rates as number[]);
-  return uniqueRates.size === 1 ? rates[0] : undefined;
-};
-
-const parseLunaPricing = (
-  items: RetailPriceItem[],
-  now: Date
-): AzureRetailPricingSnapshot['luna'] => {
-  const skuNames = new Set<string>(Object.values(LUNA_SKUS));
-  const exactRows = items.filter((item) => skuNames.has(String(item.skuName)));
-  if (
-    exactRows.length === 0 ||
-    exactRows.some(
-      (item) =>
-        item.currencyCode !== 'USD' ||
-        item.productName !== 'Azure OpenAI GPT5' ||
-        item.type !== 'Consumption' ||
-        item.unitOfMeasure !== '1M' ||
-        !readEffectiveDate(item)
-    )
-  ) {
-    throw new Error('Azure Luna retail meters have an invalid identity');
-  }
-
-  const effectiveDate = exactRows
-    .map(readEffectiveDate)
-    .filter(
-      (value): value is { date: string; timestamp: number } =>
-        value !== undefined && value.timestamp <= now.getTime()
-    )
-    .map((value) => value.date)
-    .sort()
-    .at(-1);
-  if (!effectiveDate) {
-    throw new Error('Azure Luna retail meters are not yet effective');
-  }
-
-  const inputUsdPerMillionTokens = readConsistentRate(
-    exactRows,
-    LUNA_SKUS.input,
-    effectiveDate
-  );
-  const cachedInputUsdPerMillionTokens = readConsistentRate(
-    exactRows,
-    LUNA_SKUS.cachedInput,
-    effectiveDate
-  );
-  const cacheWriteUsdPerMillionTokens = readConsistentRate(
-    exactRows,
-    LUNA_SKUS.cacheWrite,
-    effectiveDate
-  );
-  const outputUsdPerMillionTokens = readConsistentRate(
-    exactRows,
-    LUNA_SKUS.output,
-    effectiveDate
-  );
-  if (
-    inputUsdPerMillionTokens === undefined ||
-    cachedInputUsdPerMillionTokens === undefined ||
-    cacheWriteUsdPerMillionTokens === undefined ||
-    outputUsdPerMillionTokens === undefined
-  ) {
-    throw new Error('Azure Luna retail meters are incomplete or inconsistent');
-  }
-
-  return {
-    effectiveDate,
-    meterSource: AZURE_LUNA_RETAIL_PRICE_URL,
-    inputUsdPerMillionTokens,
-    cachedInputUsdPerMillionTokens,
-    cacheWriteUsdPerMillionTokens,
-    outputUsdPerMillionTokens
-  };
-};
-
 const parseMaiMeter = (
   items: RetailPriceItem[],
   now: Date,
@@ -254,8 +152,7 @@ export const refreshAzureRetailPricing = async (
   const fetcher = options.fetcher ?? fetch;
   const now = options.now ?? new Date();
   const timeoutMs = options.timeoutMs ?? AZURE_RETAIL_PRICING_TIMEOUT_MS;
-  const [lunaItems, maiItems, twdItems] = await Promise.all([
-    readItems(AZURE_LUNA_RETAIL_PRICE_URL, fetcher, timeoutMs),
+  const [maiItems, twdItems] = await Promise.all([
     readItems(AZURE_MAI_RETAIL_PRICE_URL, fetcher, timeoutMs),
     readItems(AZURE_MAI_TWD_RETAIL_PRICE_URL, fetcher, timeoutMs)
   ]);
@@ -268,7 +165,6 @@ export const refreshAzureRetailPricing = async (
     throw new Error('Azure MAI USD retail rate cannot derive a TWD reference');
   }
   const snapshot = {
-    luna: parseLunaPricing(lunaItems, now),
     mai: {
       effectiveDate: maiMeter.effectiveDate,
       meterSource: AZURE_MAI_RETAIL_PRICE_URL,
@@ -294,11 +190,6 @@ const refreshAndLog = async (): Promise<void> => {
     console.info(
       '[control-plane] Azure retail pricing refreshed',
       JSON.stringify({
-        lunaEffectiveDate: snapshot.luna.effectiveDate,
-        lunaInput: snapshot.luna.inputUsdPerMillionTokens,
-        lunaCachedInput: snapshot.luna.cachedInputUsdPerMillionTokens,
-        lunaCacheWrite: snapshot.luna.cacheWriteUsdPerMillionTokens,
-        lunaOutput: snapshot.luna.outputUsdPerMillionTokens,
         maiEffectiveDate: snapshot.mai.effectiveDate,
         maiUsdPerHour: snapshot.mai.usdPerHour,
         usdToTwdRate: snapshot.twd.usdToTwdRate,

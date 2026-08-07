@@ -4,8 +4,6 @@ services:
       context: .
       dockerfile: apps/control-plane/Dockerfile
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       ADMIN_CONSOLE_USERNAME: ${ADMIN_CONSOLE_USERNAME:-admin}
@@ -16,17 +14,44 @@ services:
       AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION:-2025-03-01-preview}
       AZURE_OPENAI_DEPLOYMENT: ${AZURE_OPENAI_DEPLOYMENT:-}
       AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT:-}
-      AZURE_OPENAI_SUMMARY_API_KEY: ${AZURE_OPENAI_SUMMARY_API_KEY:-}
-      AZURE_OPENAI_SUMMARY_ENDPOINT: ${AZURE_OPENAI_SUMMARY_ENDPOINT:-}
       AZURE_SPEECH_MAI_API_KEY: ${AZURE_SPEECH_MAI_API_KEY:-}
       AZURE_SPEECH_MAI_ENDPOINT: ${AZURE_SPEECH_MAI_ENDPOINT:-}
       AZURE_SPEECH_MAI_MODEL: ${AZURE_SPEECH_MAI_MODEL:-mai-transcribe-1.5}
+      AI_PRICING_VERSION: ${AI_PRICING_VERSION:-v1}
+      CLOUD_QUOTA_TIMEZONE: ${CLOUD_QUOTA_TIMEZONE:-UTC}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL for PostgreSQL persistence}
+      DEFAULT_DAILY_CLOUD_QUOTA_USD: ${DEFAULT_DAILY_CLOUD_QUOTA_USD:-5}
       DEFAULT_TRANSCRIPTION_PROVIDER: ${DEFAULT_TRANSCRIPTION_PROVIDER:-azure-speech-mai-transcribe-1.5}
       DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-cloud}
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN to a dedicated secret of at least 32 bytes}
+      LIVE_MEETING_RESERVATION_CAP_USD: ${LIVE_MEETING_RESERVATION_CAP_USD:-1.5}
+      MAX_CONCURRENT_TRANSCRIPTION_JOBS: ${MAX_CONCURRENT_TRANSCRIPTION_JOBS:-1}
+      MAX_MEETING_JOB_BACKLOG: ${MAX_MEETING_JOB_BACKLOG:-2}
+      MAX_TRANSCRIPTION_JOB_BACKLOG: ${MAX_TRANSCRIPTION_JOB_BACKLOG:-10}
+      MEETING_BOT_BASE_URL: ${MEETING_BOT_BASE_URL:-http://meeting-bot:3000}
       MEETING_SHARE_SECRET: ${MEETING_SHARE_SECRET:-}
+      MEETING_BOT_CONTROL_BASE_URL: ${MEETING_BOT_CONTROL_BASE_URL:-http://meeting-bot:3001}
+      MEETING_BOT_CONTROL_TOKEN: ${MEETING_BOT_CONTROL_TOKEN:-}
+      PERSISTENCE_DRIVER: ${PERSISTENCE_DRIVER:-postgres}
+      PORT: ${PORT:-3000}
       QWEN_ASR_ENDPOINT: ${QWEN_ASR_ENDPOINT:-}
       QWEN_ASR_MODEL: ${QWEN_ASR_MODEL:-qwen3-asr-1.7b}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-meeting-artifacts}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SUMMARY_MODEL: ${SUMMARY_MODEL:-gpt-5.6-luna}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      TZ: ${TZ:-Asia/Taipei}
+      WHISPER_MODEL: ${WHISPER_MODEL:-tiny}
     ports:
       - "3000:3000"
     healthcheck:
@@ -138,8 +163,9 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "transcription_worker.summary_main"]
     environment:
-      AZURE_OPENAI_SUMMARY_API_KEY: ${AZURE_OPENAI_SUMMARY_API_KEY:-}
-      AZURE_OPENAI_SUMMARY_ENDPOINT: ${AZURE_OPENAI_SUMMARY_ENDPOINT:-}
+      # Keep fallback code/config available, but do not enable it in production.
+      AZURE_OPENAI_SUMMARY_API_KEY: ""
+      AZURE_OPENAI_SUMMARY_ENDPOINT: ""
       AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS: ${AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS:-900}
       CODEX_CLI_PATH: ${CODEX_CLI_PATH:-codex}
       CONTROL_PLANE_BASE_URL: ${CONTROL_PLANE_BASE_URL:-http://control-plane:3000}
@@ -148,10 +174,11 @@ services:
       POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-1000}
       SUMMARY_MODEL: ${SUMMARY_MODEL:-gpt-5.6-luna}
       SUMMARY_REASONING_EFFORT: ${SUMMARY_REASONING_EFFORT:-max}
+      SUMMARY_TIMEOUT_SECONDS: ${SUMMARY_TIMEOUT_SECONDS:-900}
       WORKER_ID: summarizer-alpha
       CODEX_HOME: /codex-home
     volumes:
-      - ${CODEX_HOME}:/codex-home
+      - summary_codex_home:/codex-home
     depends_on:
       control-plane:
         condition: service_healthy
@@ -184,6 +211,9 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  summary_codex_home:
+    external: true
+    name: ai_notetacker_summary_codex_home
   qwen3_asr_cache:
     name: qwen3-asr-cache
   whisper_model_cache:

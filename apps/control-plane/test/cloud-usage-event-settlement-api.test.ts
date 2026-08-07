@@ -193,6 +193,51 @@ describe('cloud usage event settlement API', () => {
     expect(transcriptionEntry?.detail).toEqual({ audioMs: 90_000 });
   });
 
+  it('settles MAI from per-upload billed seconds', async () => {
+    const recordingJobs = new InMemoryRecordingJobRepository();
+    const cloudUsage = new InMemoryCloudUsageLedgerRepository();
+    const job = {
+      ...createAssignedCloudJob(),
+      transcriptionProvider: 'azure-speech-mai-transcribe-1.5' as const,
+      transcriptionModel: 'mai-transcribe-1.5',
+      pricingVersion: 'v1'
+    };
+    await recordingJobs.save(job);
+    const app = createApp(recordingJobs, { cloudUsageLedgerRepository: cloudUsage });
+
+    const response = await request(app)
+      .post(`/recording-jobs/${job.id}/events`)
+      .send({
+        type: 'transcript-artifact-stored',
+        leaseToken: job.transcriptionLeaseToken,
+        transcriptArtifact,
+        usage: {
+          audioMs: 109_760,
+          billedAudioMs: 110_000,
+          providerRequestCount: 4,
+          unmeteredRequestCount: 0
+        }
+      });
+
+    expect(response.status, response.text).toBe(202);
+    expect(await cloudUsage.listByJob(job.id)).toEqual([
+      expect.objectContaining({
+        stage: 'transcription',
+        provider: 'azure-speech-mai-transcribe-1.5',
+        model: 'mai-transcribe-1.5',
+        usageQuantity: 110_000,
+        pricingStatus: 'priced',
+        costUsd: 0.011,
+        detail: {
+          audioMs: 109_760,
+          billedAudioMs: 110_000,
+          providerRequestCount: 4,
+          unmeteredRequestCount: 0
+        }
+      })
+    ]);
+  });
+
   it('keeps punctuation usage unpriced when any request lacks token metering', async () => {
     const mutableCatalog = AZURE_RESPONSES_PRICING_CATALOG as AzureResponsesPricing[];
     const originalCatalog = [...mutableCatalog];
@@ -509,6 +554,219 @@ describe('cloud usage event settlement API', () => {
         }
       })
     ]);
+  });
+
+  it('settles an Azure fallback without relabeling the Local Codex primary route', async () => {
+    const recordingJobs = new InMemoryRecordingJobRepository();
+    const cloudUsage = new InMemoryCloudUsageLedgerRepository();
+    const job = assignSummaryJobToWorker(
+      attachTranscriptArtifact(
+        {
+          ...createAssignedCloudJob(),
+          summaryProvider: 'local-codex',
+          pricingVersion: 'v1'
+        },
+        transcriptArtifact
+      ),
+      'summary-worker-1'
+    );
+    await recordingJobs.save(job);
+    const app = createApp(recordingJobs, { cloudUsageLedgerRepository: cloudUsage });
+    const requestId = 'request-azure-fallback';
+
+    expect(
+      (
+        await request(app)
+          .post(`/recording-jobs/${job.id}/summary-fallback/reservations`)
+          .send({ leaseToken: job.summaryLeaseToken })
+      ).status
+    ).toBe(200);
+    expect(
+      (
+        await request(app)
+          .post(`/recording-jobs/${job.id}/provider-requests/${requestId}/start`)
+          .send({
+            stage: 'summary',
+            leaseToken: job.summaryLeaseToken,
+            provider: 'azure-openai',
+            model: job.summaryModel
+          })
+      ).status
+    ).toBe(201);
+    expect(
+      (
+        await request(app)
+          .post(`/recording-jobs/${job.id}/provider-requests/${requestId}/finish`)
+          .send({
+            leaseToken: job.summaryLeaseToken,
+            status: 'succeeded',
+            usage: {
+              inputTokens: 1_000,
+              cachedInputTokens: 200,
+              cacheWriteInputTokens: 100,
+              outputTokens: 300,
+              reasoningOutputTokens: 100,
+              totalTokens: 1_300
+            }
+          })
+      ).status
+    ).toBe(200);
+
+    const response = await request(app)
+      .post(`/recording-jobs/${job.id}/events`)
+      .send({
+        type: 'summary-artifact-stored',
+        actualProvider: 'azure-openai',
+        leaseToken: job.summaryLeaseToken,
+        requestAuditIds: [requestId],
+        summaryArtifact: {
+          model: 'gpt-5.6-luna',
+          reasoningEffort: 'max',
+          text: 'fallback 摘要'
+        },
+        usage: {
+          promptTokens: 1_000,
+          cachedPromptTokens: 200,
+          cacheWritePromptTokens: 100,
+          completionTokens: 300,
+          reasoningCompletionTokens: 100,
+          totalTokens: 1_300,
+          providerRequestCount: 1,
+          unmeteredRequestCount: 0
+        }
+      });
+
+    expect(response.status, response.text).toBe(202);
+    expect((await recordingJobs.getById(job.id))?.summaryProvider).toBe('local-codex');
+    expect(await cloudUsage.listByJob(job.id)).toEqual([]);
+    expect(await cloudUsage.listProviderRequestsByJob(job.id)).toEqual([
+      expect.objectContaining({
+        requestId,
+        provider: 'azure-openai',
+        model: 'gpt-5.6-luna',
+        pricingVersion: 'v1',
+        usageQuantity: 1_300,
+        pricingStatus: 'priced',
+        costUsd: 0.002645,
+        detail: expect.objectContaining({ cacheWriteInputTokens: 100 })
+      })
+    ]);
+  });
+
+  it('rejects incomplete or unmetered Azure fallback success accounting', async () => {
+    const recordingJobs = new InMemoryRecordingJobRepository();
+    const cloudUsage = new InMemoryCloudUsageLedgerRepository();
+    const job = assignSummaryJobToWorker(
+      attachTranscriptArtifact(
+        {
+          ...createAssignedCloudJob(),
+          summaryProvider: 'local-codex',
+          pricingVersion: 'v1'
+        },
+        transcriptArtifact
+      ),
+      'summary-worker-1'
+    );
+    await recordingJobs.save(job);
+    const app = createApp(recordingJobs, { cloudUsageLedgerRepository: cloudUsage });
+    const baseUsage = {
+      promptTokens: 1_000,
+      cachedPromptTokens: 200,
+      completionTokens: 300,
+      reasoningCompletionTokens: 100,
+      totalTokens: 1_300
+    };
+
+    for (const usage of [
+      baseUsage,
+      { ...baseUsage, providerRequestCount: 1, unmeteredRequestCount: 1 }
+    ]) {
+      const response = await request(app)
+        .post(`/recording-jobs/${job.id}/events`)
+        .send({
+          type: 'summary-artifact-stored',
+          actualProvider: 'azure-openai',
+          leaseToken: job.summaryLeaseToken,
+          summaryArtifact: {
+            model: 'gpt-5.6-luna',
+            reasoningEffort: 'max',
+            text: 'must not be stored'
+          },
+          usage
+        });
+
+      expect(response.status).toBe(400);
+    }
+
+    expect(await cloudUsage.listByJob(job.id)).toEqual([]);
+  });
+
+  it('rejects an Azure fallback failure without one explicit request count', async () => {
+    const recordingJobs = new InMemoryRecordingJobRepository();
+    const cloudUsage = new InMemoryCloudUsageLedgerRepository();
+    const job = assignSummaryJobToWorker(
+      attachTranscriptArtifact(
+        { ...createAssignedCloudJob(), summaryProvider: 'local-codex' },
+        transcriptArtifact
+      ),
+      'summary-worker-1'
+    );
+    await recordingJobs.save(job);
+    const app = createApp(recordingJobs, { cloudUsageLedgerRepository: cloudUsage });
+
+    const response = await request(app)
+      .post(`/recording-jobs/${job.id}/events`)
+      .send({
+        type: 'summary-failed',
+        actualProvider: 'azure-openai',
+        leaseToken: job.summaryLeaseToken,
+        failure: { code: 'summary-failed', message: 'Azure request failed' },
+        usage: {
+          promptTokens: 0,
+          cachedPromptTokens: 0,
+          completionTokens: 0,
+          reasoningCompletionTokens: 0,
+          totalTokens: 0
+        }
+      });
+
+    expect(response.status).toBe(400);
+    expect(await cloudUsage.listByJob(job.id)).toEqual([]);
+  });
+
+  it('rejects a Local Codex job Azure fallback without its summary lease', async () => {
+    const recordingJobs = new InMemoryRecordingJobRepository();
+    const cloudUsage = new InMemoryCloudUsageLedgerRepository();
+    const job = assignSummaryJobToWorker(
+      attachTranscriptArtifact(
+        { ...createAssignedCloudJob(), summaryProvider: 'local-codex' },
+        transcriptArtifact
+      ),
+      'summary-worker-1'
+    );
+    await recordingJobs.save(job);
+    const app = createApp(recordingJobs, { cloudUsageLedgerRepository: cloudUsage });
+
+    const response = await request(app)
+      .post(`/recording-jobs/${job.id}/events`)
+      .send({
+        type: 'summary-failed',
+        actualProvider: 'azure-openai',
+        failure: { code: 'summary-failed', message: 'Azure request failed' },
+        usage: {
+          promptTokens: 0,
+          cachedPromptTokens: 0,
+          completionTokens: 0,
+          reasoningCompletionTokens: 0,
+          totalTokens: 0,
+          providerRequestCount: 1,
+          unmeteredRequestCount: 1
+        }
+      });
+
+    expect(response.status).toBe(400);
+    expect(await cloudUsage.listByJob(job.id)).toEqual([]);
+    expect(await recordingJobs.getById(job.id)).toEqual(job);
   });
 
   it('keeps a retried summary unpriced and stores provider request counts', async () => {

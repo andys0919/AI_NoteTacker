@@ -34,6 +34,10 @@ const compareByCreatedAtDesc = (left: RecordingJob, right: RecordingJob): number
 export class InMemoryRecordingJobRepository implements RecordingJobRepository {
   private readonly jobs = new Map<string, RecordingJob>();
   private readonly meetingShareLinks = new Map<string, MeetingShareLink>();
+  private readonly summaryFallbackReservations = new Map<
+    string,
+    { leaseToken: string; requestId?: string }
+  >();
   // Soft-deleted job ids: hidden from the submitter's own views but still
   // retrievable by getById so the admin console can audit them.
   private readonly operatorHiddenJobIds = new Set<string>();
@@ -130,6 +134,43 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
 
     this.jobs.set(job.id, updatedJob);
     return updatedJob;
+  }
+
+  async reserveSummaryFallback(input: {
+    jobId: string;
+    leaseToken: string;
+    reservedAt: string;
+  }): Promise<boolean> {
+    const job = this.jobs.get(input.jobId);
+    if (
+      !job ||
+      job.summaryLeaseToken !== input.leaseToken ||
+      isSummaryLeaseExpired(job, Date.parse(input.reservedAt)) ||
+      this.summaryFallbackReservations.has(input.jobId)
+    ) {
+      return false;
+    }
+
+    this.summaryFallbackReservations.set(input.jobId, { leaseToken: input.leaseToken });
+    return true;
+  }
+
+  async claimSummaryFallbackRequest(input: {
+    jobId: string;
+    leaseToken: string;
+    requestId: string;
+  }): Promise<boolean> {
+    const reservation = this.summaryFallbackReservations.get(input.jobId);
+    if (
+      !reservation ||
+      reservation.leaseToken !== input.leaseToken ||
+      (reservation.requestId !== undefined && reservation.requestId !== input.requestId)
+    ) {
+      return false;
+    }
+
+    reservation.requestId = input.requestId;
+    return true;
   }
 
   async getById(id: string): Promise<RecordingJob | undefined> {

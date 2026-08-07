@@ -9,6 +9,8 @@ class FakeClient:
         self.claimed_job = claimed_job
         self.events = []
         self.heartbeats = []
+        self.provider_request_starts = []
+        self.provider_request_finishes = []
         self.job_statuses = job_statuses or []
 
     def claim_next_job(self, worker_id):
@@ -26,6 +28,14 @@ class FakeClient:
         if self.job_statuses:
             return self.job_statuses.pop(0)
         return {"id": job_id, "state": "transcribing"}
+
+    def start_provider_request(self, job_id, request_id, **payload):
+        self.provider_request_starts.append((job_id, request_id, payload))
+        return {"created": True}
+
+    def finish_provider_request(self, job_id, request_id, **payload):
+        self.provider_request_finishes.append((job_id, request_id, payload))
+        return {}
 
 class FailOnceTranscriptEventClient(FakeClient):
     def __init__(self, claimed_job):
@@ -62,6 +72,7 @@ class FakeTranscriber:
         local_audio_path,
         on_progress=None,
         on_transcription_usage=None,
+        on_provider_request=None,
         workflow_context=None,
     ):
         self.inputs.append(local_audio_path)
@@ -84,6 +95,7 @@ class SlowTranscriber(FakeTranscriber):
         local_audio_path,
         on_progress=None,
         on_transcription_usage=None,
+        on_provider_request=None,
         workflow_context=None,
     ):
         self.inputs.append(local_audio_path)
@@ -98,12 +110,60 @@ class PartiallyMeteredFailingTranscriber(FakeTranscriber):
         local_audio_path,
         on_progress=None,
         on_transcription_usage=None,
+        on_provider_request=None,
         workflow_context=None,
     ):
         self.inputs.append(local_audio_path)
         self.workflow_contexts.append(workflow_context)
-        on_transcription_usage({"audio_ms": 60_000})
+        on_transcription_usage(
+            {
+                "audio_ms": 60_000,
+                "billed_audio_ms": 60_000,
+                "provider_request_count": 2,
+                "unmetered_request_count": 1,
+            }
+        )
         raise RuntimeError("later Azure upload failed")
+
+
+class AuditedTranscriber(FakeTranscriber):
+    deployment = "gpt-4o-transcribe"
+
+    def transcribe(
+        self,
+        local_audio_path,
+        on_progress=None,
+        on_transcription_usage=None,
+        on_provider_request=None,
+        workflow_context=None,
+    ):
+        on_provider_request(
+            {
+                "action": "start",
+                "requestId": "request-worker-1",
+                "provider": "azure-openai-gpt-4o-transcribe",
+                "model": self.deployment,
+                "operation": "transcription",
+                "audioMs": 1_000,
+            }
+        )
+        on_provider_request(
+            {
+                "action": "finish",
+                "requestId": "request-worker-1",
+                "status": "succeeded",
+                "providerRequestId": "azure-worker-1",
+                "httpStatus": 200,
+                "usage": {"audioMs": 1_000},
+            }
+        )
+        return super().transcribe(
+            local_audio_path,
+            on_progress=on_progress,
+            on_transcription_usage=on_transcription_usage,
+            on_provider_request=on_provider_request,
+            workflow_context=workflow_context,
+        )
 
 
 class FakeTranscriberRegistry:
@@ -286,7 +346,12 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         self.assertEqual(client.events[-1][1]["type"], "transcription-failed")
         self.assertEqual(
             client.events[-1][1]["usage"],
-            {"audioMs": 60_000},
+            {
+                "audioMs": 60_000,
+                "billedAudioMs": 60_000,
+                "providerRequestCount": 2,
+                "unmeteredRequestCount": 1,
+            },
         )
 
     def test_stops_posting_artifacts_when_the_job_is_cancelled_mid_transcription(self) -> None:
@@ -428,6 +493,51 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         )
         self.assertEqual(client.events[2][1]["processingMessage"], "Running Azure OpenAI transcription.")
         self.assertEqual(client.events[3][1]["transcriptArtifact"]["language"], "zh")
+
+    def test_forwards_provider_audit_lifecycle_and_terminal_request_ids(self) -> None:
+        transcriber = AuditedTranscriber(
+            {
+                "language": "zh",
+                "segments": [{"start_ms": 0, "end_ms": 1_000, "text": "audited"}],
+            }
+        )
+        client = FakeClient(
+            {
+                "id": "job_audited",
+                "leaseToken": "lease_audited",
+                "transcriptionProvider": "azure-openai-gpt-4o-transcribe",
+                "transcriptionModel": "gpt-4o-transcribe",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_audited/meeting.wav",
+                    "downloadUrl": "https://storage.example.test/job_audited.wav",
+                    "contentType": "audio/wav",
+                },
+            }
+        )
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_audited.wav"),
+            media_preparer=FakeMediaPreparer("/tmp/job_audited.wav"),
+            transcriber=transcriber,
+            transcriber_registry=FakeTranscriberRegistry(
+                {"azure-openai-gpt-4o-transcribe": transcriber}
+            ),
+        )
+
+        self.assertEqual(result, {"kind": "processed", "job_id": "job_audited"})
+        self.assertEqual(client.provider_request_starts[0][1], "request-worker-1")
+        self.assertEqual(
+            client.provider_request_starts[0][2]["lease_token"], "lease_audited"
+        )
+        self.assertEqual(
+            client.provider_request_finishes[0][2]["provider_request_id"],
+            "azure-worker-1",
+        )
+        self.assertEqual(
+            client.events[-1][1]["requestAuditIds"], ["request-worker-1"]
+        )
 
     def test_uses_qwen_with_full_evidence_callbacks(self) -> None:
         qwen_transcriber = FakeTranscriber(

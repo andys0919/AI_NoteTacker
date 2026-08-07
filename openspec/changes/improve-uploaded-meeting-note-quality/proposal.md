@@ -34,9 +34,9 @@ model.
   failure, retry the same original audio in at most 30-second chunks without
   preceding generated transcript context, and fail explicitly if two bounded
   retries remain sparse or repetitive.
-- Retry an Azure summary HTTP 400 exactly once with the identical payload,
-  preserve the final Azure error body, and record provider/unmetered request
-  counts when usage is available.
+- Preserve an Azure summary HTTP 400 and its redacted provider error body
+  without replaying the paid request; retain request-level outcome and usage
+  evidence when available.
 - Feed operator-verified display terminology to summaries without relabelling
   it as unconfirmed, and keep tentative or later-to-be-confirmed points out of
   `decisions`.
@@ -78,14 +78,13 @@ model.
     retry seam
   - historical transcript speaker-metadata compatibility without new
     classification or presentation
-  - Azure Responses error handling, summary retry metadata, and usage settlement
+  - Azure Responses error handling, request audit metadata, and usage settlement
   - focused worker and control-plane tests
 - Related active changes:
   - `add-faithful-multilingual-transcription` remains the raw/display evidence
     foundation.
-  - `update-cloud-summary-azure-responses` is amended so its former global
-    no-provider-retry rule permits only the bounded summary HTTP 400 exception
-    defined here.
+  - `add-azure-summary-quota-fallback` supersedes the former HTTP 400 replay:
+    the single reserved Azure fallback request is observable but never replayed.
   - `simplify-mai-transcription-pipeline` supersedes this change's optional
     diarization runtime; `refine-meeting-artifact-reader` supersedes its former
     speaker presentation. Historical metadata and benchmark evidence remain

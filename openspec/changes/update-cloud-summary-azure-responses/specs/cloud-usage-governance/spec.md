@@ -67,6 +67,39 @@ callback was cancelled, superseded, or duplicated.
 - **THEN** the failure callback preserves the duration of every successful provider upload for settlement
 - **AND** that partial transcription usage remains unpriced until billed token quantities and authoritative meter identity are available
 
+### Requirement: Provider requests have durable request-level audit
+The system SHALL persist a stable request-level audit record before starting any
+metered provider call, SHALL finalize that same record with the actual runtime
+provider/model and every trustworthy usage or billing quantity, and SHALL keep
+the request visible when completion metering cannot be recovered.
+
+#### Scenario: Request start cannot be persisted
+- **WHEN** the worker cannot persist the request identity, job, stage, lease attempt, provider, model, and start time
+- **THEN** it does not contact the provider
+- **AND** the job fails or retries without creating untracked spend
+
+#### Scenario: Provider request completes
+- **WHEN** a provider request succeeds or fails after its start record was stored
+- **THEN** the same request record is finalized idempotently with outcome, finish time, HTTP status or error class, and provider request ID when returned
+- **AND** successful MAI requests preserve raw and per-upload billed duration
+- **AND** Responses requests preserve every provider-reported token category
+- **AND** failed requests without trustworthy billed quantities remain visibly unpriced
+
+#### Scenario: Worker dies after provider contact
+- **WHEN** the worker dies after persisting request start but before a trustworthy completion can be stored
+- **THEN** the started request remains durable as an unpriced possible charge
+- **AND** a later lease or terminal callback does not erase or collapse that request
+
+#### Scenario: Terminal callback follows request-level settlement
+- **WHEN** every provider request was already settled under stable request IDs
+- **THEN** the terminal callback does not append a second aggregate charge for the same work
+- **AND** artifact and lifecycle mutation remains lease-idempotent
+
+#### Scenario: Local Codex executes from subscription access
+- **WHEN** Local Codex starts and completes a summary turn
+- **THEN** the request audit records the subscription attempt and available token usage
+- **AND** it does not create an Azure/API actual-cost ledger entry or describe the attempt as a zero-dollar API charge
+
 ### Requirement: Transcript punctuation is an independent cloud usage stage
 The system SHALL account for cloud transcript punctuation under the stage name
 `punctuation`, independently from `transcription` and `summary`.
@@ -91,7 +124,13 @@ not be read.
 - **WHEN** the Responses API returns valid usage for a cloud call
 - **THEN** the usage record stores `inputTokens`, `outputTokens`, and `totalTokens`
 - **AND** it stores `cachedInputTokens` and `reasoningOutputTokens`
+- **AND** it stores `cacheWriteTokens` when the provider returns that quantity
 - **AND** cached input remains a subset of input and reasoning output remains a subset of output
+
+#### Scenario: Provider returns a cache-write quantity
+- **WHEN** Azure returns a valid separate cache-write token quantity
+- **THEN** the worker and ledger preserve that quantity without folding it into cached or uncached input
+- **AND** exact pricing applies the configured cache-write rate once
 
 #### Scenario: A punctuation request has no readable provider usage
 - **WHEN** a punctuation request fails before valid usage can be extracted
@@ -144,13 +183,20 @@ unpriced usage without substituting another price.
 - **AND** the unmetered remainder remains visible and the lower bound is not presented as complete billed usage
 
 #### Scenario: MAI Transcribe uses the verified Fast Transcription meter
-- **WHEN** `azure-speech-mai-transcribe-1.5` reports audio duration for model `mai-transcribe-1.5` under pricing version `v1`
-- **THEN** the system prices that duration using the verified Southeast Asia Azure Speech Fast Transcription rate of USD 0.36 per audio hour
+- **WHEN** `azure-speech-mai-transcribe-1.5` reports every successful upload for model `mai-transcribe-1.5` under pricing version `v1`
+- **THEN** the system rounds each successful upload up to a whole billed second and sums those quantities
+- **AND** it prices that billed duration using the verified Southeast Asia Azure Speech Fast Transcription rate of USD 0.36 per audio hour
 - **AND** the meter source, region, SKU, unit, and effective date remain documented
 
-#### Scenario: Historical MAI row used the superseded S1 rate
-- **WHEN** an immutable historical MAI row preserves complete audio duration but stores cost calculated at USD 1.00 per audio hour
-- **THEN** reporting derives its known cost at the verified USD 0.36 Fast Transcription rate
+#### Scenario: MAI request billing is uncertain
+- **WHEN** one or more MAI retries or failed provider attempts lack a trustworthy billed duration
+- **THEN** the immutable attempt remains `pricingStatus=unpriced` with `costUsd=null`
+- **AND** reporting prices successful uploads as a known lower bound and keeps the uncertain remainder visible
+
+#### Scenario: Historical MAI row lacks per-upload billed duration
+- **WHEN** an immutable historical MAI row preserves raw audio duration but not the original upload boundaries
+- **THEN** reporting derives a known lower bound at the verified USD 0.36 Fast Transcription rate
+- **AND** the row remains visibly unpriced because per-upload whole-second rounding cannot be reconstructed
 - **AND** the immutable ledger row is not updated
 
 #### Scenario: Transcription callback reports duration without billed tokens
@@ -175,15 +221,16 @@ unpriced usage without substituting another price.
 - **AND** the migration does not fabricate historical token or lease metadata
 
 ### Requirement: Verified Azure retail prices refresh daily
-The system SHALL refresh the exact Azure public PAYG meters used by the deployed
-Luna and MAI providers plus the TWD reference meter at startup and every 24
-hours without replacing a valid catalog with incomplete or not-yet-effective
-data.
+The system SHALL refresh the exact Azure public PAYG meter used by the deployed
+MAI provider plus its TWD reference meter at startup and every 24 hours without
+replacing a valid catalog with incomplete or not-yet-effective data. Historical
+and quota-fallback Luna usage SHALL use the checked-in, source-attributed exact
+meter catalog until a separately approved live-refresh contract replaces it.
 
 #### Scenario: Complete currently effective snapshot is returned
-- **WHEN** Azure Retail Prices API returns one consistent USD Consumption rate for every required Luna Global Standard short-context meter plus complete USD and TWD rows for the verified Southeast Asia MAI Fast Transcription meter
-- **AND** their effective dates are not later than the current time
-- **THEN** the system atomically applies the USD rates to subsequent cost calculations and the derived positive USD-to-TWD rate to display configuration
+- **WHEN** Azure Retail Prices API returns complete USD and TWD rows for the verified Southeast Asia MAI Fast Transcription meter
+- **AND** their effective dates are equal and not later than the current time
+- **THEN** the system atomically applies the MAI USD rate to subsequent cost calculations and the derived positive USD-to-TWD rate to display configuration
 - **AND** records the official query as meter provenance
 
 #### Scenario: Refresh cannot prove a complete price snapshot

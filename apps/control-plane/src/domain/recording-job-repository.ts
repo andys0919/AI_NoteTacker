@@ -38,6 +38,16 @@ export interface RecordingJobRepository {
     heartbeatAt: string;
     expiresAt: string;
   }): Promise<RecordingJob | undefined>;
+  reserveSummaryFallback(input: {
+    jobId: string;
+    leaseToken: string;
+    reservedAt: string;
+  }): Promise<boolean>;
+  claimSummaryFallbackRequest(input: {
+    jobId: string;
+    leaseToken: string;
+    requestId: string;
+  }): Promise<boolean>;
   getById(id: string): Promise<RecordingJob | undefined>;
   /**
    * Like getById, but also returns jobs that an operator soft-deleted from their

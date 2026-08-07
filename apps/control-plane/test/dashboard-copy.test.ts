@@ -124,7 +124,7 @@ describe('dashboard copy helpers', () => {
     });
 
     expect(model.costItems).toEqual([
-      { label: '總費用', value: 'NT$3.83（含未定價用量）' }
+      { label: '已知費用', value: 'NT$3.83（含未定價用量）' }
     ]);
   });
 

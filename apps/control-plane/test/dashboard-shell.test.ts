@@ -90,6 +90,10 @@ describe('dashboard shell markup', () => {
       resolve(import.meta.dirname, '../public/app.js'),
       'utf-8'
     );
+    const styles = readFileSync(
+      resolve(import.meta.dirname, '../public/styles.css'),
+      'utf-8'
+    );
 
     expect(html).toContain('class="skip-link"');
     expect(html).toContain('aria-live="polite"');
@@ -109,6 +113,7 @@ describe('dashboard shell markup', () => {
     expect(javascript).toContain('setFormBusy(elements.uploadForm');
     expect(javascript).toContain('setFormStatus(elements.meetingFormStatus');
     expect(javascript).toContain('setFormStatus(elements.uploadFormStatus');
+    expect(styles).toContain('.job-list[aria-busy="true"]');
   });
 
   it('keeps uploads generic and refreshes progress without repainting the full job list', () => {
@@ -136,7 +141,7 @@ describe('dashboard shell markup', () => {
     expect(javascript).not.toContain('updateStatsForStateChange');
   });
 
-  it('refreshes an active detail page through the full job snapshot path', async () => {
+  it('pauses progress polling during an archive fetch and refreshes active detail afterward', async () => {
     const javascript = readFileSync(
       resolve(import.meta.dirname, '../public/app.js'),
       'utf-8'
@@ -148,12 +153,18 @@ describe('dashboard shell markup', () => {
       .replace('const refreshJobProgress =', 'globalThis.refreshJobProgress =');
     const refreshedDetails: string[] = [];
     let listFetches = 0;
+    let archiveBusy = true;
     const context = {
       applyPolledJob() {},
       currentJobs: [{ id: 'job-detail', state: 'summarizing' }],
       currentJobsPageInfo: { pageSize: 25 },
       currentJobStats: {},
       document: { hidden: false },
+      elements: {
+        jobList: {
+          getAttribute: () => (archiveBusy ? 'true' : 'false')
+        }
+      },
       fetchJobsPayload: async () => {
         listFetches += 1;
         return { jobs: [], stats: {} };
@@ -174,8 +185,62 @@ describe('dashboard shell markup', () => {
     runInNewContext(source, context);
     await context.refreshJobProgress?.();
 
+    expect(refreshedDetails).toEqual([]);
+    expect(listFetches).toBe(0);
+
+    archiveBusy = false;
+    await context.refreshJobProgress?.();
+
     expect(refreshedDetails).toEqual(['job-detail']);
     expect(listFetches).toBe(0);
+  });
+
+  it('keeps the newest archive response when requests finish out of order', async () => {
+    const javascript = readFileSync(
+      resolve(import.meta.dirname, '../public/app.js'),
+      'utf-8'
+    );
+    const start = javascript.indexOf('const fetchJobs = async ({ append = false } = {}) => {');
+    const end = javascript.indexOf('\n};\n\nconst fetchJobSnapshot', start) + 3;
+    const source = javascript
+      .slice(start, end)
+      .replace('const fetchJobs =', 'globalThis.fetchJobs =');
+    const pending: Array<(value: Record<string, unknown>) => void> = [];
+    const rendered: string[][] = [];
+    const busyStates: string[] = [];
+    const context = {
+      currentJobs: [],
+      currentJobStats: null,
+      currentJobsPageInfo: { pageSize: 25, hasMore: false, nextCursor: null },
+      elements: {
+        jobList: {
+          setAttribute(name: string, value: string) {
+            if (name === 'aria-busy') busyStates.push(value);
+          }
+        }
+      },
+      fetchJobsPayload: () =>
+        new Promise<Record<string, unknown>>((resolveRequest) => pending.push(resolveRequest)),
+      jobsRequestGeneration: 0,
+      mergeJobsById: (_current: unknown[], incoming: unknown[]) => incoming,
+      renderJobs: (jobs: Array<{ id: string }>) => rendered.push(jobs.map((job) => job.id))
+    } as Record<string, unknown> & {
+      fetchJobs?: () => Promise<void>;
+    };
+
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    runInNewContext(source, context);
+
+    const olderRequest = context.fetchJobs?.();
+    const newestRequest = context.fetchJobs?.();
+    pending[1]?.({ jobs: [{ id: 'newest' }], stats: {}, pageInfo: undefined });
+    await newestRequest;
+    pending[0]?.({ jobs: [{ id: 'older' }], stats: {}, pageInfo: undefined });
+    await olderRequest;
+
+    expect(rendered).toEqual([['newest']]);
+    expect(busyStates.at(-1)).toBe('false');
   });
 
   it('keeps inline expansion off the dashboard and retains the owner-page reader', () => {

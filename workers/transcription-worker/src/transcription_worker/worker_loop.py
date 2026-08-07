@@ -1,4 +1,5 @@
 import os
+from threading import Lock
 
 from transcription_worker.heartbeat import start_lease_heartbeat
 
@@ -105,8 +106,55 @@ def run_transcription_worker_iteration(
 
     prepared_audio = None
     local_media_path = None
-    transcription_audio_ms = 0
+    transcription_usage = {}
     transcription_completed = False
+    provider_request_ids = []
+    provider_request_ids_lock = Lock()
+
+    def report_provider_request(update):
+        request_id = update["requestId"]
+        if update["action"] == "start":
+            client.start_provider_request(
+                claimed_job["id"],
+                request_id,
+                stage="transcription",
+                lease_token=claimed_job["leaseToken"],
+                provider=update["provider"],
+                model=update["model"],
+                operation=update.get("operation"),
+                audio_ms=update.get("audioMs"),
+            )
+            with provider_request_ids_lock:
+                provider_request_ids.append(request_id)
+            return
+
+        client.finish_provider_request(
+            claimed_job["id"],
+            request_id,
+            lease_token=claimed_job["leaseToken"],
+            status=update["status"],
+            provider_request_id=update.get("providerRequestId"),
+            http_status=update.get("httpStatus"),
+            error_code=update.get("errorCode"),
+            usage=update.get("usage"),
+        )
+
+    def request_audit_ids():
+        with provider_request_ids_lock:
+            return list(provider_request_ids)
+
+    def build_event_usage(result_usage=None):
+        usage = {**(result_usage or {}), **transcription_usage}
+        return {
+            target: usage[source]
+            for source, target in (
+                ("audio_ms", "audioMs"),
+                ("billed_audio_ms", "billedAudioMs"),
+                ("provider_request_count", "providerRequestCount"),
+                ("unmetered_request_count", "unmeteredRequestCount"),
+            )
+            if source in usage
+        }
 
     try:
         transcription_provider = claimed_job.get("transcriptionProvider") or "self-hosted-whisper"
@@ -115,12 +163,16 @@ def run_transcription_worker_iteration(
             if transcriber_registry is not None
             else transcriber
         )
-        if transcription_provider == "azure-speech-mai-transcribe-1.5":
+        if transcription_provider in {
+            "azure-openai-gpt-4o-transcribe",
+            "qwen3-asr-1.7b",
+            "azure-speech-mai-transcribe-1.5",
+        }:
             latched_model = claimed_job.get("transcriptionModel")
             worker_model = getattr(selected_transcriber, "deployment", None)
             if latched_model and worker_model and latched_model != worker_model:
                 raise RuntimeError(
-                    f"Latched MAI model {latched_model!r} does not match "
+                    f"Latched transcription model {latched_model!r} does not match "
                     f"worker model {worker_model!r}."
                 )
         progress_message = _transcription_progress_message(transcription_provider)
@@ -184,8 +236,14 @@ def run_transcription_worker_iteration(
                 raise JobCancelledError("job cancelled by operator")
 
         def report_transcription_usage(update):
-            nonlocal transcription_audio_ms
-            transcription_audio_ms += update["audio_ms"]
+            for key in (
+                "audio_ms",
+                "billed_audio_ms",
+                "provider_request_count",
+                "unmetered_request_count",
+            ):
+                if key in update:
+                    transcription_usage[key] = transcription_usage.get(key, 0) + update[key]
 
         if transcription_provider in {
             "azure-openai-gpt-4o-transcribe",
@@ -196,6 +254,7 @@ def run_transcription_worker_iteration(
                 prepared_audio["local_audio_path"],
                 on_progress=report_transcription_progress,
                 on_transcription_usage=report_transcription_usage,
+                on_provider_request=report_provider_request,
                 workflow_context={
                     "template_id": claimed_job.get("submissionTemplateId") or "general",
                     "glossary": claimed_job.get("transcriptionGlossary") or [],
@@ -225,10 +284,9 @@ def run_transcription_worker_iteration(
             "type": "transcript-artifact-stored",
             "transcriptArtifact": transcript_artifact,
         }
-        event_usage = {}
-        audio_ms = transcription_audio_ms or transcript_result.get("usage", {}).get("audio_ms")
-        if audio_ms is not None:
-            event_usage["audioMs"] = audio_ms
+        if request_audit_ids():
+            transcript_event["requestAuditIds"] = request_audit_ids()
+        event_usage = build_event_usage(transcript_result.get("usage"))
         if event_usage:
             transcript_event["usage"] = event_usage
         _post_terminal_event(
@@ -240,21 +298,23 @@ def run_transcription_worker_iteration(
 
         return {"kind": "processed", "job_id": claimed_job["id"]}
     except JobCancelledError:
-        event_usage = {}
-        if transcription_audio_ms > 0:
-            event_usage["audioMs"] = transcription_audio_ms
-        if event_usage:
+        event_usage = build_event_usage()
+        if event_usage or request_audit_ids():
+            failure_event = {
+                "type": "transcription-failed",
+                "failure": {
+                    "code": "operator-cancel-requested",
+                    "message": "job cancelled by operator",
+                },
+            }
+            if event_usage:
+                failure_event["usage"] = event_usage
+            if request_audit_ids():
+                failure_event["requestAuditIds"] = request_audit_ids()
             _post_terminal_event(
                 client,
                 claimed_job["id"],
-                {
-                    "type": "transcription-failed",
-                    "failure": {
-                        "code": "operator-cancel-requested",
-                        "message": "job cancelled by operator",
-                    },
-                    "usage": event_usage,
-                },
+                failure_event,
                 claimed_job.get("leaseToken"),
             )
         return {"kind": "cancelled", "job_id": claimed_job["id"]}
@@ -269,11 +329,11 @@ def run_transcription_worker_iteration(
                 "message": str(error),
             },
         }
-        event_usage = {}
-        if transcription_audio_ms > 0:
-            event_usage["audioMs"] = transcription_audio_ms
+        event_usage = build_event_usage()
         if event_usage:
             failure_event["usage"] = event_usage
+        if request_audit_ids():
+            failure_event["requestAuditIds"] = request_audit_ids()
         _post_terminal_event(
             client,
             claimed_job["id"],

@@ -177,11 +177,13 @@ describe('PostgresTranscriptionProviderSettingsRepository', () => {
 
     const current = await repository.getCurrent();
     expect(current.transcriptionModel).toBe('gpt-4o-transcribe');
+    expect(current.summaryProvider).toBe('local-codex');
 
     const persisted = await pool.query(
-      'select transcription_model from ai_processing_policy_settings where singleton_key = $1',
+      'select transcription_model, summary_provider from ai_processing_policy_settings where singleton_key = $1',
       ['global']
     );
     expect(persisted.rows[0].transcription_model).toBe('gpt-4o-transcribe');
+    expect(persisted.rows[0].summary_provider).toBe('local-codex');
   });
 });

@@ -21,12 +21,13 @@ invoice price.
 
 1. **Use the existing control-plane Azure Retail Prices adapter.** At startup,
    before listening, and every 24 hours thereafter, it queries the verified
-   Luna USD meters and the exact MAI USD/TWD meter with a finite timeout.
-2. **Apply one complete snapshot atomically.** Luna pricing and the MAI-derived
-   TWD reference update together only after identity, currency, unit, effective
-   date, and rate validation. Any HTTP, pagination, shape, missing-meter, or
-   consistency failure keeps the last verified in-memory snapshot; the bundled
-   verified snapshot remains the cold-start fallback.
+   MAI USD/TWD meter with a finite timeout; historical Luna rates remain
+   source-attributed checked-in catalog data.
+2. **Apply one complete snapshot atomically.** MAI pricing and its TWD reference
+   update together only after identity, currency, unit, effective date, and
+   rate validation. Any HTTP, pagination, shape, missing-meter, or consistency
+   failure keeps the last verified in-memory snapshot; the bundled verified
+   snapshot remains the cold-start fallback.
 3. **Convert only at the presentation boundary.** Operator configuration
    exposes the current rate, source, and refresh time. Dashboard/admin code uses
    that reference for display and converts admin TWD quota input back to the
@@ -34,8 +35,8 @@ invoice price.
 
 ## Ownership and Archive Order
 
-`update-cloud-summary-azure-responses` owns the Azure adapter, catalog identity,
-startup/24-hour refresh, and complete-snapshot fallback contract. This change
+`update-cloud-summary-azure-responses` owns the Azure adapter, MAI catalog
+identity, startup/24-hour refresh, and complete-snapshot fallback contract. This change
 owns the operator-config projection and TWD presentation of that verified
 state. Archive the foundational pricing change first; then rebase and strictly
 revalidate this change against the published cloud-governance requirements

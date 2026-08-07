@@ -34,6 +34,7 @@ class QwenOpenAiTranscriber(AzureOpenAiTranscriber):
             timeout_seconds=timeout_seconds,
             max_chunk_duration_ms=QWEN_CHUNK_DURATION_MS,
             provider_label="Qwen3-ASR",
+            provider="qwen3-asr-1.7b",
             **kwargs,
         )
 

@@ -14,6 +14,7 @@ import {
   getAdminGovernanceViewModel,
   getAuditEntryViewModels,
   getCloudCostDisplayModel,
+  getCodexWeeklyUsageViewModel,
   getUsageHistoryCostViewModel,
   getUsageReportRowViewModels
 } from '/governance-panel.js';
@@ -56,6 +57,14 @@ const elements = {
   adminUsageReportSummary: document.querySelector('#admin-usage-report-summary'),
   adminProviderCopy: document.querySelector('#admin-provider-copy'),
   adminProviderCurrent: document.querySelector('#admin-provider-current'),
+  adminCodexUsageCard: document.querySelector('#admin-codex-usage-card'),
+  adminCodexUsageHeadline: document.querySelector('#admin-codex-usage-headline'),
+  adminCodexUsageStatus: document.querySelector('#admin-codex-usage-status'),
+  adminCodexUsageProgress: document.querySelector('#admin-codex-usage-progress'),
+  adminCodexUsageUsed: document.querySelector('#admin-codex-usage-used'),
+  adminCodexUsageRemaining: document.querySelector('#admin-codex-usage-remaining'),
+  adminCodexUsageReset: document.querySelector('#admin-codex-usage-reset'),
+  adminCodexUsageChecked: document.querySelector('#admin-codex-usage-checked'),
   adminProviderForm: document.querySelector('#admin-provider-form'),
   adminRuntimeHealthCards: document.querySelector('#admin-runtime-health-cards'),
   adminRuntimeHealthList: document.querySelector('#admin-runtime-health-list'),
@@ -63,7 +72,7 @@ const elements = {
   adminRuntimeHealthSummary: document.querySelector('#admin-runtime-health-summary'),
   adminProviderSelect: document.querySelector('#admin-provider-select'),
   adminTranscriptionModelInput: document.querySelector('#admin-transcription-model-input'),
-  adminSummaryProviderSelect: document.querySelector('#admin-summary-provider-select'),
+  adminSummaryProviderValue: document.querySelector('#admin-summary-provider-value'),
   adminSummaryModelInput: document.querySelector('#admin-summary-model-input'),
   adminPricingVersionInput: document.querySelector('#admin-pricing-version-input'),
   adminDefaultQuotaInput: document.querySelector('#admin-default-quota-input'),
@@ -71,7 +80,6 @@ const elements = {
   adminLocalTranscriptionInput: document.querySelector('#admin-local-transcription-input'),
   adminCloudTranscriptionInput: document.querySelector('#admin-cloud-transcription-input'),
   adminLocalSummaryInput: document.querySelector('#admin-local-summary-input'),
-  adminCloudSummaryInput: document.querySelector('#admin-cloud-summary-input'),
   adminOverrideForm: document.querySelector('#admin-override-form'),
   adminOverrideSubmitterId: document.querySelector('#admin-override-submitter-id'),
   adminOverrideQuotaInput: document.querySelector('#admin-override-quota-input'),
@@ -82,7 +90,8 @@ const elements = {
   adminProviderSubmit: document.querySelector('#admin-provider-submit')
 };
 
-let adminToken = window.localStorage.getItem(TOKEN_STORAGE_KEY);
+window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+let adminToken = window.sessionStorage.getItem(TOKEN_STORAGE_KEY);
 let adminUsername = null;
 let adminProviderState = null;
 let modalReturnFocus = null;
@@ -93,9 +102,9 @@ const formatTokens = (value) => tokenFormatter.format(Math.round(Number(value) |
 const setToken = (token) => {
   adminToken = token;
   if (token) {
-    window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
   } else {
-    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+    window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
   }
 };
 
@@ -217,6 +226,61 @@ const renderUsageReport = (payload) => {
   );
 };
 
+const appendUsageDetail = (list, label, value) => {
+  if (value === undefined || value === null || value === '') {
+    return;
+  }
+  const term = document.createElement('dt');
+  term.textContent = label;
+  const description = document.createElement('dd');
+  description.textContent = String(value);
+  list.append(term, description);
+};
+
+const buildUsageRequestDetails = (entry) => {
+  const details = document.createElement('details');
+  details.className = 'usage-request-details';
+  const summary = document.createElement('summary');
+  const requestCount = Number(entry.providerRequestCount) || 0;
+  summary.textContent =
+    entry.recordKind === 'provider-request'
+      ? `${entry.requestStatusLabel || entry.requestStatus || '請求'} · 1 request`
+      : `彙總 · ${formatTokens(requestCount)} requests`;
+
+  const list = document.createElement('dl');
+  appendUsageDetail(list, 'Request audit ID', entry.recordKind === 'provider-request' ? entry.id : null);
+  appendUsageDetail(list, 'Provider', formatProviderLabel(entry.provider));
+  appendUsageDetail(list, 'Model', entry.model);
+  appendUsageDetail(list, 'Provider request ID', entry.providerRequestId);
+  appendUsageDetail(list, 'HTTP', entry.httpStatus);
+  appendUsageDetail(list, '錯誤代碼', entry.errorCode);
+  if (entry.hasTokenUsage ?? entry.stage !== 'transcription') {
+    appendUsageDetail(list, 'Input tokens', formatTokens(entry.inputTokens));
+    appendUsageDetail(list, 'Cached input', formatTokens(entry.cachedInputTokens));
+    appendUsageDetail(list, 'Cache write', formatTokens(entry.cacheWritePromptTokens));
+    appendUsageDetail(list, 'Output tokens', formatTokens(entry.outputTokens));
+    appendUsageDetail(list, 'Reasoning tokens', formatTokens(entry.reasoningOutputTokens));
+  }
+  appendUsageDetail(
+    list,
+    '原始音訊',
+    entry.audioMs ? `${formatTokens(Math.round(entry.audioMs / 1000))} 秒` : null
+  );
+  appendUsageDetail(
+    list,
+    '計費音訊',
+    entry.billedAudioMs
+      ? `${formatTokens(Math.round(entry.billedAudioMs / 1000))} 秒`
+      : null
+  );
+  appendUsageDetail(list, '開始', entry.createdAt ? formatJobTimestamp(entry.createdAt) : null);
+  appendUsageDetail(list, '完成', entry.finishedAt ? formatJobTimestamp(entry.finishedAt) : null);
+  appendUsageDetail(list, '計費類型', entry.billingClass);
+  appendUsageDetail(list, '核價狀態', entry.pricingStatus);
+  details.append(summary, list);
+  return details;
+};
+
 const renderUsageHistory = (payload) => {
   const totals = payload?.totals ?? {};
   const costViewModel = getUsageHistoryCostViewModel(payload);
@@ -230,13 +294,15 @@ const renderUsageHistory = (payload) => {
     elements.usageHistorySummary.textContent = '尚無使用紀錄。';
     elements.usageHistoryByModel.replaceChildren();
     elements.usageHistoryRows.innerHTML =
-      '<tr><td colspan="10" class="usage-history-empty">尚無使用紀錄。</td></tr>';
+      '<tr><td colspan="11" class="usage-history-empty">尚無使用紀錄。</td></tr>';
     return;
   }
 
   elements.usageHistorySummary.textContent =
     `共 ${formatTokens(totals.entryCount)} 筆紀錄 / 輸入 ${formatTokens(totals.inputTokens)} tokens / ` +
     `輸出 ${formatTokens(totals.outputTokens)} tokens / 合計 ${formatTokens(totals.totalTokens)} tokens / ` +
+    `${formatTokens(totals.providerRequestCount)} 次 provider request / ` +
+    `計費音訊 ${formatTokens(Math.round((totals.billedAudioMs || 0) / 1000))} 秒 / ` +
     costViewModel.totalCostSummary;
 
   const byModel = costViewModel.byModel;
@@ -247,7 +313,7 @@ const renderUsageHistory = (payload) => {
       node.innerHTML = `
         <span class="meta-label">${escapeHtml(row.model)}（${escapeHtml(row.stageLabel)}）</span>
         <strong>${escapeHtml(row.costLabel)}</strong>
-        <small>輸入 ${escapeHtml(formatTokens(row.inputTokens))} / 輸出 ${escapeHtml(formatTokens(row.outputTokens))} / ${escapeHtml(formatTokens(row.entryCount))} 筆${
+        <small>輸入 ${escapeHtml(formatTokens(row.inputTokens))} / Cache write ${escapeHtml(formatTokens(row.cacheWritePromptTokens))} / 輸出 ${escapeHtml(formatTokens(row.outputTokens))} / ${escapeHtml(formatTokens(row.providerRequestCount))} requests${
           row.unpricedCountLabel ? ` / ${escapeHtml(row.unpricedCountLabel)}` : ''
         }</small>
       `;
@@ -274,13 +340,16 @@ const renderUsageHistory = (payload) => {
           cls: 'usage-num'
         },
         { text: entry.costLabel, cls: 'usage-num' },
+        { node: buildUsageRequestDetails(entry) },
         { text: identity, title: entry.submitterId },
         { text: entry.jobId, title: entry.jobId, jobId: entry.jobId }
       ];
 
       for (const cell of cells) {
         const td = document.createElement('td');
-        if (cell.jobId) {
+        if (cell.node) {
+          td.append(cell.node);
+        } else if (cell.jobId) {
           const button = document.createElement('button');
           button.type = 'button';
           button.className = 'usage-jobid-button';
@@ -373,6 +442,39 @@ const renderJobModal = (job) => {
       list.append(item);
     }
     children.push(buildModalSection('Token / 費用明細', list));
+  }
+
+  if (job.providerRequests?.length) {
+    const list = document.createElement('div');
+    list.className = 'provider-request-audit-list';
+    for (const request of job.providerRequests) {
+      const detail = request.detail || {};
+      list.append(
+        buildUsageRequestDetails({
+          ...request,
+          id: request.requestId,
+          recordKind: 'provider-request',
+          requestStatus: request.status,
+          requestStatusLabel:
+            request.status === 'succeeded'
+              ? '成功'
+              : request.status === 'failed'
+                ? '失敗'
+                : '進行中',
+          createdAt: request.startedAt,
+          hasTokenUsage: typeof detail.totalTokens === 'number',
+          inputTokens: detail.inputTokens,
+          cachedInputTokens: detail.cachedInputTokens,
+          cacheWritePromptTokens: detail.cacheWriteInputTokens,
+          outputTokens: detail.outputTokens,
+          reasoningOutputTokens: detail.reasoningOutputTokens,
+          audioMs: detail.audioMs,
+          billedAudioMs: detail.billedAudioMs,
+          providerRequestCount: 1
+        })
+      );
+    }
+    children.push(buildModalSection('Provider request audit', list));
   }
 
   if (job.summaryArtifact?.text) {
@@ -504,11 +606,36 @@ const renderRuntimeHealth = (payload) => {
   );
 };
 
+const renderCodexWeeklyUsage = (payload) => {
+  const viewModel = getCodexWeeklyUsageViewModel(payload, formatJobTimestamp);
+  elements.adminCodexUsageCard.classList.toggle('is-unavailable', !viewModel.available);
+  elements.adminCodexUsageHeadline.textContent = viewModel.headline;
+  elements.adminCodexUsageStatus.textContent = viewModel.statusText;
+  elements.adminCodexUsageStatus.className = `provider-pill ${
+    viewModel.available && viewModel.remainingText !== '0%' ? 'ready' : 'blocked'
+  }`;
+  elements.adminCodexUsageProgress.hidden = !viewModel.available;
+  if (viewModel.available) {
+    elements.adminCodexUsageProgress.value = viewModel.usedPercent;
+    elements.adminCodexUsageProgress.textContent = viewModel.usedText;
+    elements.adminCodexUsageProgress.setAttribute(
+      'aria-valuetext',
+      `已用 ${viewModel.usedText}，剩餘 ${viewModel.remainingText}`
+    );
+  } else {
+    elements.adminCodexUsageProgress.removeAttribute('aria-valuetext');
+  }
+  elements.adminCodexUsageUsed.textContent = viewModel.usedText;
+  elements.adminCodexUsageRemaining.textContent = viewModel.remainingText;
+  elements.adminCodexUsageReset.textContent = viewModel.resetText;
+  elements.adminCodexUsageChecked.textContent = viewModel.checkedText;
+};
+
 const updateAdminProviderStatus = () => {
   const viewModel = getAdminGovernanceViewModel({
     state: adminProviderState,
     selectedTranscriptionProvider: elements.adminProviderSelect.value,
-    selectedSummaryProvider: elements.adminSummaryProviderSelect.value,
+    selectedSummaryProvider: adminProviderState?.summaryProvider ?? 'local-codex',
     transcriptionModelInput: elements.adminTranscriptionModelInput.value,
     summaryModelInput: elements.adminSummaryModelInput.value,
     pricingVersionInput: elements.adminPricingVersionInput.value,
@@ -525,9 +652,7 @@ const updateAdminProviderStatus = () => {
   elements.adminProviderSubmit.disabled = viewModel.submitDisabled;
   elements.adminOverrideSubmit.disabled = viewModel.overrideDisabled;
   elements.adminSummaryModelInput.disabled = viewModel.summaryModelInputDisabled;
-  elements.adminSummaryModelInput.placeholder = viewModel.summaryModelInputDisabled
-    ? '地端 Codex 不需要輸入模型'
-    : '例如 gpt-5.4-nano';
+  elements.adminSummaryModelInput.placeholder = '例如 gpt-5.6-luna';
 };
 
 const renderAdminPanel = (
@@ -536,7 +661,8 @@ const renderAdminPanel = (
   auditEntries = [],
   usageReport = null,
   runtimeHealth = null,
-  usageHistory = null
+  usageHistory = null,
+  codexUsage = null
 ) => {
   adminProviderState = {
     ...payload,
@@ -558,18 +684,7 @@ const renderAdminPanel = (
       return node;
     })
   );
-  elements.adminSummaryProviderSelect.replaceChildren(
-    ...payload.summaryOptions.map((option) => {
-      const node = document.createElement('option');
-      node.value = option.value;
-      node.textContent = option.ready
-        ? formatSummaryModeLabel(option.value)
-        : `${formatSummaryModeLabel(option.value)}（未就緒）`;
-      node.disabled = !option.ready;
-      node.selected = option.value === payload.summaryProvider;
-      return node;
-    })
-  );
+  elements.adminSummaryProviderValue.textContent = formatSummaryModeLabel(payload.summaryProvider);
   elements.adminTranscriptionModelInput.value = payload.transcriptionModel ?? '';
   elements.adminSummaryModelInput.value = payload.summaryModel ?? '';
   elements.adminPricingVersionInput.value = payload.pricingVersion ?? 'v1';
@@ -582,11 +697,11 @@ const renderAdminPanel = (
   elements.adminLocalTranscriptionInput.value = payload.concurrencyPools?.localTranscription ?? 1;
   elements.adminCloudTranscriptionInput.value = payload.concurrencyPools?.cloudTranscription ?? 1;
   elements.adminLocalSummaryInput.value = payload.concurrencyPools?.localSummary ?? 1;
-  elements.adminCloudSummaryInput.value = payload.concurrencyPools?.cloudSummary ?? 1;
   renderAuditEntries(auditEntries);
   renderUsageReport(usageReport);
   renderRuntimeHealth(runtimeHealth);
   renderUsageHistory(usageHistory);
+  renderCodexWeeklyUsage(codexUsage);
   updateAdminProviderStatus();
 };
 
@@ -611,7 +726,8 @@ const fetchAdminPanel = async () => {
     auditResponse,
     usageReportResponse,
     runtimeHealthResponse,
-    usageHistoryResponse
+    usageHistoryResponse,
+    codexUsageResponse
   ] = await Promise.all([
     apiFetch('/api/admin/ai-policy'),
     apiFetch('/api/admin/cloud-quota/overrides'),
@@ -622,13 +738,15 @@ const fetchAdminPanel = async () => {
       const url = new URL('/api/admin/usage/history', window.location.origin);
       url.searchParams.set('limit', String(getHistoryLimit()));
       return apiFetch(url);
-    })()
+    })(),
+    apiFetch('/api/admin/codex-usage')
   ]);
 
   if (
     policyResponse.status === 401 ||
     policyResponse.status === 403 ||
-    usageHistoryResponse.status === 401
+    usageHistoryResponse.status === 401 ||
+    codexUsageResponse.status === 401
   ) {
     setToken(null);
     showLoginView();
@@ -642,7 +760,8 @@ const fetchAdminPanel = async () => {
     !auditResponse.ok ||
     !usageReportResponse.ok ||
     !runtimeHealthResponse.ok ||
-    !usageHistoryResponse.ok
+    !usageHistoryResponse.ok ||
+    !codexUsageResponse.ok
   ) {
     throw new Error('Failed to fetch admin governance settings.');
   }
@@ -653,6 +772,7 @@ const fetchAdminPanel = async () => {
   const usageReportPayload = await usageReportResponse.json();
   const runtimeHealthPayload = await runtimeHealthResponse.json();
   const usageHistoryPayload = await usageHistoryResponse.json();
+  const codexUsagePayload = await codexUsageResponse.json();
 
   showAdminView();
   renderAdminPanel(
@@ -661,7 +781,8 @@ const fetchAdminPanel = async () => {
     auditPayload.entries || [],
     usageReportPayload,
     runtimeHealthPayload,
-    usageHistoryPayload
+    usageHistoryPayload,
+    codexUsagePayload
   );
 };
 
@@ -747,7 +868,6 @@ elements.jobModal?.addEventListener('cancel', (event) => {
 
 [
   elements.adminProviderSelect,
-  elements.adminSummaryProviderSelect,
   elements.adminTranscriptionModelInput,
   elements.adminSummaryModelInput,
   elements.adminPricingVersionInput,
@@ -756,7 +876,6 @@ elements.jobModal?.addEventListener('cancel', (event) => {
   elements.adminLocalTranscriptionInput,
   elements.adminCloudTranscriptionInput,
   elements.adminLocalSummaryInput,
-  elements.adminCloudSummaryInput,
   elements.adminOverrideSubmitterId,
   elements.adminOverrideQuotaInput
 ].forEach((element) => {
@@ -782,11 +901,8 @@ elements.adminProviderForm.addEventListener('submit', async (event) => {
       body: JSON.stringify({
         transcriptionProvider: elements.adminProviderSelect.value,
         transcriptionModel: elements.adminTranscriptionModelInput.value.trim(),
-        summaryProvider: elements.adminSummaryProviderSelect.value,
-        summaryModel:
-          elements.adminSummaryProviderSelect.value === 'local-codex'
-            ? adminProviderState.summaryModel || 'gpt-5-mini'
-            : elements.adminSummaryModelInput.value.trim(),
+        summaryProvider: adminProviderState.summaryProvider,
+        summaryModel: elements.adminSummaryModelInput.value.trim(),
         pricingVersion: elements.adminPricingVersionInput.value.trim(),
         defaultDailyCloudQuotaUsd: twdQuotaToUsd(elements.adminDefaultQuotaInput.value),
         liveMeetingReservationCapUsd: twdQuotaToUsd(
@@ -796,7 +912,7 @@ elements.adminProviderForm.addEventListener('submit', async (event) => {
           localTranscription: Number(elements.adminLocalTranscriptionInput.value),
           cloudTranscription: Number(elements.adminCloudTranscriptionInput.value),
           localSummary: Number(elements.adminLocalSummaryInput.value),
-          cloudSummary: Number(elements.adminCloudSummaryInput.value)
+          cloudSummary: adminProviderState.concurrencyPools?.cloudSummary ?? 1
         }
       })
     });

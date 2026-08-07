@@ -159,16 +159,6 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
                         }
                     )
 
-    def test_rejects_non_positive_responses_timeout(self) -> None:
-        with self.assertRaisesRegex(ValueError, "positive integer"):
-            read_summary_worker_config(
-                {
-                    "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
-                    "WORKER_ID": "summarizer-alpha",
-                    "AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS": "0",
-                }
-            )
-
     def test_allows_overriding_transcribe_language_and_prompt(self) -> None:
         config = read_transcription_worker_config(
             {
@@ -195,7 +185,7 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
 
         self.assertEqual(config["whisper_device"], "cuda")
 
-    def test_ignores_summary_polishing_and_diarization_settings(self) -> None:
+    def test_ignores_obsolete_polishing_and_diarization_settings(self) -> None:
         config = read_transcription_worker_config(
             {
                 "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
@@ -205,16 +195,11 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
                 "AZURE_OPENAI_ENDPOINT": "https://azure.example.test",
                 "AZURE_OPENAI_DEPLOYMENT": "gpt-4o-transcribe",
                 "AZURE_OPENAI_API_KEY": "secret",
-                "AZURE_OPENAI_SUMMARY_ENDPOINT": (
-                    "https://summary.example.test/openai/v1/responses"
-                ),
-                "AZURE_OPENAI_SUMMARY_API_KEY": "summary-secret",
                 "TRANSCRIPT_PUNCTUATION_ENABLED": "true",
                 "AZURE_OPENAI_DIARIZE_ENDPOINT": "https://diarize.example.test",
             }
         )
 
-        self.assertNotIn("azure_openai_summary_endpoint", config)
         self.assertNotIn("transcript_punctuation_enabled", config)
         self.assertNotIn("azure_openai_diarize_endpoint", config)
 
@@ -238,6 +223,7 @@ class ReadSummaryWorkerConfigTests(unittest.TestCase):
                 "poll_interval_ms": 1000,
                 "summary_model": "gpt-5.6-luna",
                 "summary_reasoning_effort": "max",
+                "summary_timeout_seconds": 900,
                 "codex_cli_path": "codex",
                 "azure_openai_summary_endpoint": None,
                 "azure_openai_summary_api_key": None,
@@ -245,34 +231,34 @@ class ReadSummaryWorkerConfigTests(unittest.TestCase):
             },
         )
 
-    def test_overrides_summary_timeout(self) -> None:
+    def test_uses_only_a_complete_https_azure_fallback_pair(self) -> None:
+        base = {
+            "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+            "WORKER_ID": "summarizer-alpha",
+        }
+        incomplete = read_summary_worker_config(
+            {**base, "AZURE_OPENAI_SUMMARY_API_KEY": "secret"}
+        )
+        self.assertIsNone(incomplete["azure_openai_summary_endpoint"])
+        self.assertIsNone(incomplete["azure_openai_summary_api_key"])
+        with self.assertRaisesRegex(ValueError, "https URL"):
+            read_summary_worker_config(
+                {
+                    **base,
+                    "AZURE_OPENAI_SUMMARY_ENDPOINT": "http://example.test/openai/v1/responses",
+                    "AZURE_OPENAI_SUMMARY_API_KEY": "secret",
+                }
+            )
+
         config = read_summary_worker_config(
             {
-                "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
-                "WORKER_ID": "summarizer-alpha",
-                "AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS": "240",
+                **base,
+                "AZURE_OPENAI_SUMMARY_ENDPOINT": "https://example.test/openai/v1/responses",
+                "AZURE_OPENAI_SUMMARY_API_KEY": "secret",
+                "AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS": "45",
             }
         )
-
-        self.assertEqual(config["azure_openai_summary_timeout_seconds"], 240)
-
-    def test_rejects_invalid_summary_endpoints(self) -> None:
-        invalid_endpoints = (
-            "https://azure.example.test/openai/v1/chat/completions",
-            "http://azure.example.test/openai/v1/responses",
-            "https:///openai/v1/responses",
-        )
-
-        for endpoint in invalid_endpoints:
-            with self.subTest(endpoint=endpoint):
-                with self.assertRaises(ValueError):
-                    read_summary_worker_config(
-                        {
-                            "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
-                            "WORKER_ID": "summarizer-alpha",
-                            "AZURE_OPENAI_SUMMARY_ENDPOINT": endpoint,
-                        }
-                    )
+        self.assertEqual(config["azure_openai_summary_timeout_seconds"], 45)
 
 
 if __name__ == "__main__":

@@ -74,7 +74,7 @@ describe('cloud usage helpers', () => {
     ).toEqual({ costUsd: 0.561644, pricingStatus: 'priced' });
   });
 
-  it('reprices historical MAI usage stored with the superseded S1 rate', () => {
+  it('keeps historical MAI duration as a known lower bound without per-upload billing', () => {
     expect(
       resolveCloudUsageEntryCost({
         id: 'usage_historical_mai',
@@ -93,7 +93,61 @@ describe('cloud usage helpers', () => {
         detail: { audioMs: 5_616_442 },
         createdAt: '2026-07-30T09:33:17.000Z'
       })
-    ).toEqual({ knownCostUsd: 0.561644, hasUnpricedUsage: false });
+    ).toEqual({ knownCostUsd: 0.561644, hasUnpricedUsage: true });
+  });
+
+  it('prices MAI exactly from the sum of per-upload billed seconds', () => {
+    expect(
+      resolveCloudUsageEntryCost({
+        id: 'usage_exact_mai',
+        jobId: 'job_1',
+        submitterId: 'user_1',
+        quotaDayKey: '2026-08-06',
+        entryType: 'actual',
+        stage: 'transcription',
+        provider: 'azure-speech-mai-transcribe-1.5',
+        model: 'mai-transcribe-1.5',
+        pricingVersion: 'v1',
+        usageQuantity: 110_000,
+        usageUnit: 'audio-ms',
+        pricingStatus: 'priced',
+        costUsd: 0.011,
+        detail: {
+          audioMs: 109_760,
+          billedAudioMs: 110_000,
+          providerRequestCount: 4,
+          unmeteredRequestCount: 0
+        },
+        createdAt: '2026-08-06T01:00:00.000Z'
+      })
+    ).toEqual({ knownCostUsd: 0.011, hasUnpricedUsage: false });
+  });
+
+  it('keeps successful MAI uploads as a lower bound when a retry is unmetered', () => {
+    expect(
+      resolveCloudUsageEntryCost({
+        id: 'usage_partial_mai',
+        jobId: 'job_1',
+        submitterId: 'user_1',
+        quotaDayKey: '2026-08-06',
+        entryType: 'actual',
+        stage: 'transcription',
+        provider: 'azure-speech-mai-transcribe-1.5',
+        model: 'mai-transcribe-1.5',
+        pricingVersion: 'v1',
+        usageQuantity: 30_000,
+        usageUnit: 'audio-ms',
+        pricingStatus: 'unpriced',
+        costUsd: null,
+        detail: {
+          audioMs: 30_000,
+          billedAudioMs: 30_000,
+          providerRequestCount: 2,
+          unmeteredRequestCount: 1
+        },
+        createdAt: '2026-08-06T01:00:00.000Z'
+      })
+    ).toEqual({ knownCostUsd: 0.003, hasUnpricedUsage: true });
   });
 
   it('shows the metered Luna lower bound when one punctuation request is unmetered', () => {

@@ -71,7 +71,8 @@ does not replace transcription correction.
   choosing between conflicting hypotheses.
 - Add conservative, cross-chunk anonymous speaker evidence without allowing
   the diarization model to replace primary transcript text.
-- Make the observed transient summary HTTP 400 self-healing once and observable.
+- Make the observed summary HTTP 400 durable and observable without replaying a
+  paid provider request.
 - Ingest the actual 318 MiB comparison video through the supported upload path.
 - Compare terminology, unsupported-summary claims, coverage, and speaker
   evidence separately without declaring an external candidate ground truth.
@@ -152,22 +153,15 @@ removing preceding generated transcript context so a rejected hypothesis
 cannot bias its own recovery. No terminology list or model-generated rewrite
 participates in the gate.
 
-### 4. Retry only summary HTTP 400 once
+### 4. Preserve summary HTTP 400 without replay
 
 The shared Responses transport exposes the HTTP status and redacted provider
-error body through a typed error. The summary caller catches only status 400
-and repeats `request_response` once with the same endpoint, model,
-instructions, input, `store: false`, timeout, and payload bytes. Punctuation
-did not retry in this change. The later
-`use-mai-luna-transcription-pipeline` change supersedes that point by allowing
-one identical punctuation HTTP 400 retry; no other punctuation or summary
-failure retries.
-
-A successful second response records `providerRequestCount=2` and
-`unmeteredRequestCount=1`; because the first response had no trustworthy usage,
-that summary attempt remains unpriced even if a future exact token price
-exists. A second failure includes that it failed after one retry and preserves
-the final Azure body in the job-visible failure message.
+error body through a typed error. The quota-only Azure summary caller records
+that one reserved request as failed and does not call `request_response` again.
+The request-level audit preserves its status, external request ID when present,
+and unpriced possible charge. The later `simplify-mai-transcription-pipeline`
+change removes punctuation calls from new jobs, so their historical retry
+metadata remains read-compatible but is not an active summary contract.
 
 ### 5. Return a bounded upload error
 
@@ -376,8 +370,8 @@ request timeout becomes 900 seconds without adding a timeout retry.
   labelled as context rather than instruction.
 - Exact alias replacement can still be wrong if an operator supplies a bad
   mapping, so it is job-specific, visible, and never overwrites raw evidence.
-- Retrying a 400 may create an unmetered provider attempt; request counts remain
-  visible and the aggregate is not presented as fully priced.
+- An Azure summary HTTP 400 remains one visible, unpriced provider request and
+  is not replayed.
 - 512 MiB uploads consume more temporary disk, but remain file-backed and
   bounded by one explicit limit.
 - An independent verifier can detect high-confidence primary errors that

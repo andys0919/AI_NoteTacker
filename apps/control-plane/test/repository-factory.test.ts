@@ -6,9 +6,10 @@ import {
 } from '../src/infrastructure/repository-factory.js';
 
 describe('schema migrations', () => {
-  it('runs the current schema once and records its version under a transaction lock', async () => {
+  it('runs the provider-request schema once after the prior production migration', async () => {
     const queries: Array<{ text: string; values?: unknown[] }> = [];
-    const applied = new Set<string>();
+    const previousMigration = '20260805-runtime-hardening-v1';
+    const applied = new Set<string>([previousMigration]);
     const client = {
       async query<TRow extends Record<string, unknown>>(text: string, values?: unknown[]) {
         queries.push({ text, values });
@@ -28,7 +29,8 @@ describe('schema migrations', () => {
     await runSchemaMigrations(pool);
     await runSchemaMigrations(pool);
 
-    expect(applied).toEqual(new Set([CURRENT_SCHEMA_MIGRATION]));
+    expect(CURRENT_SCHEMA_MIGRATION).toBe('20260806-summary-fallback-request-binding-v1');
+    expect(applied).toEqual(new Set([previousMigration, CURRENT_SCHEMA_MIGRATION]));
     expect(
       queries.filter(({ text }) => text.includes('CREATE TABLE IF NOT EXISTS recording_jobs'))
     ).toHaveLength(1);

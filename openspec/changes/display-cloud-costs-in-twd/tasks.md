@@ -20,3 +20,4 @@
   verified catalog, with a last-known-good regression.
 - [x] 3.8 Reject USD/TWD meter rows with different effective dates before
   atomically replacing the verified reference.
+- [x] 3.9 Label a partial converted subtotal as `已知費用` and keep the unpriced-usage warning.

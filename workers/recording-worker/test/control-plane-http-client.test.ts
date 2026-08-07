@@ -4,14 +4,22 @@ import { createServer, type Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createApp } from '../../../apps/control-plane/src/app.js';
+import { createAdminConsoleAuth } from '../../../apps/control-plane/src/infrastructure/admin-console-auth.js';
 import { ControlPlaneHttpClient } from '../src/control-plane-http-client.js';
 
 describe('ControlPlaneHttpClient', () => {
-  let server: Server;
+  const internalServiceToken = 'recording-worker-http-client-test-token-2026';
+  let server: Server | undefined;
   let baseUrl: string;
 
   beforeEach(async () => {
-    const app = createApp();
+    const app = createApp(undefined, {
+      internalServiceToken,
+      adminConsoleAuth: createAdminConsoleAuth({
+        password: 'recording-worker-test-password',
+        sessionSecret: 'recording-worker-test-session'
+      })
+    });
     server = createServer(app);
 
     await new Promise<void>((resolve) => {
@@ -23,6 +31,9 @@ describe('ControlPlaneHttpClient', () => {
   });
 
   afterEach(async () => {
+    if (!server) {
+      return;
+    }
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {
         if (error) {
@@ -36,7 +47,6 @@ describe('ControlPlaneHttpClient', () => {
   });
 
   it('claims a job and posts a worker event to the control plane', async () => {
-    const appClient = createApp();
     await fetch(`${baseUrl}/recording-jobs`, {
       method: 'POST',
       headers: {
@@ -48,7 +58,8 @@ describe('ControlPlaneHttpClient', () => {
     });
 
     const client = new ControlPlaneHttpClient({
-      baseUrl
+      baseUrl,
+      internalServiceToken
     });
 
     const claimedJob = await client.claimNextJob('worker-alpha');
@@ -59,9 +70,11 @@ describe('ControlPlaneHttpClient', () => {
     await client.postJobEvent(claimedJob!.id, {
       type: 'state-updated',
       state: 'recording'
-    });
+    }, claimedJob!.leaseToken);
 
-    const fetchedResponse = await fetch(`${baseUrl}/recording-jobs/${claimedJob!.id}`);
+    const fetchedResponse = await fetch(`${baseUrl}/recording-jobs/${claimedJob!.id}`, {
+      headers: { 'x-internal-service-token': internalServiceToken }
+    });
     const fetchedJob = await fetchedResponse.json();
 
     expect(fetchedJob.state).toBe('recording');
@@ -80,7 +93,8 @@ describe('ControlPlaneHttpClient', () => {
     });
 
     const client = new ControlPlaneHttpClient({
-      baseUrl
+      baseUrl,
+      internalServiceToken
     });
 
     const claimedJob = await client.claimNextJob('worker-heartbeat');
@@ -90,7 +104,9 @@ describe('ControlPlaneHttpClient', () => {
 
     await client.postLeaseHeartbeat(claimedJob!.id, 'recording', claimedJob!.leaseToken);
 
-    const fetchedResponse = await fetch(`${baseUrl}/recording-jobs/${claimedJob!.id}`);
+    const fetchedResponse = await fetch(`${baseUrl}/recording-jobs/${claimedJob!.id}`, {
+      headers: { 'x-internal-service-token': internalServiceToken }
+    });
     const fetchedJob = await fetchedResponse.json();
 
     expect(fetchedJob.assignedWorkerId).toBe('worker-heartbeat');

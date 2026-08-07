@@ -1,4 +1,5 @@
 from transcription_worker.heartbeat import start_lease_heartbeat
+from threading import Lock
 
 
 def _summary_usage_event(usage):
@@ -13,26 +14,23 @@ def _summary_usage_event(usage):
         event["providerRequestCount"] = usage["provider_request_count"]
     if "unmetered_request_count" in usage:
         event["unmeteredRequestCount"] = usage["unmetered_request_count"]
+    if "cache_write_prompt_tokens" in usage:
+        event["cacheWritePromptTokens"] = usage["cache_write_prompt_tokens"]
     return event
 
 
 def _failed_summary_usage_event(error):
     usage = getattr(error, "usage", None)
-    if not isinstance(usage, dict):
-        return None
+    return _summary_usage_event(usage) if isinstance(usage, dict) else None
 
-    event = {
-        "promptTokens": usage["input_tokens"],
-        "cachedPromptTokens": usage["cached_input_tokens"],
-        "completionTokens": usage["output_tokens"],
-        "reasoningCompletionTokens": usage["reasoning_output_tokens"],
-        "totalTokens": usage["total_tokens"],
-    }
-    if "provider_request_count" in usage:
-        event["providerRequestCount"] = usage["provider_request_count"]
-    if "unmetered_request_count" in usage:
-        event["unmeteredRequestCount"] = usage["unmetered_request_count"]
-    return event
+
+def _quota_is_exhausted(probe):
+    if probe is None:
+        return False
+    try:
+        return probe() is True
+    except Exception:
+        return False
 
 
 def _post_terminal_event(client, job_id, payload, lease_token):
@@ -86,10 +84,12 @@ def run_summary_worker_iteration(
     worker_id,
     client,
     summarizer,
-    summarizer_registry=None,
+    azure_fallback_summarizer=None,
+    quota_is_exhausted=None,
+    codex_usage=None,
     heartbeat_interval_ms=30_000,
 ):
-    claimed_job = client.claim_next_summary_job(worker_id)
+    claimed_job = client.claim_next_summary_job(worker_id, codex_usage=codex_usage)
 
     if not claimed_job:
         return {"kind": "idle"}
@@ -103,6 +103,40 @@ def run_summary_worker_iteration(
     )
 
     summary_generated = False
+    actual_provider = "local-codex"
+    provider_request_ids = []
+    provider_request_ids_lock = Lock()
+
+    def report_provider_request(update):
+        request_id = update["requestId"]
+        if update["action"] == "start":
+            client.start_provider_request(
+                claimed_job["id"],
+                request_id,
+                stage="summary",
+                lease_token=claimed_job["leaseToken"],
+                provider=update["provider"],
+                model=update["model"],
+                operation=update.get("operation"),
+            )
+            with provider_request_ids_lock:
+                provider_request_ids.append(request_id)
+            return
+
+        client.finish_provider_request(
+            claimed_job["id"],
+            request_id,
+            lease_token=claimed_job["leaseToken"],
+            status=update["status"],
+            provider_request_id=update.get("providerRequestId"),
+            http_status=update.get("httpStatus"),
+            error_code=update.get("errorCode"),
+            usage=update.get("usage"),
+        )
+
+    def request_audit_ids():
+        with provider_request_ids_lock:
+            return list(provider_request_ids)
 
     try:
         transcript_artifact = claimed_job["transcriptArtifact"]
@@ -114,23 +148,39 @@ def run_summary_worker_iteration(
             ],
         }
 
-        selected_summarizer = (
-            summarizer_registry.get(claimed_job.get("summaryProvider"))
-            if claimed_job.get("summaryProvider") and summarizer_registry is not None
-            else summarizer
-        )
+        summary_options = {
+            "summary_profile": claimed_job.get("summaryProfile", "general"),
+            "model_override": claimed_job.get("summaryModel"),
+        }
 
-        summary_result = selected_summarizer.summarize(
-            transcript_result,
-            summary_profile=claimed_job.get("summaryProfile", "general"),
-            model_override=claimed_job.get("summaryModel")
-            if claimed_job.get("summaryProvider") == "azure-openai"
-            else None,
-        )
+        if _quota_is_exhausted(quota_is_exhausted):
+            if azure_fallback_summarizer is None:
+                raise RuntimeError(
+                    "Codex quota is exhausted and Azure summary fallback is not configured"
+                )
+            if not client.reserve_summary_fallback(
+                claimed_job["id"], claimed_job.get("leaseToken")
+            ):
+                raise RuntimeError(
+                    "Azure summary fallback was already attempted for this job"
+                )
+            actual_provider = "azure-openai"
+            summary_result = azure_fallback_summarizer.summarize(
+                transcript_result,
+                on_provider_request=report_provider_request,
+                **summary_options,
+            )
+        else:
+            summary_result = summarizer.summarize(
+                transcript_result,
+                on_provider_request=report_provider_request,
+                **summary_options,
+            )
         summary_generated = True
 
         summary_event = {
             "type": "summary-artifact-stored",
+            "actualProvider": actual_provider,
             "summaryArtifact": {
                 "model": summary_result["model"],
                 "reasoningEffort": summary_result["reasoning_effort"],
@@ -159,6 +209,8 @@ def run_summary_worker_iteration(
                 else None,
             },
         }
+        if request_audit_ids():
+            summary_event["requestAuditIds"] = request_audit_ids()
         if summary_result.get("usage"):
             summary_event["usage"] = _summary_usage_event(summary_result["usage"])
         _post_terminal_event(
@@ -173,6 +225,7 @@ def run_summary_worker_iteration(
         if summary_generated:
             raise
 
+        audit_ids = request_audit_ids()
         failure_event = {
             "type": "summary-failed",
             "failure": {
@@ -180,9 +233,13 @@ def run_summary_worker_iteration(
                 "message": str(error),
             },
         }
+        if actual_provider != "azure-openai" or audit_ids:
+            failure_event["actualProvider"] = actual_provider
         failed_usage = _failed_summary_usage_event(error)
-        if failed_usage:
+        if failed_usage and audit_ids:
             failure_event["usage"] = failed_usage
+        if audit_ids:
+            failure_event["requestAuditIds"] = audit_ids
         _post_terminal_event(
             client,
             claimed_job["id"],

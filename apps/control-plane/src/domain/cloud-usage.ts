@@ -1,6 +1,7 @@
 import type {
   CloudUsageCostSummary,
-  CloudUsageLedgerEntry
+  CloudUsageLedgerEntry,
+  ProviderRequestAudit
 } from './cloud-usage-ledger-repository.js';
 import type { RecordingJob } from './recording-job.js';
 import type { TranscriptionProviderSetting } from './transcription-provider-settings-repository.js';
@@ -58,14 +59,6 @@ export const AZURE_RESPONSES_PRICING_CATALOG: AzureResponsesPricing[] = [
 ];
 
 export type AzureRetailPricingSnapshot = {
-  luna: {
-    effectiveDate: string;
-    meterSource: string;
-    inputUsdPerMillionTokens: number;
-    cachedInputUsdPerMillionTokens: number;
-    cacheWriteUsdPerMillionTokens: number;
-    outputUsdPerMillionTokens: number;
-  };
   mai: {
     effectiveDate: string;
     meterSource: string;
@@ -135,23 +128,7 @@ const hasAuthoritativePricingProvenance = (
 };
 
 export const getAzureRetailPricingSnapshot = (): AzureRetailPricingSnapshot => {
-  const luna = AZURE_RESPONSES_PRICING_CATALOG.find(
-    (candidate) =>
-      candidate.model === 'gpt-5.6-luna' && candidate.pricingVersion === 'v1'
-  );
-  if (!luna || !isValidRate(luna.cacheWriteUsdPerMillionTokens)) {
-    throw new Error('verified Luna pricing row is missing');
-  }
-
   return {
-    luna: {
-      effectiveDate: luna.effectiveDate,
-      meterSource: luna.meterSource,
-      inputUsdPerMillionTokens: luna.inputUsdPerMillionTokens,
-      cachedInputUsdPerMillionTokens: luna.cachedInputUsdPerMillionTokens,
-      cacheWriteUsdPerMillionTokens: luna.cacheWriteUsdPerMillionTokens,
-      outputUsdPerMillionTokens: luna.outputUsdPerMillionTokens
-    },
     mai: { ...azureSpeechMaiPricing },
     twd: { ...azureTwdPricing }
   };
@@ -160,16 +137,7 @@ export const getAzureRetailPricingSnapshot = (): AzureRetailPricingSnapshot => {
 export const applyAzureRetailPricingSnapshot = (
   snapshot: AzureRetailPricingSnapshot
 ): void => {
-  const lunaIndex = AZURE_RESPONSES_PRICING_CATALOG.findIndex(
-    (candidate) =>
-      candidate.model === 'gpt-5.6-luna' && candidate.pricingVersion === 'v1'
-  );
-  const currentLuna = AZURE_RESPONSES_PRICING_CATALOG[lunaIndex];
-  const nextLuna = currentLuna ? { ...currentLuna, ...snapshot.luna } : undefined;
   if (
-    !nextLuna ||
-    !hasAuthoritativePricingProvenance(nextLuna) ||
-    !isValidRate(nextLuna.cacheWriteUsdPerMillionTokens) ||
     !isValidIsoDate(snapshot.mai.effectiveDate) ||
     !isNonEmptyString(snapshot.mai.meterSource) ||
     !isValidRate(snapshot.mai.usdPerHour) ||
@@ -180,14 +148,12 @@ export const applyAzureRetailPricingSnapshot = (
     snapshot.twd.usdToTwdRate === 0 ||
     typeof snapshot.twd.verifiedAt !== 'string' ||
     Number.isNaN(Date.parse(snapshot.twd.verifiedAt)) ||
-    snapshot.luna.effectiveDate < currentLuna.effectiveDate ||
     snapshot.mai.effectiveDate < azureSpeechMaiPricing.effectiveDate ||
     snapshot.twd.effectiveDate < azureTwdPricing.effectiveDate
   ) {
     throw new Error('Azure retail pricing snapshot is invalid');
   }
 
-  AZURE_RESPONSES_PRICING_CATALOG.splice(lunaIndex, 1, nextLuna);
   azureSpeechMaiPricing = { ...snapshot.mai };
   azureTwdPricing = { ...snapshot.twd };
 };
@@ -247,7 +213,8 @@ export type ActualConsumedUsdSummary = {
 export const sumActualConsumedUsd = (
   entries: CloudUsageLedgerEntry[],
   submitterId: string,
-  quotaDayKey: string
+  quotaDayKey: string,
+  providerRequests: ProviderRequestAudit[] = []
 ): ActualConsumedUsdSummary => {
   const actualEntries = entries.filter(
     (entry) =>
@@ -256,9 +223,18 @@ export const sumActualConsumedUsd = (
       entry.entryType === 'actual'
   );
   const resolvedEntries = actualEntries.map(resolveCloudUsageEntryCost);
-  const hasUnpricedUsage = resolvedEntries.some((entry) => entry.hasUnpricedUsage);
+  const meteredRequests = providerRequests.filter(
+    (request) =>
+      request.submitterId === submitterId &&
+      request.quotaDayKey === quotaDayKey &&
+      request.billingClass === 'metered-api'
+  );
+  const hasUnpricedUsage =
+    resolvedEntries.some((entry) => entry.hasUnpricedUsage) ||
+    meteredRequests.some((request) => request.pricingStatus !== 'priced');
   const pricedCostUsd = roundUsd(
-    resolvedEntries.reduce((total, entry) => total + entry.knownCostUsd, 0)
+    resolvedEntries.reduce((total, entry) => total + entry.knownCostUsd, 0) +
+      meteredRequests.reduce((total, request) => total + request.knownCostUsd, 0)
   );
 
   return {
@@ -346,7 +322,7 @@ export const calculateAzureResponsesCost = (input: {
   };
 };
 
-const calculateAzureResponsesKnownCost = (input: {
+export const calculateAzureResponsesKnownCost = (input: {
   model: string;
   pricingVersion: string;
   inputTokens: number;
@@ -428,9 +404,13 @@ export const resolveCloudUsageEntryCost = (
     entry.provider === 'azure-speech-mai-transcribe-1.5' &&
     entry.model === 'mai-transcribe-1.5'
   ) {
+    const billedAudioMs = readUsageInteger(detail.billedAudioMs);
     const audioMs =
+      billedAudioMs ??
       readUsageInteger(detail.audioMs) ??
       (entry.usageUnit === 'audio-ms' ? Number(entry.usageQuantity) : undefined);
+    const providerRequestCount = readUsageInteger(detail.providerRequestCount);
+    const unmeteredRequestCount = readUsageInteger(detail.unmeteredRequestCount);
     const pricing =
       audioMs === undefined
         ? { costUsd: null, pricingStatus: 'unpriced' as const }
@@ -441,9 +421,14 @@ export const resolveCloudUsageEntryCost = (
             audioMs
           });
 
-    return pricing.pricingStatus === 'priced'
-      ? { knownCostUsd: pricing.costUsd, hasUnpricedUsage: false }
-      : { knownCostUsd: 0, hasUnpricedUsage: true };
+    return {
+      knownCostUsd: pricing.pricingStatus === 'priced' ? pricing.costUsd : 0,
+      hasUnpricedUsage:
+        pricing.pricingStatus === 'unpriced' ||
+        billedAudioMs === undefined ||
+        providerRequestCount === undefined ||
+        unmeteredRequestCount !== 0
+    };
   }
 
   if (entry.pricingStatus === 'priced') {
@@ -459,6 +444,11 @@ export const resolveCloudUsageEntryCost = (
     detail,
     'cachedPromptTokens',
     'cachedInputTokens'
+  );
+  const cacheWriteTokens = readFirstUsageInteger(
+    detail,
+    'cacheWritePromptTokens',
+    'cacheWriteTokens'
   );
   const outputTokens = readFirstUsageInteger(detail, 'completionTokens', 'outputTokens');
   const totalTokens = readUsageInteger(detail.totalTokens);
@@ -484,11 +474,13 @@ export const resolveCloudUsageEntryCost = (
     pricingVersion: entry.pricingVersion,
     inputTokens,
     cachedInputTokens,
+    cacheWriteTokens,
     outputTokens
   });
 
   return {
-    knownCostUsd: knownCostUsd ?? 0,
+    knownCostUsd:
+      exactPricing.pricingStatus === 'priced' ? exactPricing.costUsd : (knownCostUsd ?? 0),
     hasUnpricedUsage:
       exactPricing.pricingStatus === 'unpriced' || unmeteredRequestCount !== 0
   };
@@ -496,7 +488,8 @@ export const resolveCloudUsageEntryCost = (
 
 export const summarizeActualCostsByJobIds = (
   entries: CloudUsageLedgerEntry[],
-  jobIds: string[]
+  jobIds: string[],
+  providerRequests: ProviderRequestAudit[] = []
 ): Record<string, CloudUsageCostSummary> => {
   const summaries: Record<string, CloudUsageCostSummary> = {};
   const jobIdSet = new Set(jobIds);
@@ -547,6 +540,49 @@ export const summarizeActualCostsByJobIds = (
             current.actualSummaryCostUsd
         );
     summaries[entry.jobId] = current;
+  }
+
+  for (const request of providerRequests) {
+    if (request.billingClass !== 'metered-api' || !jobIdSet.has(request.jobId)) {
+      continue;
+    }
+
+    const current = summaries[request.jobId] ?? {
+      actualTranscriptionCostUsd: 0,
+      hasUnpricedTranscriptionUsage: false,
+      actualPunctuationCostUsd: 0,
+      hasUnpricedPunctuationUsage: false,
+      actualSummaryCostUsd: 0,
+      hasUnpricedSummaryUsage: false,
+      actualCloudCostUsd: 0,
+      hasUnpricedUsage: false
+    };
+    const unpriced = request.pricingStatus !== 'priced';
+
+    if (request.stage === 'transcription') {
+      current.actualTranscriptionCostUsd = roundUsd(
+        current.actualTranscriptionCostUsd + request.knownCostUsd
+      );
+      current.hasUnpricedTranscriptionUsage ||= unpriced;
+    } else {
+      current.actualSummaryCostUsd = roundUsd(
+        current.actualSummaryCostUsd + request.knownCostUsd
+      );
+      current.hasUnpricedSummaryUsage ||= unpriced;
+    }
+
+    current.hasUnpricedUsage =
+      current.hasUnpricedTranscriptionUsage ||
+      current.hasUnpricedPunctuationUsage ||
+      current.hasUnpricedSummaryUsage;
+    current.actualCloudCostUsd = current.hasUnpricedUsage
+      ? null
+      : roundUsd(
+          current.actualTranscriptionCostUsd +
+            current.actualPunctuationCostUsd +
+            current.actualSummaryCostUsd
+        );
+    summaries[request.jobId] = current;
   }
 
   return summaries;

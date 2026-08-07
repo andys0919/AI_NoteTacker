@@ -20,6 +20,84 @@ class _FakeResponse(io.BytesIO):
 
 
 class AzureOpenAiResponsesTests(unittest.TestCase):
+    def test_audits_one_request_with_provider_id_and_complete_token_categories(self) -> None:
+        updates = []
+
+        def fake_urlopen(_http_request, timeout=None):
+            payload = {
+                "status": "completed",
+                "usage": {
+                    "input_tokens": 100,
+                    "input_tokens_details": {
+                        "cached_tokens": 20,
+                        "cache_write_tokens": 10,
+                    },
+                    "output_tokens": 30,
+                    "output_tokens_details": {"reasoning_tokens": 5},
+                    "total_tokens": 130,
+                }
+            }
+            response = _FakeResponse(json.dumps(payload).encode("utf-8"))
+            response.status = 200
+            response.headers = {"x-request-id": "azure-response-1"}
+            return response
+
+        request_response(
+            endpoint="https://azure.example.test/openai/v1/responses",
+            api_key="secret",
+            model="gpt-5.6-luna",
+            user_input="meeting transcript",
+            urlopen=fake_urlopen,
+            on_provider_request=updates.append,
+        )
+
+        self.assertEqual([update["action"] for update in updates], ["start", "finish"])
+        self.assertEqual(updates[0]["provider"], "azure-openai")
+        self.assertEqual(updates[0]["requestId"], updates[1]["requestId"])
+        self.assertEqual(updates[1]["providerRequestId"], "azure-response-1")
+        self.assertEqual(
+            updates[1]["usage"],
+            {
+                "inputTokens": 100,
+                "cachedInputTokens": 20,
+                "cacheWriteInputTokens": 10,
+                "outputTokens": 30,
+                "reasoningOutputTokens": 5,
+                "totalTokens": 130,
+            },
+        )
+
+    def test_audits_non_completed_http_200_as_failed(self) -> None:
+        updates = []
+
+        def fake_urlopen(_http_request, timeout=None):
+            payload = {
+                "status": "incomplete",
+                "usage": {
+                    "input_tokens": 10,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens": 2,
+                    "output_tokens_details": {"reasoning_tokens": 0},
+                    "total_tokens": 12,
+                },
+            }
+            response = _FakeResponse(json.dumps(payload).encode("utf-8"))
+            response.status = 200
+            return response
+
+        request_response(
+            endpoint="https://azure.example.test/openai/v1/responses",
+            api_key="secret",
+            model="gpt-5.6-luna",
+            user_input="meeting transcript",
+            urlopen=fake_urlopen,
+            on_provider_request=updates.append,
+        )
+
+        self.assertEqual(updates[-1]["status"], "failed")
+        self.assertEqual(updates[-1]["errorCode"], "response-not-completed")
+        self.assertEqual(updates[-1]["usage"]["totalTokens"], 12)
+
     def test_disables_response_storage(self) -> None:
         captured = {}
 
@@ -159,7 +237,10 @@ class AzureOpenAiResponsesTests(unittest.TestCase):
         payload = {
             "usage": {
                 "input_tokens": 10,
-                "input_tokens_details": {"cached_tokens": 4},
+                "input_tokens_details": {
+                    "cached_tokens": 4,
+                    "cache_write_tokens": 2,
+                },
                 "output_tokens": 6,
                 "output_tokens_details": {"reasoning_tokens": 2},
                 "total_tokens": 16,
@@ -171,11 +252,29 @@ class AzureOpenAiResponsesTests(unittest.TestCase):
             {
                 "input_tokens": 10,
                 "cached_input_tokens": 4,
+                "cache_write_tokens": 2,
                 "output_tokens": 6,
                 "reasoning_output_tokens": 2,
                 "total_tokens": 16,
             },
         )
+
+    def test_rejects_cache_breakdown_larger_than_input_tokens(self) -> None:
+        payload = {
+            "usage": {
+                "input_tokens": 10,
+                "input_tokens_details": {
+                    "cached_tokens": 8,
+                    "cache_write_tokens": 3,
+                },
+                "output_tokens": 6,
+                "output_tokens_details": {"reasoning_tokens": 2},
+                "total_tokens": 16,
+            }
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "inconsistent token usage"):
+            extract_token_usage(payload)
 
     def test_rejects_invalid_token_breakdown(self) -> None:
         payload = {

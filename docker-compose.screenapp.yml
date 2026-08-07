@@ -29,7 +29,7 @@ services:
       CODEX_CLI_PATH: codex
       CODEX_HOME: /codex-home
     volumes:
-      - ${CODEX_HOME}:/codex-home
+      - summary_codex_home:/codex-home
 
   meeting-bot:
     image: ghcr.io/screenappai/meeting-bot@sha256:b52295eb76c31085886f1618650b494575ddcea92f0a4694382733cbdffa8688

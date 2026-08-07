@@ -559,6 +559,94 @@ describe('PostgresRecordingJobRepository', () => {
     ]);
   });
 
+  it('persists one Azure summary fallback reservation across lease reclaims', async () => {
+    const summaryReady = attachTranscriptArtifact(
+      attachRecordingArtifact(
+        createRecordingJob({
+          meetingUrl: 'uploaded://postgres-summary-fallback-once.wav',
+          platform: 'uploaded-audio',
+          inputSource: 'uploaded-audio',
+          summaryRequested: true
+        }),
+        {
+          storageKey: 'recordings/postgres-summary-fallback-once/meeting.wav',
+          downloadUrl:
+            'https://storage.example.test/postgres-summary-fallback-once/meeting.wav',
+          contentType: 'audio/wav'
+        }
+      ),
+      {
+        storageKey: 'transcripts/postgres-summary-fallback-once/transcript.json',
+        downloadUrl:
+          'https://storage.example.test/postgres-summary-fallback-once/transcript.json',
+        contentType: 'application/json',
+        language: 'en',
+        segments: [{ startMs: 0, endMs: 1_000, text: 'reserve once' }]
+      }
+    );
+    await repository.save(summaryReady);
+    const firstClaim = (await repository.claimNextSummaryReady('summary-original'))!;
+    const reservedAt = new Date().toISOString();
+
+    const concurrentReservations = await Promise.all([
+      repository.reserveSummaryFallback({
+        jobId: firstClaim.id,
+        leaseToken: firstClaim.summaryLeaseToken!,
+        reservedAt
+      }),
+      repository.reserveSummaryFallback({
+        jobId: firstClaim.id,
+        leaseToken: firstClaim.summaryLeaseToken!,
+        reservedAt
+      })
+    ]);
+
+    expect(concurrentReservations.sort()).toEqual([false, true]);
+    expect(
+      await repository.claimSummaryFallbackRequest({
+        jobId: firstClaim.id,
+        leaseToken: firstClaim.summaryLeaseToken!,
+        requestId: 'request-summary-fallback-1'
+      })
+    ).toBe(true);
+    expect(
+      await repository.claimSummaryFallbackRequest({
+        jobId: firstClaim.id,
+        leaseToken: firstClaim.summaryLeaseToken!,
+        requestId: 'request-summary-fallback-1'
+      })
+    ).toBe(true);
+    expect(
+      await repository.claimSummaryFallbackRequest({
+        jobId: firstClaim.id,
+        leaseToken: firstClaim.summaryLeaseToken!,
+        requestId: 'request-summary-fallback-2'
+      })
+    ).toBe(false);
+
+    await repository.save({
+      ...firstClaim,
+      summaryLeaseHeartbeatAt: '2026-01-01T00:00:00.000Z',
+      summaryLeaseExpiresAt: '2026-01-01T00:15:00.000Z'
+    });
+    const reclaimed = (await repository.claimNextSummaryReady('summary-replacement'))!;
+
+    expect(
+      await repository.reserveSummaryFallback({
+        jobId: reclaimed.id,
+        leaseToken: reclaimed.summaryLeaseToken!,
+        reservedAt: new Date().toISOString()
+      })
+    ).toBe(false);
+    expect(
+      await repository.claimSummaryFallbackRequest({
+        jobId: reclaimed.id,
+        leaseToken: reclaimed.summaryLeaseToken!,
+        requestId: 'request-summary-fallback-1'
+      })
+    ).toBe(false);
+  });
+
   it('atomically refuses a lifecycle save when the expected transcription lease was superseded', async () => {
     const transcriptionReady = attachRecordingArtifact(
       createRecordingJob({

@@ -12,8 +12,10 @@ from transcription_worker.transcript_normalizer import TranscriptNormalizer
 
 
 class _Response:
-    def __init__(self, payload):
+    def __init__(self, payload, headers=None):
         self.payload = payload
+        self.status = 200
+        self.headers = headers or {}
 
     def __enter__(self):
         return self
@@ -34,6 +36,7 @@ class MaiTranscriberTests(unittest.TestCase):
     def test_uses_verbatim_oracle_free_definition_and_retries_one_http_400(self) -> None:
         requests = []
         sleeps = []
+        audit_updates = []
 
         def urlopen(http_request, timeout):
             requests.append((http_request, timeout))
@@ -56,7 +59,8 @@ class MaiTranscriberTests(unittest.TestCase):
                             "durationMilliseconds": 30_000,
                         }
                     ],
-                }
+                },
+                headers={"x-ms-request-id": "mai-request-2"},
             )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -78,7 +82,9 @@ class MaiTranscriberTests(unittest.TestCase):
                 normalizer=TranscriptNormalizer(converter=_TraditionalConverter()),
             )
 
-            result = transcriber.transcribe(str(source))
+            result = transcriber.transcribe(
+                str(source), on_provider_request=audit_updates.append
+            )
 
             self.assertEqual(len(requests), 2)
             self.assertEqual(sleeps, [2.0])
@@ -98,6 +104,63 @@ class MaiTranscriberTests(unittest.TestCase):
             self.assertEqual(result["segments"][0]["raw_text"], "掃描舌片条码。")
             self.assertEqual(result["segments"][0]["display_text"], "掃描舌片條碼。")
             self.assertEqual(result["segments"][0]["language"], "zh-Hant")
+            self.assertEqual(
+                result["usage"],
+                {
+                    "audio_ms": 30_000,
+                    "billed_audio_ms": 30_000,
+                    "provider_request_count": 2,
+                    "unmetered_request_count": 1,
+                },
+            )
+            self.assertEqual(
+                [update["action"] for update in audit_updates],
+                ["start", "finish", "start", "finish"],
+            )
+            self.assertEqual(
+                [update.get("status") for update in audit_updates if update["action"] == "finish"],
+                ["failed", "succeeded"],
+            )
+            self.assertNotEqual(audit_updates[0]["requestId"], audit_updates[2]["requestId"])
+            self.assertEqual(audit_updates[3]["providerRequestId"], "mai-request-2")
+            self.assertEqual(
+                audit_updates[3]["usage"],
+                {"audioMs": 30_000, "billedAudioMs": 30_000},
+            )
+
+    def test_rounds_each_successful_upload_to_a_whole_billed_second(self) -> None:
+        parts = [
+            {
+                "path": f"chunk-{index}.wav",
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "cleanup": False,
+            }
+            for index, (start_ms, end_ms) in enumerate(
+                ((0, 30_000), (30_000, 60_000), (60_000, 90_000), (90_000, 109_760))
+            )
+        ]
+        transcriber = MaiTranscriber(
+            endpoint="https://speech.example.test",
+            api_key="secret",
+            upload_plan_builder=lambda _path: parts,
+        )
+        transcriber.independent_chunk_max_workers = 1
+        transcriber._transcribe_upload = lambda *_args, **_kwargs: {
+            "text": "完成。",
+            "language": "zh-Hant",
+            "_transcription_usage": {
+                "provider_request_count": 1,
+                "unmetered_request_count": 0,
+            },
+        }
+
+        result = transcriber.transcribe("meeting.wav")
+
+        self.assertEqual(result["usage"]["audio_ms"], 109_760)
+        self.assertEqual(result["usage"]["billed_audio_ms"], 110_000)
+        self.assertEqual(result["usage"]["provider_request_count"], 4)
+        self.assertEqual(result["usage"]["unmetered_request_count"], 0)
 
     def test_splits_uploads_at_thirty_seconds(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

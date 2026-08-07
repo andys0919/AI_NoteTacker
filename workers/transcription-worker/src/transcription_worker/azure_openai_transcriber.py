@@ -49,6 +49,12 @@ def _strip_for_alignment(text: str) -> str:
     return "".join(char for char in text if char not in _ALIGNMENT_IGNORED)
 
 
+class TranscriptionUsageError(RuntimeError):
+    def __init__(self, message: str, usage: dict[str, int]) -> None:
+        super().__init__(message)
+        self.usage = usage
+
+
 class AzureOpenAiTranscriber:
     def __init__(
         self,
@@ -70,6 +76,7 @@ class AzureOpenAiTranscriber:
         max_chunk_duration_ms: int = DEFAULT_MAX_CHUNK_DURATION_MS,
         independent_chunk_max_workers: int = 1,
         provider_label: str = "Azure OpenAI",
+        provider: str = "azure-openai-gpt-4o-transcribe",
     ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.deployment = deployment
@@ -89,12 +96,14 @@ class AzureOpenAiTranscriber:
         self.max_chunk_duration_ms = max(1, max_chunk_duration_ms)
         self.independent_chunk_max_workers = max(1, independent_chunk_max_workers)
         self.provider_label = provider_label
+        self.provider = provider
 
     def transcribe(
         self,
         local_audio_path: str,
         on_progress=None,
         on_transcription_usage=None,
+        on_provider_request=None,
         workflow_context=None,
     ) -> dict:
         resolved_context = resolve_transcription_context(workflow_context)
@@ -103,13 +112,31 @@ class AzureOpenAiTranscriber:
         collected_segments = []
         detected_language = "unknown"
         successful_audio_ms = 0
+        billed_audio_ms = 0
+        provider_request_count = 0
+        unmetered_request_count = 0
+        has_billed_audio_ms = False
+        has_provider_request_count = False
+        has_unmetered_request_count = False
         previous_transcript = ""
         callback_lock = Lock()
 
         def report_transcription_usage(update):
-            nonlocal successful_audio_ms
+            nonlocal successful_audio_ms, billed_audio_ms
+            nonlocal provider_request_count, unmetered_request_count
+            nonlocal has_billed_audio_ms, has_provider_request_count
+            nonlocal has_unmetered_request_count
             with callback_lock:
                 successful_audio_ms += update.get("audio_ms", 0)
+                if "billed_audio_ms" in update:
+                    billed_audio_ms += update["billed_audio_ms"]
+                    has_billed_audio_ms = True
+                if "provider_request_count" in update:
+                    provider_request_count += update["provider_request_count"]
+                    has_provider_request_count = True
+                if "unmetered_request_count" in update:
+                    unmetered_request_count += update["unmetered_request_count"]
+                    has_unmetered_request_count = True
                 if on_transcription_usage is not None:
                     on_transcription_usage(update)
 
@@ -123,6 +150,7 @@ class AzureOpenAiTranscriber:
                     part_result = self._transcribe_part_with_quality_retry(
                         part,
                         on_transcription_usage=report_transcription_usage,
+                        on_provider_request=on_provider_request,
                         workflow_context=part_context,
                         request_prompt=self._build_request_prompt(part_context),
                     )
@@ -170,6 +198,7 @@ class AzureOpenAiTranscriber:
                             self._transcribe_part_with_quality_retry,
                             part,
                             on_transcription_usage=report_transcription_usage,
+                            on_provider_request=on_provider_request,
                             workflow_context=part_context,
                             request_prompt=self._build_request_prompt(part_context),
                         ): (index, part)
@@ -214,24 +243,57 @@ class AzureOpenAiTranscriber:
                     except OSError:
                         pass
 
+        usage = {"audio_ms": successful_audio_ms}
+        if has_billed_audio_ms:
+            usage["billed_audio_ms"] = billed_audio_ms
+        if has_provider_request_count:
+            usage["provider_request_count"] = provider_request_count
+        if has_unmetered_request_count:
+            usage["unmetered_request_count"] = unmetered_request_count
+
         return {
             "language": detected_language,
             "segments": collected_segments,
-            "usage": {
-                "audio_ms": successful_audio_ms,
-            },
+            "usage": usage,
         }
 
     def _transcribe_part_with_quality_retry(
         self,
         part: dict,
         on_transcription_usage=None,
+        on_provider_request=None,
         workflow_context=None,
         request_prompt="",
     ) -> dict:
-        payload = self._transcribe_upload(part["path"], request_prompt=request_prompt)
-        if on_transcription_usage is not None:
-            on_transcription_usage({"audio_ms": self._part_duration_ms(part)})
+        def transcribe_upload(upload_part: dict, prompt: str) -> dict:
+            audio_ms = self._part_duration_ms(upload_part)
+            billed_audio_ms = self._billed_audio_ms(upload_part)
+            request_usage = {"audioMs": audio_ms}
+            if billed_audio_ms is not None:
+                request_usage["billedAudioMs"] = billed_audio_ms
+            try:
+                payload = self._transcribe_upload(
+                    upload_part["path"],
+                    request_prompt=prompt,
+                    on_provider_request=on_provider_request,
+                    request_usage=request_usage,
+                )
+            except TranscriptionUsageError as error:
+                if on_transcription_usage is not None:
+                    on_transcription_usage(error.usage)
+                raise
+
+            if on_transcription_usage is not None:
+                usage = {"audio_ms": audio_ms}
+                if billed_audio_ms is not None:
+                    usage["billed_audio_ms"] = billed_audio_ms
+                provider_usage = payload.get("_transcription_usage")
+                if isinstance(provider_usage, dict):
+                    usage.update(provider_usage)
+                on_transcription_usage(usage)
+            return payload
+
+        payload = transcribe_upload(part, request_prompt)
         part_result = self._payload_to_transcript_result(
             payload,
             part,
@@ -261,13 +323,7 @@ class AzureOpenAiTranscriber:
 
             try:
                 for retry_part in retry_parts:
-                    retry_payload = self._transcribe_upload(
-                        retry_part["path"], request_prompt=retry_prompt
-                    )
-                    if on_transcription_usage is not None:
-                        on_transcription_usage(
-                            {"audio_ms": self._part_duration_ms(retry_part)}
-                        )
+                    retry_payload = transcribe_upload(retry_part, retry_prompt)
                     retry_result = self._payload_to_transcript_result(
                         retry_payload,
                         retry_part,
@@ -526,6 +582,45 @@ class AzureOpenAiTranscriber:
     def _part_duration_ms(self, part: dict) -> int:
         return max(0, int(part["end_ms"]) - int(part["start_ms"]))
 
+    def _billed_audio_ms(self, part: dict) -> int | None:
+        return None
+
+    @staticmethod
+    def _external_request_id(response) -> str | None:
+        headers = getattr(response, "headers", None)
+        get_header = getattr(headers, "get", None)
+        if not callable(get_header):
+            return None
+        for name in ("x-request-id", "apim-request-id", "x-ms-request-id"):
+            value = get_header(name)
+            if value:
+                return str(value)
+        return None
+
+    def _start_provider_request(self, callback, request_usage: dict | None) -> str:
+        request_id = uuid.uuid4().hex
+        if callback is not None:
+            callback(
+                {
+                    "action": "start",
+                    "requestId": request_id,
+                    "provider": self.provider,
+                    "model": self.deployment,
+                    "operation": "transcription",
+                    **(
+                        {"audioMs": request_usage["audioMs"]}
+                        if request_usage and "audioMs" in request_usage
+                        else {}
+                    ),
+                }
+            )
+        return request_id
+
+    @staticmethod
+    def _finish_provider_request(callback, payload: dict) -> None:
+        if callback is not None:
+            callback({"action": "finish", **payload})
+
     def _has_audio_activity(self, audio_path: str) -> bool:
         result = subprocess.run(
             [
@@ -555,7 +650,13 @@ class AzureOpenAiTranscriber:
 
         return float(match.group(1)) >= AUDIO_ACTIVITY_MEAN_VOLUME_DB
 
-    def _transcribe_upload(self, upload_path: str, request_prompt: str = "") -> dict:
+    def _transcribe_upload(
+        self,
+        upload_path: str,
+        request_prompt: str = "",
+        on_provider_request=None,
+        request_usage: dict | None = None,
+    ) -> dict:
         boundary = f"----AINoteTacker{uuid.uuid4().hex}"
         content_type = mimetypes.guess_type(upload_path)[0] or "application/octet-stream"
         file_name = os.path.basename(upload_path)
@@ -583,21 +684,60 @@ class AzureOpenAiTranscriber:
             headers=self._transcription_headers(boundary),
             data=body,
         )
+        request_id = self._start_provider_request(on_provider_request, request_usage)
+        http_status = None
+        provider_request_id = None
 
         try:
             with self.urlopen(  # noqa: S310
                 http_request,
                 timeout=self.timeout_seconds,
             ) as response:
-                return self._normalize_transcription_payload(
+                http_status = int(getattr(response, "status", 200))
+                provider_request_id = self._external_request_id(response)
+                payload = self._normalize_transcription_payload(
                     json.loads(response.read().decode("utf-8"))
                 )
         except urllib.error.HTTPError as error:
             details = error.read().decode("utf-8", errors="replace").strip()
+            self._finish_provider_request(
+                on_provider_request,
+                {
+                    "requestId": request_id,
+                    "status": "failed",
+                    "providerRequestId": self._external_request_id(error),
+                    "httpStatus": error.code,
+                    "errorCode": f"http-{error.code}",
+                },
+            )
             message = f"{self.provider_label} transcription failed with status {error.code}"
             if details:
                 message = f"{message}: {details}"
             raise RuntimeError(message) from error
+        except Exception as error:
+            self._finish_provider_request(
+                on_provider_request,
+                {
+                    "requestId": request_id,
+                    "status": "failed",
+                    "providerRequestId": provider_request_id,
+                    "httpStatus": http_status,
+                    "errorCode": type(error).__name__,
+                },
+            )
+            raise
+
+        self._finish_provider_request(
+            on_provider_request,
+            {
+                "requestId": request_id,
+                "status": "succeeded",
+                "providerRequestId": provider_request_id,
+                "httpStatus": http_status,
+                "usage": request_usage,
+            },
+        )
+        return payload
 
     def _transcription_url(self) -> str:
         return (

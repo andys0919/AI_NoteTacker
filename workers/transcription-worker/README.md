@@ -29,26 +29,22 @@ uses.
   - sends a multilingual preservation prompt plus workflow-specific verified terminology; it does not ask the provider to translate non-Chinese speech
   - splits long recordings into five-minute uploads with an 800-character preceding-context tail; an audible sparse span is replayed at most twice, while an HTTP 200 span of at least 20 seconds with gzip ratio over 4.0 is replayed from the same audio in at-most-30-second chunks without preceding generated-text context; persistently invalid text fails instead of being stored
   - keeps provider output as immutable raw evidence, converts only confidently Chinese display text to Traditional Chinese, and attaches non-authoritative review candidates for uncertain high-risk terms
-- the separate summary process can run local Codex or Azure OpenAI based on the claimed job snapshot
-- the summary process claims work from its own control-plane queue so local/cloud summary pools stay separate
+- the separate summary process runs Local Codex as the primary route using the
+  claimed job's model snapshot, with one internal Azure fallback only after the
+  structured Codex quota state reports exhaustion
+- the summary process claims work from its own local summary pool
 - posts transcript or summary artifacts back to the control plane from the responsible process
-- includes speech-to-text and summary usage metadata in callbacks for idempotent cloud-cost settlement
-- sends summary Azure Responses requests with `store: false` and
-  `reasoning.effort=max`; they use 900-second socket-operation timeouts by
-  default
+- stores every provider request start before contacting the provider and
+  finalizes the same audit row with outcome, external request ID, usage, and
+  pricing evidence; terminal callbacks reference those request IDs
+- invokes Codex CLI with `reasoning.effort=max` and the latched summary model
 - uses a 300-second socket-operation timeout for Azure transcription uploads and a 30-second timeout for control-plane GET/POST calls by default
-- rejects Azure summaries unless `title` and `summary` are non-empty strings;
+- rejects summaries unless `title` and `summary` are non-empty strings;
   `topics`, `follow_up_groups`, `decisions`, `risks`, `open_questions`, and
   `analysis_notes` are arrays; each topic has a title, status, non-empty
   subtopics, and conclusion; and each follow-up group has a title and non-empty
-  items. Compatibility `key_points` and `action_items` are derived from the
-  hierarchy; valid Azure token usage is retained when schema validation fails
-- fails Azure summary jobs on missing usage or non-completed Responses results
-- concatenates ordered `output_text` fragments exactly and trims only the final aggregate, so a structured payload is never changed by inserted separators
-- performs no hidden Responses transport retry; summary replays HTTP 400 once
-  with the identical request and marks the failed attempt unmetered; an
-  identical terminal control-plane callback may be resent once without
-  repeating provider work
+  items. Compatibility `key_points` and `action_items` are derived from the hierarchy
+- may resend an identical terminal control-plane callback once without repeating model work
 
 ## Defaults
 
@@ -100,21 +96,22 @@ Summary process:
 
 - `SUMMARY_MODEL`
 - `SUMMARY_REASONING_EFFORT`
+- `SUMMARY_TIMEOUT_SECONDS` (positive wall-clock timeout; default `900`)
 - `CODEX_CLI_PATH`
 - `CODEX_HOME`
-- optional Azure hosted summary:
-  - `AZURE_OPENAI_SUMMARY_ENDPOINT` (explicit HTTPS URL whose normalized path is exactly `/openai/v1/responses`)
-  - `AZURE_OPENAI_SUMMARY_API_KEY`
-  - `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS` (positive integer socket-operation timeout; default `900`)
+- retained `AZURE_OPENAI_SUMMARY_ENDPOINT` and
+  `AZURE_OPENAI_SUMMARY_API_KEY` settings; canonical production Compose injects
+  empty values and therefore cannot activate the fallback
+- `AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS` (default `900`)
 
-The summary endpoint and key are deliberately not inferred from the transcription
-endpoint/key. Azure summary readiness requires both explicit values, because the
-speech-to-text endpoint and the Responses endpoint are different contracts.
-
-Token callbacks distinguish total input/output tokens from cached-input and
-reasoning-output subsets. USD is calculated only when the configured model and
-pricing version have an authoritative catalog entry. Unknown models remain
-`unpriced`; they are never reported as zero-cost usage.
+`CODEX_HOME` must contain an existing protected Codex login. Do not paste OAuth
+tokens into application settings or Compose variables. Subscription summaries
+are audited with their token usage but are not reported as metered API spend.
+The worker checks Codex's structured
+rate-limit state and makes one atomically reserved Azure Responses request only
+when `rateLimitReachedType` reports exhaustion. Generic failures do not fall
+back, Azure HTTP 400 is not replayed, and a lease reclaim cannot repeat the
+Azure call; Azure fallback usage is reported under the actual Azure provider.
 
 ## Provider Selection
 
@@ -123,7 +120,8 @@ The worker does not choose the provider by itself.
 - the control-plane snapshots transcription and summary routing onto the job at submission time
 - each stage claim returns the effective job snapshot for that job
 - the transcription process uses `transcriptionProvider`
-- the summary process uses `summaryProvider`
+- the summary process accepts only `summaryProvider=local-codex` as the primary route
+- Azure is internal quota-only fallback, not a job/provider selection
 - once claimed or submitted, the job keeps that routing even if the admin switches future defaults later
 - summary generation begins only after the summary process claims the job
 

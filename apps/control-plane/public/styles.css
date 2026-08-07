@@ -281,6 +281,20 @@ body {
   margin-top: 0.1rem;
 }
 
+.admin-readonly-value {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 48px;
+  margin: 0;
+  padding: 0.95rem 1rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 0.75rem;
+  background: var(--panel-strong);
+  color: var(--text);
+  font-weight: 700;
+}
+
 .admin-provider-controls .toolbar-button {
   min-width: 96px;
 }
@@ -585,6 +599,11 @@ form[aria-busy="true"] button[type="submit"]::after {
 
 .job-list {
   display: grid;
+}
+
+.job-list[aria-busy="true"] {
+  cursor: progress;
+  opacity: 0.68;
 }
 
 .job-card {
@@ -1508,6 +1527,51 @@ summary {
 
 .usage-history-table tr.usage-history-estimate {
   opacity: 0.62;
+}
+
+.usage-request-details {
+  min-width: 12rem;
+}
+
+.usage-request-details > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--text);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.usage-request-details > summary:focus-visible {
+  outline: 3px solid var(--accent-strong);
+  outline-offset: 3px;
+}
+
+.usage-request-details > dl {
+  display: grid;
+  grid-template-columns: max-content minmax(8rem, 1fr);
+  gap: 0.25rem 0.65rem;
+  margin: 0.35rem 0 0;
+  padding: 0.65rem;
+  border: 1px solid var(--panel-border);
+  background: var(--panel-strong);
+}
+
+.usage-request-details dt {
+  color: var(--muted);
+}
+
+.usage-request-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: 'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace;
+}
+
+.provider-request-audit-list {
+  display: grid;
+  gap: 0.65rem;
 }
 
 .usage-jobid-button {
@@ -3700,6 +3764,101 @@ details,
 .admin-governance-panel:target {
   border-color: #d4d4d4;
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.14), var(--shadow);
+}
+
+.codex-usage-card {
+  display: grid;
+  gap: 1rem;
+  padding: 1.1rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 1rem;
+  background: var(--panel-strong);
+}
+
+.codex-usage-card.is-unavailable {
+  color: var(--muted);
+}
+
+.codex-usage-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.codex-usage-heading > div {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.codex-usage-heading strong {
+  font-size: clamp(1.3rem, 3vw, 2rem);
+  line-height: 1.2;
+}
+
+.codex-usage-progress {
+  width: 100%;
+  height: 0.7rem;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: #252525;
+  color: #f5f5f5;
+  appearance: none;
+}
+
+.codex-usage-progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: #252525;
+}
+
+.codex-usage-progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #a3a3a3, #f5f5f5);
+}
+
+.codex-usage-progress::-moz-progress-bar {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #a3a3a3, #f5f5f5);
+}
+
+.codex-usage-details {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.codex-usage-details > div {
+  min-width: 0;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--panel-border);
+}
+
+.codex-usage-details dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.codex-usage-details dd {
+  margin: 0.3rem 0 0;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+
+@media (max-width: 720px) {
+  .codex-usage-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .codex-usage-heading .provider-pill {
+    align-self: flex-start;
+  }
+
+  .codex-usage-details {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .runtime-health-card,
