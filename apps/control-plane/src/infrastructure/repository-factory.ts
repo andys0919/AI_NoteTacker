@@ -5,6 +5,7 @@ import type { AuthenticatedUserRepository } from '../domain/authenticated-user-r
 import type { CloudUsageLedgerRepository } from '../domain/cloud-usage-ledger-repository.js';
 import type { OperatorCloudQuotaOverrideRepository } from '../domain/operator-cloud-quota-override-repository.js';
 import type { RecordingJobRepository } from '../domain/recording-job-repository.js';
+import { defaultSummaryProvider } from '../domain/summary-provider.js';
 import type { TranscriptionProviderSettingsRepository } from '../domain/transcription-provider-settings-repository.js';
 import { InMemoryAdminAuditLogRepository } from './in-memory-admin-audit-log-repository.js';
 import { InMemoryAuthenticatedUserRepository } from './in-memory-authenticated-user-repository.js';
@@ -36,7 +37,6 @@ import {
   ensureTranscriptionProviderSettingsSchema,
   PostgresTranscriptionProviderSettingsRepository
 } from './postgres/postgres-transcription-provider-settings-repository.js';
-import { createSummaryProviderCatalogFromEnvironment } from './summary-provider-catalog.js';
 import { createTranscriptionProviderCatalogFromEnvironment } from './transcription-provider-catalog.js';
 
 const isPostgresDriver = (value: string | undefined): boolean => value === 'postgres';
@@ -131,7 +131,6 @@ export type PersistenceContext = {
 
 export const createPersistenceContextFromEnvironment = async (): Promise<PersistenceContext> => {
   const transcriptionCatalog = createTranscriptionProviderCatalogFromEnvironment();
-  const summaryCatalog = createSummaryProviderCatalogFromEnvironment();
   const defaultProvider = transcriptionCatalog.defaultProvider;
   const defaultLocalTranscriptionModel = process.env.WHISPER_MODEL ?? 'large-v3';
   const defaultQwenTranscriptionModel = process.env.QWEN_ASR_MODEL ?? 'qwen3-asr-1.7b';
@@ -148,7 +147,6 @@ export const createPersistenceContextFromEnvironment = async (): Promise<Persist
         ? defaultQwenTranscriptionModel
         : defaultLocalTranscriptionModel;
   const defaultSummaryModel = process.env.SUMMARY_MODEL ?? 'gpt-5.6-luna';
-  const defaultSummaryProvider = summaryCatalog.defaultProvider;
   const defaultDailyCloudQuotaUsd = Number(process.env.DEFAULT_DAILY_CLOUD_QUOTA_USD ?? '5');
   const defaultLiveMeetingReservationCapUsd = Number(
     process.env.LIVE_MEETING_RESERVATION_CAP_USD ?? '1.5'

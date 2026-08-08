@@ -62,6 +62,8 @@ import {
 import type { OperatorCloudQuotaOverrideRepository } from './domain/operator-cloud-quota-override-repository.js';
 import type { RecordingJobRepository } from './domain/recording-job-repository.js';
 import {
+  defaultSummaryProvider,
+  getSummaryProviderLabel,
   isCloudSummaryProvider,
   summaryProviders
 } from './domain/summary-provider.js';
@@ -110,8 +112,6 @@ import type {
 } from './infrastructure/meeting-bot-runtime.js';
 import type { OperatorAuth } from './infrastructure/operator-auth.js';
 import type { AuthenticatedOperator } from './infrastructure/operator-auth.js';
-import type { SummaryProviderCatalog } from './infrastructure/summary-provider-catalog.js';
-import { createSummaryProviderCatalogFromEnvironment } from './infrastructure/summary-provider-catalog.js';
 import type { TranscriptionProviderCatalog } from './infrastructure/transcription-provider-catalog.js';
 import { createTranscriptionProviderCatalogFromEnvironment } from './infrastructure/transcription-provider-catalog.js';
 import type { UploadedAudioStorage } from './infrastructure/uploaded-audio-storage.js';
@@ -635,7 +635,6 @@ type AppOptions = {
   authenticatedUserRepository?: AuthenticatedUserRepository;
   transcriptionProviderSettingsRepository?: TranscriptionProviderSettingsRepository;
   transcriptionProviderCatalog?: TranscriptionProviderCatalog;
-  summaryProviderCatalog?: SummaryProviderCatalog;
   operatorCloudQuotaOverrideRepository?: OperatorCloudQuotaOverrideRepository;
   cloudUsageLedgerRepository?: CloudUsageLedgerRepository;
   adminAuditLogRepository?: AdminAuditLogRepository;
@@ -1307,8 +1306,6 @@ export const createApp = (
   const authenticatedUserRepository = options.authenticatedUserRepository;
   const transcriptionProviderCatalog =
     options.transcriptionProviderCatalog ?? createTranscriptionProviderCatalogFromEnvironment();
-  const summaryProviderCatalog =
-    options.summaryProviderCatalog ?? createSummaryProviderCatalogFromEnvironment();
   const defaultLocalTranscriptionModel = process.env.WHISPER_MODEL ?? 'large-v3';
   const defaultQwenTranscriptionModel = process.env.QWEN_ASR_MODEL ?? 'qwen3-asr-1.7b';
   const defaultMaiTranscriptionModel =
@@ -1339,7 +1336,7 @@ export const createApp = (
       defaultQwenTranscriptionModel,
       defaultMaiTranscriptionModel,
       defaultCloudTranscriptionModel,
-      defaultSummaryProvider: summaryProviderCatalog.defaultProvider,
+      defaultSummaryProvider,
       defaultSummaryModel,
       defaultDailyCloudQuotaUsd,
       defaultLiveMeetingReservationCapUsd,
@@ -1590,7 +1587,7 @@ export const createApp = (
     inputSource: RecordingJob['inputSource'];
   }) => {
     const currentPolicy = await transcriptionProviderSettingsRepository.getCurrent();
-    const summaryRequested = summaryProviderCatalog.isReady(currentPolicy.summaryProvider);
+    const summaryRequested = currentPolicy.summaryProvider === defaultSummaryProvider;
     const quotaStatus = await getQuotaStatusForSubmitter(input.submitterId);
     const estimatedCloudReservationUsd = estimateCloudReservationUsd(
       {
@@ -2318,11 +2315,10 @@ export const createApp = (
         ready: option.ready,
         ...(option.reason ? { reason: option.reason } : {})
       })),
-      summaryOptions: summaryProviderCatalog.options.map((option) => ({
-        value: option.value,
-        label: option.label,
-        ready: option.ready,
-        ...(option.reason ? { reason: option.reason } : {})
+      summaryOptions: summaryProviders.map((provider) => ({
+        value: provider,
+        label: getSummaryProviderLabel(provider),
+        ready: true
       })),
       updatedAt: currentPolicy.updatedAt,
       updatedBy: currentPolicy.updatedBy
@@ -2354,17 +2350,6 @@ export const createApp = (
           message:
             transcriptionProviderCatalog.readinessReason(parsedRequest.data.transcriptionProvider) ??
             'The requested transcription provider is not ready.'
-        }
-      });
-    }
-
-    if (!summaryProviderCatalog.isReady(parsedRequest.data.summaryProvider)) {
-      return response.status(409).json({
-        error: {
-          code: 'summary-provider-not-ready',
-          message:
-            summaryProviderCatalog.readinessReason(parsedRequest.data.summaryProvider) ??
-            'The requested summary provider is not ready.'
         }
       });
     }

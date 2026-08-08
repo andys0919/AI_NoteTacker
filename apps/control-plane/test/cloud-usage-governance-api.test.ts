@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import type { AuthenticatedUser } from '../src/domain/authenticated-user.js';
 import { InMemoryCloudUsageLedgerRepository } from '../src/infrastructure/in-memory-cloud-usage-ledger-repository.js';
-import { createSummaryProviderCatalog } from '../src/infrastructure/summary-provider-catalog.js';
 import { createTranscriptionProviderCatalog } from '../src/infrastructure/transcription-provider-catalog.js';
 
 class FakeUploadedAudioStorage {
@@ -82,8 +81,7 @@ describe('cloud usage governance API', () => {
         azureOpenAiEndpoint: 'https://azure.example.test',
         azureOpenAiDeployment: 'gpt-4o-transcribe',
         azureOpenAiApiKey: 'secret'
-      }),
-      summaryProviderCatalog: createSummaryProviderCatalog()
+      })
     });
 
   afterEach(() => {

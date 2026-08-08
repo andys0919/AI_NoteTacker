@@ -6,7 +6,6 @@ import { createRecordingJob, markRecordingJobFailed } from '../src/domain/record
 import { createAdminConsoleAuth } from '../src/infrastructure/admin-console-auth.js';
 import { InMemoryCloudUsageLedgerRepository } from '../src/infrastructure/in-memory-cloud-usage-ledger-repository.js';
 import { InMemoryRecordingJobRepository } from '../src/infrastructure/in-memory-recording-job-repository.js';
-import { createSummaryProviderCatalog } from '../src/infrastructure/summary-provider-catalog.js';
 import { createTranscriptionProviderCatalog } from '../src/infrastructure/transcription-provider-catalog.js';
 
 describe('admin console (username/password) API', () => {
@@ -39,8 +38,7 @@ describe('admin console (username/password) API', () => {
         azureOpenAiEndpoint: 'https://azure.example.test',
         azureOpenAiDeployment: 'gpt-4o-transcribe',
         azureOpenAiApiKey: 'secret'
-      }),
-      summaryProviderCatalog: createSummaryProviderCatalog()
+      })
     });
 
   const login = async (
