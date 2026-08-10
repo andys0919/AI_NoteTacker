@@ -45,6 +45,7 @@ describe('meeting detail and public share shells', () => {
     expect(html).toContain('id="shared-transcript"');
     expect(html).toContain('class="shared-meeting-shell" tabindex="-1"');
     expect(html).toContain('class="shared-meeting-heading"');
+    expect(html).toContain('<link rel="modulepreload" href="/share.js" />');
     expect(html).toContain('列印');
     expect(html).toContain('<noscript>');
     expect(html).toContain('此頁需要啟用 JavaScript');

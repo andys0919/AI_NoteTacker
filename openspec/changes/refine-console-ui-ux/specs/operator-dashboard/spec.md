@@ -89,3 +89,38 @@ reader contract omits stored speaker classification while preserving evidence.
 - **WHEN** an authenticated administrator views the governance console
 - **THEN** one compact section navigation provides access to the maintained governance regions
 - **AND** duplicated overview cards or topbars do not repeat the same navigation and section descriptions
+
+### Requirement: Console boot performance is measured and avoids independent serial waits
+The console SHALL retain a repeatable browser readiness benchmark and SHALL avoid serial request or module-discovery waits when the work is independent.
+
+#### Scenario: Operator opens the dashboard
+- **WHEN** the dashboard begins its initial load
+- **THEN** operator configuration and the lightweight job list begin loading without one waiting for the other
+- **AND** job costs render only after the current pricing reference is available
+- **AND** the page's required native modules are eligible for parser-time preload
+
+#### Scenario: Administrator opens the console
+- **WHEN** an administrator opens the console with or without a stored session
+- **THEN** the login surface does not wait for the public pricing reference
+- **AND** pricing-reference loading and stored-session validation do not create independent serial waits
+- **AND** protected governance requests still require a validated administrator session
+- **AND** the initial usage-history request defaults to the most recent 100 records while explicit 500, 1000, and 5000 record choices remain available
+
+#### Scenario: Console performance is compared
+- **WHEN** a performance change is evaluated
+- **THEN** before and after readiness medians use the same Chromium version, route, viewport, cache mode, iteration count, and simulated network latency
+- **AND** the report distinguishes browser readiness, transferred assets, and inferred causes
+
+### Requirement: Console motion communicates meaningful state changes
+The console SHALL animate suitable entry and exit state changes with one restrained native motion rhythm while keeping content immediately usable and respecting user motion preferences.
+
+#### Scenario: A console surface or dynamic state changes
+- **WHEN** a page surface, panel, job-list state, status message, artifact tab, login/workspace view, shared-reader state, or dialog enters or exits
+- **THEN** supported browsers use a 150 to 300 millisecond opacity or transform transition that communicates the state change
+- **AND** user input is not blocked until animation completion
+- **AND** large usage tables do not animate each row
+- **AND** unsupported browsers receive the same content and interaction without animation
+
+#### Scenario: User requests reduced motion
+- **WHEN** `prefers-reduced-motion: reduce` is active
+- **THEN** nonessential entry, exit, scrolling, and view-transition motion is removed or made effectively immediate

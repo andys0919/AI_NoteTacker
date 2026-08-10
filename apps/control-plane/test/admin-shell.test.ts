@@ -23,8 +23,14 @@ describe('admin shell markup', () => {
     expect(html).toContain('/admin.js');
     expect(html).toContain('id="admin-session-status"');
     expect(html).toContain('id="admin-login-overlay" class="admin-login-overlay" hidden');
-    expect(html).toContain('class="admin-login-showcase"');
+    expect(html).toContain('id="admin-content" class="admin-content"');
+    expect(html).not.toContain('id="admin-content" class="admin-content" hidden');
+    expect(html).not.toContain('admin-login-showcase');
+    expect(html).not.toContain('admin-login-wave');
     expect(html).toContain('class="admin-main-heading"');
+    expect(html).toContain('<link rel="modulepreload" href="/admin.js" />');
+    expect(html).toContain('<option value="100" selected>最近 100 筆</option>');
+    expect(html).not.toContain('<option value="500" selected>');
   });
 
   it('serves the dedicated admin page at /admin', async () => {
@@ -109,6 +115,7 @@ describe('admin shell markup', () => {
     expect(javascript).toContain('elements.jobModal.showModal()');
     expect(javascript).toContain('elements.jobModal.close()');
     expect(javascript).toContain('elements.jobModalCard.focus()');
+    expect(javascript).not.toContain('elements.adminContent.hidden');
     expect(javascript).toContain("elements.skipLink.href = '#admin-content'");
     expect(javascript).toContain('setFormBusy(elements.adminProviderForm');
     expect(javascript).toContain('setFormBusy(elements.adminOverrideForm');

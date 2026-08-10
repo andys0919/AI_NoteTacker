@@ -109,6 +109,9 @@ const setQuickFilter = (filterId) => {
     });
 };
 
+const prefersReducedMotion = () =>
+  window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+
 const focusSharedJobIfNeeded = () => {
   if (!pendingSharedJobId) {
     return;
@@ -121,9 +124,7 @@ const focusSharedJobIfNeeded = () => {
   }
 
   card.classList.add('job-card-highlight');
-  const scrollBehavior = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-    ? 'auto'
-    : 'smooth';
+  const scrollBehavior = prefersReducedMotion() ? 'auto' : 'smooth';
   card.scrollIntoView({ behavior: scrollBehavior, block: 'center' });
   window.setTimeout(() => {
     card.classList.remove('job-card-highlight');
@@ -137,9 +138,14 @@ const setFormBusy = (form, submitButton, busy) => {
 };
 
 const setFormStatus = (status, message, kind = 'info') => {
-  status.hidden = !message;
+  if (!message) {
+    status.hidden = true;
+    return;
+  }
+
   status.textContent = message;
   status.className = `form-status ${kind}`;
+  status.hidden = false;
 };
 
 const apiFetch = async (input, init) => fetch(input, init);
@@ -147,14 +153,12 @@ const apiFetch = async (input, init) => fetch(input, init);
 const setBanner = (message, kind = 'info') => {
   if (!message) {
     elements.statusBanner.hidden = true;
-    elements.statusBanner.textContent = '';
-    elements.statusBanner.className = 'status-banner';
     return;
   }
 
-  elements.statusBanner.hidden = false;
   elements.statusBanner.textContent = message;
   elements.statusBanner.className = `status-banner ${kind}`;
+  elements.statusBanner.hidden = false;
 };
 
 const resetUploadSelectionUi = () => {
@@ -859,7 +863,6 @@ const renderJobStats = (jobs) => {
 };
 
 const renderJobs = (jobs) => {
-  elements.jobList.setAttribute('aria-busy', 'false');
   currentJobs = jobs;
   const activeSearch = elements.archiveSearch?.value.trim() ?? '';
   let pageState = getArchivePageState(
@@ -921,8 +924,19 @@ const renderJobs = (jobs) => {
     nodes.push(loadMore);
   }
 
-  elements.jobList.replaceChildren(...nodes);
-  focusSharedJobIfNeeded();
+  const replaceJobs = () => elements.jobList.replaceChildren(...nodes);
+  const finishRender = () => {
+    focusSharedJobIfNeeded();
+    elements.jobList.setAttribute('aria-busy', 'false');
+  };
+  if (typeof document.startViewTransition === 'function' && !prefersReducedMotion()) {
+    const transition = document.startViewTransition(replaceJobs);
+    return transition.updateCallbackDone.then(finishRender);
+  }
+
+  replaceJobs();
+  finishRender();
+  return Promise.resolve();
 };
 
 const fetchConfig = async () => {
@@ -973,12 +987,12 @@ const fetchJobsPayload = async ({ append = false, pageSize } = {}) => {
   return response.json();
 };
 
-const fetchJobs = async ({ append = false } = {}) => {
+const fetchJobs = async ({ append = false, ready = Promise.resolve() } = {}) => {
   const requestGeneration = ++jobsRequestGeneration;
   elements.jobList.setAttribute('aria-busy', 'true');
 
   try {
-    const payload = await fetchJobsPayload({ append });
+    const [payload] = await Promise.all([fetchJobsPayload({ append }), ready]);
     if (requestGeneration !== jobsRequestGeneration) {
       return;
     }
@@ -996,7 +1010,7 @@ const fetchJobs = async ({ append = false } = {}) => {
           nextCursor: null
         };
     currentJobs = append ? mergeJobsById(currentJobs, payload.jobs) : payload.jobs;
-    renderJobs(currentJobs);
+    await renderJobs(currentJobs);
   } catch (error) {
     if (requestGeneration === jobsRequestGeneration) {
       throw error;
@@ -1045,7 +1059,7 @@ const refreshJobsView = async (jobId) => {
     completedCount: payload.state === 'completed' ? 1 : 0,
     failedCount: payload.state === 'failed' ? 1 : 0
   };
-  renderJobs(currentJobs);
+  await renderJobs(currentJobs);
 };
 
 const updateJobCardProgress = (job) => {
@@ -1263,9 +1277,10 @@ const submitUploadJob = async (event) => {
 
 const boot = async () => {
   try {
-    await fetchConfig();
+    const configPromise = fetchConfig();
 
     if (meetingDetailJobId) {
+      await configPromise;
       document.querySelector('#dashboard-title').textContent = '完整會議紀錄';
       document.querySelector('.dashboard-topbar-text').textContent =
         '查看這筆工作的完整摘要、逐字稿與分享設定。';
@@ -1280,6 +1295,18 @@ const boot = async () => {
       return;
     }
 
+    const shouldAutoQueue = Boolean(
+      new URL(window.location.href).searchParams.get('meetingUrl')?.trim()
+    );
+    if (!shouldAutoQueue) {
+      await fetchJobs({ ready: configPromise });
+      applyQueryPrefill();
+      focusSharedJobIfNeeded();
+      setBanner('');
+      return;
+    }
+
+    await configPromise;
     const prefill = applyQueryPrefill();
     if (prefill.shouldAutoQueue) {
       await submitMeetingJob();
@@ -1287,9 +1314,6 @@ const boot = async () => {
       setBanner('已依照網址參數自動送出會議。');
       return;
     }
-    await fetchJobs();
-    focusSharedJobIfNeeded();
-    setBanner('');
   } catch (error) {
     elements.jobList.setAttribute('aria-busy', 'false');
     elements.jobList.innerHTML =

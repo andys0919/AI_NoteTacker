@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Solomon NoteTaker Admin</title>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="modulepreload" href="/admin.js" />
+    <link rel="modulepreload" href="/escape-html.js" />
+    <link rel="modulepreload" href="/artifact-reader.js" />
+    <link rel="modulepreload" href="/currency-display.js" />
+    <link rel="modulepreload" href="/dashboard-copy.js" />
+    <link rel="modulepreload" href="/governance-panel.js" />
+    <link rel="modulepreload" href="/runtime-health-panel.js" />
   </head>
   <body class="admin-body">
     <a id="admin-skip-link" class="skip-link" href="#auth-panel">跳至登入</a>
@@ -12,29 +19,6 @@
       正在確認管理者登入狀態…
     </main>
     <div id="admin-login-overlay" class="admin-login-overlay" hidden>
-      <aside class="admin-login-showcase" aria-hidden="true">
-        <div class="admin-login-showcase-brand">
-          <span class="admin-login-mark">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M4 10v4" />
-              <path d="M8 6v12" />
-              <path d="M12 3v18" />
-              <path d="M16 6v12" />
-              <path d="M20 10v4" />
-            </svg>
-          </span>
-          <span>Solomon NoteTaker</span>
-        </div>
-        <div class="admin-login-showcase-copy">
-          <p class="panel-eyebrow">會議智慧中心</p>
-          <p class="admin-login-showcase-title">掌握模型、成本與每一個執行狀態。</p>
-          <p>一個清楚、可信任的 AI 治理工作區。</p>
-        </div>
-        <svg class="admin-login-wave" viewBox="0 0 560 180" fill="none" aria-hidden="true">
-          <path d="M10 95c45 0 45-50 90-50s45 90 90 90 45-120 90-120 45 145 90 145 45-105 90-105 45 40 90 40" stroke="currentColor" stroke-width="10" stroke-linecap="round" />
-          <path d="M10 120c45 0 45-28 90-28s45 48 90 48 45-70 90-70 45 80 90 80 45-58 90-58 45 28 90 28" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".38" />
-        </svg>
-      </aside>
       <section
         id="auth-panel"
         class="panel admin-login-card"
@@ -175,7 +159,7 @@
       </aside>
 
       <section class="admin-main">
-        <section id="admin-content" class="admin-content" hidden>
+        <section id="admin-content" class="admin-content">
           <header class="admin-main-heading">
             <div>
               <p class="panel-eyebrow">控制中心</p>
@@ -232,8 +216,8 @@
               <label class="field admin-summary-model-field">
                 <span>顯示筆數</span>
                 <select id="admin-usage-history-limit" name="limit">
-                  <option value="100">最近 100 筆</option>
-                  <option value="500" selected>最近 500 筆</option>
+                  <option value="100" selected>最近 100 筆</option>
+                  <option value="500">最近 500 筆</option>
                   <option value="1000">最近 1000 筆</option>
                   <option value="5000">全部（上限 5000）</option>
                 </select>

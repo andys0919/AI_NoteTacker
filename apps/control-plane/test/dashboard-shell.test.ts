@@ -113,7 +113,12 @@ describe('dashboard shell markup', () => {
     expect(javascript).toContain('setFormBusy(elements.uploadForm');
     expect(javascript).toContain('setFormStatus(elements.meetingFormStatus');
     expect(javascript).toContain('setFormStatus(elements.uploadFormStatus');
+    expect(javascript).not.toContain("elements.statusBanner.textContent = ''");
     expect(styles).toContain('.job-list[aria-busy="true"]');
+    expect(html).toContain('<link rel="modulepreload" href="/app.js" />');
+    expect(styles).toContain('view-transition-name: job-list');
+    expect(styles).toContain('@supports (content-visibility: auto)');
+    expect(styles).toContain('@media (prefers-reduced-motion: reduce)');
   });
 
   it('keeps uploads generic and refreshes progress without repainting the full job list', () => {
@@ -139,6 +144,51 @@ describe('dashboard shell markup', () => {
     expect(javascript).toContain("progressBar.setAttribute('aria-valuenow'");
     expect(javascript).toContain('PROGRESS_POLL_INTERVAL_MS');
     expect(javascript).not.toContain('updateStatsForStateChange');
+  });
+
+  it('keeps status content available for the hidden-state exit transition', () => {
+    const javascript = readFileSync(
+      resolve(import.meta.dirname, '../public/app.js'),
+      'utf-8'
+    );
+    const start = javascript.indexOf('const setFormStatus =');
+    const end = javascript.indexOf('\n\nconst resetUploadSelectionUi', start);
+    const source = javascript
+      .slice(start, end)
+      .replace('const setFormStatus =', 'globalThis.setFormStatus =')
+      .replace('const setBanner =', 'globalThis.setBanner =');
+    const banner = { hidden: true, textContent: '', className: 'status-banner' };
+    const formStatus = { hidden: true, textContent: '', className: 'form-status' };
+    const context = {
+      elements: { statusBanner: banner }
+    } as Record<string, unknown> & {
+      setBanner?: (message: string, kind?: string) => void;
+      setFormStatus?: (
+        status: typeof formStatus,
+        message: string,
+        kind?: string
+      ) => void;
+    };
+
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    runInNewContext(source, context);
+
+    context.setFormStatus?.(formStatus, '上傳完成', 'info');
+    context.setBanner?.('整理完成', 'info');
+    context.setFormStatus?.(formStatus, '');
+    context.setBanner?.('');
+
+    expect(formStatus).toEqual({
+      hidden: true,
+      textContent: '上傳完成',
+      className: 'form-status info'
+    });
+    expect(banner).toEqual({
+      hidden: true,
+      textContent: '整理完成',
+      className: 'status-banner info'
+    });
   });
 
   it('pauses progress polling during an archive fetch and refreshes active detail afterward', async () => {
@@ -200,7 +250,9 @@ describe('dashboard shell markup', () => {
       resolve(import.meta.dirname, '../public/app.js'),
       'utf-8'
     );
-    const start = javascript.indexOf('const fetchJobs = async ({ append = false } = {}) => {');
+    const start = javascript.indexOf(
+      'const fetchJobs = async ({ append = false, ready = Promise.resolve() } = {}) => {'
+    );
     const end = javascript.indexOf('\n};\n\nconst fetchJobSnapshot', start) + 3;
     const source = javascript
       .slice(start, end)
@@ -241,6 +293,56 @@ describe('dashboard shell markup', () => {
 
     expect(rendered).toEqual([['newest']]);
     expect(busyStates.at(-1)).toBe('false');
+  });
+
+  it('starts the archive request while configuration is pending and renders after both resolve', async () => {
+    const javascript = readFileSync(
+      resolve(import.meta.dirname, '../public/app.js'),
+      'utf-8'
+    );
+    const start = javascript.indexOf(
+      'const fetchJobs = async ({ append = false, ready = Promise.resolve() } = {}) => {'
+    );
+    const end = javascript.indexOf('\n};\n\nconst fetchJobSnapshot', start) + 3;
+    const source = javascript
+      .slice(start, end)
+      .replace('const fetchJobs =', 'globalThis.fetchJobs =');
+    let releaseConfig = () => {};
+    let jobsStarted = false;
+    const rendered: string[][] = [];
+    const ready = new Promise<void>((resolveReady) => {
+      releaseConfig = resolveReady;
+    });
+    const context = {
+      currentJobs: [],
+      currentJobStats: null,
+      currentJobsPageInfo: { pageSize: 25, hasMore: false, nextCursor: null },
+      elements: { jobList: { setAttribute() {} } },
+      fetchJobsPayload: async () => {
+        jobsStarted = true;
+        return { jobs: [{ id: 'ready' }], stats: {}, pageInfo: undefined };
+      },
+      jobsRequestGeneration: 0,
+      mergeJobsById: (_current: unknown[], incoming: unknown[]) => incoming,
+      renderJobs: (jobs: Array<{ id: string }>) => rendered.push(jobs.map((job) => job.id))
+    } as Record<string, unknown> & {
+      fetchJobs?: (options: { ready: Promise<void> }) => Promise<void>;
+    };
+
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    runInNewContext(source, context);
+
+    const request = context.fetchJobs?.({ ready });
+    await Promise.resolve();
+
+    expect(jobsStarted).toBe(true);
+    expect(rendered).toEqual([]);
+
+    releaseConfig();
+    await request;
+
+    expect(rendered).toEqual([['ready']]);
   });
 
   it('keeps inline expansion off the dashboard and retains the owner-page reader', () => {

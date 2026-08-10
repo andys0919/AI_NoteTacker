@@ -160,7 +160,6 @@ const showLoginView = () => {
   elements.skipLink.textContent = '跳至登入';
   elements.loginOverlay.hidden = false;
   elements.adminShell.hidden = true;
-  elements.adminContent.hidden = true;
   elements.signOutButton.hidden = true;
 };
 
@@ -170,7 +169,6 @@ const showAdminView = () => {
   elements.skipLink.textContent = '跳至治理內容';
   elements.loginOverlay.hidden = true;
   elements.adminShell.hidden = false;
-  elements.adminContent.hidden = false;
   elements.signOutButton.hidden = false;
 };
 
@@ -705,7 +703,7 @@ const renderAdminPanel = (
   updateAdminProviderStatus();
 };
 
-const getHistoryLimit = () => Number(elements.usageHistoryLimit?.value) || 500;
+const getHistoryLimit = () => Number(elements.usageHistoryLimit?.value) || 100;
 
 const fetchUsageHistory = async () => {
   const url = new URL('/api/admin/usage/history', window.location.origin);
@@ -719,7 +717,7 @@ const fetchUsageHistory = async () => {
   renderUsageHistory(await response.json());
 };
 
-const fetchAdminPanel = async () => {
+const fetchAdminPanel = async (ready = Promise.resolve()) => {
   const [
     policyResponse,
     overridesResponse,
@@ -739,7 +737,8 @@ const fetchAdminPanel = async () => {
       url.searchParams.set('limit', String(getHistoryLimit()));
       return apiFetch(url);
     })(),
-    apiFetch('/api/admin/codex-usage')
+    apiFetch('/api/admin/codex-usage'),
+    ready
   ]);
 
   if (
@@ -774,7 +773,6 @@ const fetchAdminPanel = async () => {
   const usageHistoryPayload = await usageHistoryResponse.json();
   const codexUsagePayload = await codexUsageResponse.json();
 
-  showAdminView();
   renderAdminPanel(
     policy,
     overridesPayload.overrides || [],
@@ -810,6 +808,7 @@ elements.loginForm.addEventListener('submit', async (event) => {
     adminUsername = payload.username ?? elements.loginUsername.value.trim();
     elements.loginPassword.value = '';
     setLoginStatus('');
+    showAdminView();
     await fetchAdminPanel();
   } catch (error) {
     setLoginStatus(error instanceof Error ? error.message : String(error), 'error');
@@ -975,7 +974,7 @@ elements.signOutButton.addEventListener('click', () => {
   setLoginStatus('已登出。');
 });
 
-const boot = async () => {
+const fetchPricingReference = async () => {
   try {
     const pricingResponse = await fetch('/api/operator/config');
     if (pricingResponse.ok) {
@@ -985,9 +984,14 @@ const boot = async () => {
     // Keep the verified bundled fallback when the reference endpoint is unavailable.
   }
   elements.currencyReference.textContent = getTwdPricingReferenceText();
+};
+
+const boot = async () => {
+  const pricingPromise = fetchPricingReference();
 
   if (!adminToken) {
     showLoginView();
+    await pricingPromise;
     return;
   }
 
@@ -1002,7 +1006,8 @@ const boot = async () => {
 
     const session = await sessionResponse.json();
     adminUsername = session.username ?? null;
-    await fetchAdminPanel();
+    showAdminView();
+    await fetchAdminPanel(pricingPromise);
   } catch (error) {
     setLoginStatus(error instanceof Error ? error.message : String(error));
     showLoginView();
