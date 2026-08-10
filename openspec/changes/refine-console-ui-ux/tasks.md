@@ -26,7 +26,7 @@
 - [x] 4.2 Run the affected frontend tests, focused API checks, control-plane build, static dead-reference checks, strict OpenSpec validation, and `git diff --check`.
 - [x] 4.3 Render and inspect operator/admin desktop and mobile layouts for hierarchy, clipping, spacing, focus affordances, and consistency.
 - [x] 4.4 Review the implementation against repository standards and GitHub issue #2, then resolve all actionable findings.
-- [ ] 4.5 Rebuild and recreate only the production `control-plane` service, then verify health and live asset delivery.
+- [x] 4.5 Rebuild and recreate only the production `control-plane` service, then verify health and live asset delivery.
 - [x] 4.6 Reconcile the historical transcript-reader contract with `refine-meeting-artifact-reader` and mark its no-speaker presentation as the current requirement.
 - [ ] 4.7 Complete all-surface acceptance ticket #6 with non-misleading loading
   states, 1rem long-form prose, current responsive visual evidence, and a

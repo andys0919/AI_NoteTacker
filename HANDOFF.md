@@ -1,6 +1,6 @@
 # Handoff — MAI 主轉錄、獨立 Codex PTY 主摘要
 
-_更新：2026-08-07（Asia/Taipei）_
+_更新：2026-08-10（Asia/Taipei）_
 
 ## 目標與已核准架構
 
@@ -34,6 +34,20 @@ transcription 與 Whisper 保留為 operator 可選 fallback。轉寫 worker 不
    credential 為空，因此目前不會觸發。
 
 ## 目前 checkpoint
+
+### 2026-08-10 Console 效能與原生動效已部署
+
+- 部署來源 `123822eef270238d5b79430330c0442d0c112e21` 在部署時與
+  `origin/main` 相同；以 canonical `./scripts/deploy.sh up control-plane`
+  只 rebuild/recreate control-plane，其他 worker container ID 均未改變。
+- 新 image 為 `sha256:53887e97937675cedab38b01ed47c55aff21159ac3e539fecf3cc4ce106b927f`，
+  container `0dc97c80b9cf...` healthy、restart count 0；`/health` 與三個
+  worker-to-control-plane probe 均為 `ok`，active summary lease 為 0。
+- live `styles.css`、`app.js`、`admin.js`、`index.html`、`admin.html`、
+  `share.html` hash 均與 release source 相同；migration ledger 最新為
+  `20260806-summary-fallback-request-binding-v1`，PostgreSQL／MinIO 無 host
+  published port，Redis orphan 為 0。recording worker 僅在 recreate window、
+  control-plane healthy 前出現兩次 `ECONNREFUSED`，healthy 後無新錯誤。
 
 ### 2026-08-07 AI_NoteTacker 專屬 Codex PTY runtime 已部署
 
