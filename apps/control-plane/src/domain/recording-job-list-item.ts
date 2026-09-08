@@ -1,4 +1,16 @@
 import type { RecordingJob, SummaryArtifact, TranscriptArtifact } from './recording-job.js';
+import { isMeetingShareEligible, sanitizeAnonymousSpeakerLabels } from './meeting-share.js';
+
+export const toRecordingJobResultMetadata = (
+  job: Pick<RecordingJob, 'id' | 'state' | 'uploadedFileName' | 'transcriptArtifact' | 'summaryArtifact'>
+) => ({
+  id: job.id,
+  title: job.summaryArtifact?.structured?.title?.trim()
+    ? sanitizeAnonymousSpeakerLabels(job.summaryArtifact.structured.title.trim())
+    : job.uploadedFileName || job.id,
+  state: job.state,
+  resultAvailable: isMeetingShareEligible(job)
+});
 
 export type RecordingJobListItem = Omit<
   RecordingJob,

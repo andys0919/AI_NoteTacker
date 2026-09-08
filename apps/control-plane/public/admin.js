@@ -1,7 +1,6 @@
 import { formatJobTimestamp } from '/dashboard-copy.js';
 import {
   applyTwdPricingReference,
-  formatTwdFromUsd,
   formatTwdInputFromUsd,
   getTwdPricingReferenceText,
   twdQuotaToUsd
@@ -10,20 +9,13 @@ import { escapeHtml } from '/escape-html.js';
 import {
   formatProviderLabel,
   formatSummaryModeLabel,
-  formatUsageStageLabel,
   getAdminGovernanceViewModel,
-  getAuditEntryViewModels,
-  getCloudCostDisplayModel,
   getCodexWeeklyUsageViewModel,
   getUsageHistoryCostViewModel,
-  getUsageHistoryJobViewModels,
-  getUsageReportRowViewModels
+  getUsageHistoryJobViewModels
 } from '/governance-panel.js';
 import { getRuntimeHealthViewModel } from '/runtime-health-panel.js';
-import {
-  getReadableTranscriptText,
-  sanitizeAnonymousSpeakerLabels
-} from '/artifact-reader.js';
+
 
 const TOKEN_STORAGE_KEY = 'solomon-notetaker-admin-token';
 
@@ -48,14 +40,6 @@ const elements = {
   usageHistoryTotalTokens: document.querySelector('#admin-usage-history-total-tokens'),
   usageHistoryTotalCost: document.querySelector('#admin-usage-history-total-cost'),
   currencyReference: document.querySelector('#admin-currency-reference'),
-  jobModal: document.querySelector('#admin-job-modal'),
-  jobModalCard: document.querySelector('#admin-job-modal-card'),
-  jobModalTitle: document.querySelector('#admin-job-modal-title'),
-  jobModalBody: document.querySelector('#admin-job-modal-body'),
-  jobModalClose: document.querySelector('#admin-job-modal-close'),
-  adminAuditList: document.querySelector('#admin-audit-list'),
-  adminUsageReportList: document.querySelector('#admin-usage-report-list'),
-  adminUsageReportSummary: document.querySelector('#admin-usage-report-summary'),
   adminProviderCopy: document.querySelector('#admin-provider-copy'),
   adminProviderCurrent: document.querySelector('#admin-provider-current'),
   adminCodexUsageCard: document.querySelector('#admin-codex-usage-card'),
@@ -81,11 +65,6 @@ const elements = {
   adminLocalTranscriptionInput: document.querySelector('#admin-local-transcription-input'),
   adminCloudTranscriptionInput: document.querySelector('#admin-cloud-transcription-input'),
   adminLocalSummaryInput: document.querySelector('#admin-local-summary-input'),
-  adminOverrideForm: document.querySelector('#admin-override-form'),
-  adminOverrideSubmitterId: document.querySelector('#admin-override-submitter-id'),
-  adminOverrideQuotaInput: document.querySelector('#admin-override-quota-input'),
-  adminOverrideSubmit: document.querySelector('#admin-override-submit'),
-  adminSummaryModelStatus: document.querySelector('#admin-summary-model-status'),
   adminProviderStatus: document.querySelector('#admin-provider-status'),
   adminProviderStatusPill: document.querySelector('#admin-provider-status-pill'),
   adminProviderSubmit: document.querySelector('#admin-provider-submit')
@@ -95,7 +74,7 @@ window.localStorage.removeItem(TOKEN_STORAGE_KEY);
 let adminToken = window.sessionStorage.getItem(TOKEN_STORAGE_KEY);
 let adminUsername = null;
 let adminProviderState = null;
-let modalReturnFocus = null;
+let codexUsageExpiryTimer;
 
 const tokenFormatter = new Intl.NumberFormat('en-US');
 const formatTokens = (value) => tokenFormatter.format(Math.round(Number(value) || 0));
@@ -173,141 +152,12 @@ const showAdminView = () => {
   elements.signOutButton.hidden = false;
 };
 
-const renderAuditEntries = (entries = []) => {
-  if (!entries.length) {
-    elements.adminAuditList.innerHTML = '<p class="admin-provider-status">尚無治理異動紀錄。</p>';
-    return;
-  }
-
-  elements.adminAuditList.replaceChildren(
-    ...getAuditEntryViewModels(entries, formatJobTimestamp).map((entry) => {
-      const node = document.createElement('article');
-      node.className = 'admin-audit-entry';
-      node.innerHTML = `
-        <strong>${escapeHtml(entry.action)}</strong>
-        <span>${escapeHtml(entry.target)}</span>
-        <small>${escapeHtml(entry.timestampText)}</small>
-      `;
-      return node;
-    })
-  );
-};
-
-const renderUsageReport = (payload) => {
-  if (!payload?.rows?.length) {
-    elements.adminUsageReportSummary.textContent = '尚無 cloud usage 資料。';
-    elements.adminUsageReportList.innerHTML = '<p class="admin-provider-status">尚無 cloud usage 資料。</p>';
-    return;
-  }
-
-  const consumed = getCloudCostDisplayModel({
-    totalCostUsd: payload.totals.consumedUsd,
-    pricedCostUsd: payload.totals.pricedConsumedUsd ?? payload.totals.consumedUsd,
-    hasUnpricedUsage: payload.totals.hasUnpricedUsage === true
-  });
-  const unpricedCountText = payload.totals.unpricedEntryCount
-    ? ` / 未定價 ${formatTokens(payload.totals.unpricedEntryCount)} 筆`
-    : '';
-  elements.adminUsageReportSummary.textContent = `${payload.quotaDayKey} / ${
-    payload.totals.hasUnpricedUsage ? consumed.label : '已用'
-  } ${consumed.value}${unpricedCountText} / 保留 ${formatTwdFromUsd(payload.totals.reservedUsd)}`;
-  elements.adminUsageReportList.replaceChildren(
-    ...getUsageReportRowViewModels(payload.rows).map((row) => {
-      const node = document.createElement('article');
-      node.className = 'admin-audit-entry';
-      node.innerHTML = `
-        <strong>${escapeHtml(row.identityLabel)}</strong>
-        <span>${escapeHtml(row.submitterId)}</span>
-        <small>${row.consumedTitle} ${row.consumedLabel} / 保留 ${row.reservedLabel} / 剩餘 ${row.remainingLabel} / 總額 ${row.dailyQuotaLabel} / ${row.entryCountLabel}</small>
-      `;
-      return node;
-    })
-  );
-};
-
-const appendUsageDetail = (list, label, value) => {
-  if (value === undefined || value === null || value === '') {
-    return;
-  }
-  const term = document.createElement('dt');
-  term.textContent = label;
-  const description = document.createElement('dd');
-  description.textContent = String(value);
-  list.append(term, description);
-};
-
-const buildUsageRequestDetails = (entry) => {
-  const details = document.createElement('details');
-  details.className = 'usage-request-details';
-  const summary = document.createElement('summary');
-  const requestCount = Number(entry.providerRequestCount) || 0;
-  summary.textContent = [
-    entry.stageLabel,
-    entry.costLabel,
-    entry.recordKind === 'provider-request'
-      ? `${entry.requestStatusLabel || entry.requestStatus || '請求'} · 1 request`
-      : `彙總 · ${formatTokens(requestCount)} requests`
-  ].filter(Boolean).join(' · ');
-
-  const list = document.createElement('dl');
-  appendUsageDetail(list, 'Request audit ID', entry.recordKind === 'provider-request' ? entry.id : null);
-  appendUsageDetail(list, 'Provider', formatProviderLabel(entry.provider));
-  appendUsageDetail(list, 'Model', entry.model);
-  appendUsageDetail(list, 'Provider request ID', entry.providerRequestId);
-  appendUsageDetail(list, 'HTTP', entry.httpStatus);
-  appendUsageDetail(list, '錯誤代碼', entry.errorCode);
-  if (entry.hasTokenUsage ?? entry.stage !== 'transcription') {
-    appendUsageDetail(list, 'Input tokens', formatTokens(entry.inputTokens));
-    appendUsageDetail(list, 'Cached input', formatTokens(entry.cachedInputTokens));
-    appendUsageDetail(list, 'Cache write', formatTokens(entry.cacheWritePromptTokens));
-    appendUsageDetail(list, 'Output tokens', formatTokens(entry.outputTokens));
-    appendUsageDetail(list, 'Reasoning tokens', formatTokens(entry.reasoningOutputTokens));
-  }
-  appendUsageDetail(
-    list,
-    '原始音訊',
-    entry.audioMs ? `${formatTokens(Math.round(entry.audioMs / 1000))} 秒` : null
-  );
-  appendUsageDetail(
-    list,
-    '計費音訊',
-    entry.billedAudioMs
-      ? `${formatTokens(Math.round(entry.billedAudioMs / 1000))} 秒`
-      : null
-  );
-  appendUsageDetail(list, '開始', entry.createdAt ? formatJobTimestamp(entry.createdAt) : null);
-  appendUsageDetail(list, '完成', entry.finishedAt ? formatJobTimestamp(entry.finishedAt) : null);
-  appendUsageDetail(list, '計費類型', entry.billingClass);
-  appendUsageDetail(list, '核價狀態', entry.pricingStatus);
-  details.append(summary, list);
-  return details;
-};
-
-const buildUsageJobDetails = (job) => {
-  const details = document.createElement('details');
-  details.className = 'usage-request-details';
-  const summary = document.createElement('summary');
-  summary.textContent = job.providerRequestCount
-    ? `查看明細（${formatTokens(job.providerRequestCount)} 次請求）`
-    : `查看明細（${formatTokens(job.entries.length)} 筆用量）`;
-  details.append(summary);
-  details.addEventListener('toggle', () => {
-    if (!details.open || details.childElementCount > 1) return;
-    const list = document.createElement('div');
-    list.className = 'provider-request-audit-list';
-    const usage = document.createElement('p');
-    usage.textContent = `音訊 ${formatTokens(Math.round(job.audioMs / 1000))} 秒 / ${formatTokens(job.totalTokens)} tokens`;
-    list.append(usage, ...job.entries.map(buildUsageRequestDetails));
-    details.append(list);
-  });
-  return details;
-};
-
 const renderUsageHistory = (payload) => {
   const totals = payload?.totals ?? {};
   const costViewModel = getUsageHistoryCostViewModel(payload);
   const jobs = getUsageHistoryJobViewModels(costViewModel.entries);
   const submitterEmails = payload?.submitterEmails ?? {};
+  const jobResults = new Map((payload?.jobResults ?? []).map((job) => [job.id, job]));
 
   elements.usageHistoryTotalTokens.textContent = formatTokens(totals.totalTokens);
   elements.usageHistoryTotalCost.textContent = costViewModel.totalCostLabel;
@@ -347,26 +197,30 @@ const renderUsageHistory = (payload) => {
     ...jobs.map((job) => {
       const row = document.createElement('tr');
       const identity = submitterEmails[job.submitterId] || job.submitterId;
+      const result = jobResults.get(job.jobId);
+      const action = document.createElement(result?.resultAvailable ? 'a' : 'span');
+      if (result?.resultAvailable) {
+        action.textContent = '查看結果';
+        action.href = `/admin/result?jobId=${encodeURIComponent(job.jobId)}`;
+        action.className = 'mini-button';
+        action.setAttribute('aria-label', `查看結果：${result.title}`);
+      } else {
+        action.textContent = !result ? '結果已移除'
+          : result.state === 'completed' ? '沒有結果'
+            : result.state === 'failed' ? '處理失敗' : '處理中';
+      }
       const cells = [
         { text: formatJobTimestamp(job.createdAt) },
-        { text: job.jobId, title: job.jobId, jobId: job.jobId },
+        { text: result?.title || job.jobId, title: job.jobId },
         { text: job.costLabel, cls: 'usage-num' },
         { text: identity, title: job.submitterId },
-        { node: buildUsageJobDetails(job) }
+        { node: action }
       ];
 
       for (const cell of cells) {
         const td = document.createElement('td');
         if (cell.node) {
           td.append(cell.node);
-        } else if (cell.jobId) {
-          const button = document.createElement('button');
-          button.type = 'button';
-          button.className = 'usage-jobid-button';
-          button.textContent = cell.text;
-          button.dataset.jobId = cell.jobId;
-          button.title = `${cell.title}（點擊查看內容）`;
-          td.append(button);
         } else {
           td.textContent = cell.text;
           if (cell.cls) {
@@ -382,187 +236,6 @@ const renderUsageHistory = (payload) => {
       return row;
     })
   );
-};
-
-const closeJobModal = () => {
-  if (elements.jobModal.open) {
-    elements.jobModal.close();
-  }
-  elements.jobModalBody.replaceChildren();
-  modalReturnFocus?.focus();
-  modalReturnFocus = null;
-};
-
-const buildModalSection = (title, contentNode) => {
-  const section = document.createElement('div');
-  section.className = 'admin-job-modal-section';
-  const heading = document.createElement('h3');
-  heading.textContent = title;
-  section.append(heading, contentNode);
-  return section;
-};
-
-const renderJobModal = (job) => {
-  elements.jobModalTitle.textContent = job.uploadedFileName || job.meetingUrl || `工作 ${job.id}`;
-
-  const children = [];
-
-  const meta = document.createElement('div');
-  meta.className = 'admin-job-modal-meta';
-  const metaItems = [
-    ['工作 ID', job.id],
-    ['狀態', job.displayState || job.state],
-    ['提交者', job.submitterEmail || job.submitterId],
-    ['轉寫模型', job.transcriptionModel || '-'],
-    ['摘要模型', job.summaryModel || '-'],
-    ['建立時間', formatJobTimestamp(job.createdAt)]
-  ];
-  for (const [label, value] of metaItems) {
-    const card = document.createElement('div');
-    card.className = 'meta-card';
-    const labelNode = document.createElement('span');
-    labelNode.className = 'meta-label';
-    labelNode.textContent = label;
-    const valueNode = document.createElement('span');
-    valueNode.textContent = value ?? '-';
-    card.append(labelNode, valueNode);
-    meta.append(card);
-  }
-  children.push(meta);
-
-  if (job.ledgerEntries?.length) {
-    const list = document.createElement('ul');
-    for (const entry of job.ledgerEntries) {
-      const item = document.createElement('li');
-      const tokenPart =
-        entry.stage !== 'transcription'
-          ? `輸入 ${formatTokens(entry.inputTokens)} / 輸出 ${formatTokens(entry.outputTokens)} tokens`
-          : `${formatTokens(Math.round((entry.audioMs || 0) / 1000))} 秒音訊`;
-      const costLabel =
-        entry.pricingStatus === 'unpriced'
-          ? typeof entry.costUsd === 'number' && entry.costUsd > 0
-            ? `${formatTwdFromUsd(entry.costUsd)}（含未定價用量）`
-            : '未定價'
-          : formatTwdFromUsd(entry.costUsd);
-      item.textContent = `${formatUsageStageLabel(entry.stage)}（${entry.model}）：${tokenPart}，費用 ${costLabel}`;
-      list.append(item);
-    }
-    children.push(buildModalSection('Token / 費用明細', list));
-  }
-
-  if (job.providerRequests?.length) {
-    const list = document.createElement('div');
-    list.className = 'provider-request-audit-list';
-    for (const request of job.providerRequests) {
-      const detail = request.detail || {};
-      list.append(
-        buildUsageRequestDetails({
-          ...request,
-          id: request.requestId,
-          recordKind: 'provider-request',
-          requestStatus: request.status,
-          requestStatusLabel:
-            request.status === 'succeeded'
-              ? '成功'
-              : request.status === 'failed'
-                ? '失敗'
-                : '進行中',
-          createdAt: request.startedAt,
-          hasTokenUsage: typeof detail.totalTokens === 'number',
-          inputTokens: detail.inputTokens,
-          cachedInputTokens: detail.cachedInputTokens,
-          cacheWritePromptTokens: detail.cacheWriteInputTokens,
-          outputTokens: detail.outputTokens,
-          reasoningOutputTokens: detail.reasoningOutputTokens,
-          audioMs: detail.audioMs,
-          billedAudioMs: detail.billedAudioMs,
-          providerRequestCount: 1
-        })
-      );
-    }
-    children.push(buildModalSection('Provider request audit', list));
-  }
-
-  if (job.summaryArtifact?.text) {
-    const pre = document.createElement('pre');
-    pre.textContent = sanitizeAnonymousSpeakerLabels(job.summaryArtifact.text);
-    children.push(buildModalSection('AI 摘要（輸出內容）', pre));
-
-    const structured = job.summaryArtifact.structured;
-    if (structured) {
-      const groups = [
-        ['重點', structured.keyPoints],
-        ['待辦事項', structured.actionItems],
-        ['決策重點', structured.decisions],
-        ['風險提醒', structured.risks],
-        ['待確認問題', structured.openQuestions]
-      ];
-      for (const [title, items] of groups) {
-        if (items?.length) {
-          const list = document.createElement('ul');
-          for (const value of items) {
-            const item = document.createElement('li');
-            item.textContent = sanitizeAnonymousSpeakerLabels(value);
-            list.append(item);
-          }
-          children.push(buildModalSection(title, list));
-        }
-      }
-    }
-  }
-
-  if (job.transcriptArtifact?.segments?.length) {
-    const pre = document.createElement('pre');
-    pre.textContent = job.transcriptArtifact.segments
-      .map(getReadableTranscriptText)
-      .join('\n');
-    children.push(buildModalSection('逐字稿（輸入內容）', pre));
-  }
-
-  if (!job.summaryArtifact?.text && !job.transcriptArtifact?.segments?.length) {
-    const note = document.createElement('p');
-    note.className = 'admin-provider-status';
-    note.textContent = '這筆工作目前沒有可顯示的逐字稿或摘要內容。';
-    children.push(note);
-  }
-
-  elements.jobModalBody.replaceChildren(...children);
-};
-
-const openJobModal = async (jobId, trigger) => {
-  modalReturnFocus = trigger;
-  if (!elements.jobModal.open) {
-    elements.jobModal.showModal();
-  }
-  elements.jobModalTitle.textContent = '工作內容';
-  const loading = document.createElement('p');
-  loading.className = 'admin-provider-status';
-  loading.textContent = '正在載入...';
-  elements.jobModalBody.replaceChildren(loading);
-  elements.jobModalCard.focus();
-
-  try {
-    const response = await apiFetch(`/api/admin/jobs/${encodeURIComponent(jobId)}`);
-
-    if (response.status === 404) {
-      const note = document.createElement('p');
-      note.className = 'admin-provider-status';
-      note.textContent = '這筆工作的逐字稿與摘要內容已被清除（歷史紀錄已刪除），僅保留用量統計。';
-      elements.jobModalBody.replaceChildren(note);
-      return;
-    }
-
-    if (!response.ok) {
-      throw new Error(`載入失敗：${response.status}`);
-    }
-
-    renderJobModal(await response.json());
-  } catch (error) {
-    const note = document.createElement('p');
-    note.className = 'admin-provider-status';
-    note.textContent = error instanceof Error ? error.message : String(error);
-    elements.jobModalBody.replaceChildren(note);
-  }
 };
 
 const renderRuntimeHealth = (payload) => {
@@ -613,7 +286,11 @@ const renderRuntimeHealth = (payload) => {
 };
 
 const renderCodexWeeklyUsage = (payload) => {
+  clearTimeout(codexUsageExpiryTimer);
   const viewModel = getCodexWeeklyUsageViewModel(payload, formatJobTimestamp);
+  if (viewModel.available) {
+    codexUsageExpiryTimer = setTimeout(() => renderCodexWeeklyUsage(payload), viewModel.expiresInMs + 1);
+  }
   elements.adminCodexUsageCard.classList.toggle('is-unavailable', !viewModel.available);
   elements.adminCodexUsageHeadline.textContent = viewModel.headline;
   elements.adminCodexUsageStatus.textContent = viewModel.statusText;
@@ -645,36 +322,28 @@ const updateAdminProviderStatus = () => {
     transcriptionModelInput: elements.adminTranscriptionModelInput.value,
     summaryModelInput: elements.adminSummaryModelInput.value,
     pricingVersionInput: elements.adminPricingVersionInput.value,
-    overrideSubmitterId: elements.adminOverrideSubmitterId.value,
-    overrideQuotaInput: elements.adminOverrideQuotaInput.value
+    overrideSubmitterId: '',
+    overrideQuotaInput: ''
   });
 
   elements.adminProviderCurrent.textContent = viewModel.currentLabel;
   elements.adminProviderCopy.textContent = viewModel.copyText;
   elements.adminProviderStatus.textContent = viewModel.providerStatusText;
-  elements.adminSummaryModelStatus.textContent = viewModel.overrideStatusText;
   elements.adminProviderStatusPill.textContent = viewModel.pillText;
   elements.adminProviderStatusPill.className = `provider-pill ${viewModel.pillTone}`;
   elements.adminProviderSubmit.disabled = viewModel.submitDisabled;
-  elements.adminOverrideSubmit.disabled = viewModel.overrideDisabled;
   elements.adminSummaryModelInput.disabled = viewModel.summaryModelInputDisabled;
   elements.adminSummaryModelInput.placeholder = '例如 gpt-5.6-luna';
 };
 
 const renderAdminPanel = (
   payload,
-  overrides = [],
-  auditEntries = [],
-  usageReport = null,
   runtimeHealth = null,
   usageHistory = null,
   codexUsage = null
 ) => {
   adminProviderState = {
     ...payload,
-    overrides,
-    auditEntries,
-    usageReport,
     runtimeHealth
   };
   elements.sessionEmail.textContent = adminUsername || '-';
@@ -703,8 +372,6 @@ const renderAdminPanel = (
   elements.adminLocalTranscriptionInput.value = payload.concurrencyPools?.localTranscription ?? 1;
   elements.adminCloudTranscriptionInput.value = payload.concurrencyPools?.cloudTranscription ?? 1;
   elements.adminLocalSummaryInput.value = payload.concurrencyPools?.localSummary ?? 1;
-  renderAuditEntries(auditEntries);
-  renderUsageReport(usageReport);
   renderRuntimeHealth(runtimeHealth);
   renderUsageHistory(usageHistory);
   renderCodexWeeklyUsage(codexUsage);
@@ -725,72 +392,39 @@ const fetchUsageHistory = async () => {
   renderUsageHistory(await response.json());
 };
 
-const fetchAdminPanel = async (ready = Promise.resolve()) => {
-  const [
-    policyResponse,
-    overridesResponse,
-    auditResponse,
-    usageReportResponse,
-    runtimeHealthResponse,
-    usageHistoryResponse,
-    codexUsageResponse
-  ] = await Promise.all([
+const fetchAdminPanel = async (pricingReady = Promise.resolve()) => {
+  const responses = await Promise.all([
     apiFetch('/api/admin/ai-policy'),
-    apiFetch('/api/admin/cloud-quota/overrides'),
-    apiFetch('/api/admin/audit-log'),
-    apiFetch('/api/admin/cloud-usage/report'),
     apiFetch('/api/admin/runtime-health'),
-    (() => {
-      const url = new URL('/api/admin/usage/history', window.location.origin);
-      url.searchParams.set('limit', String(getHistoryLimit()));
-      return apiFetch(url);
-    })(),
-    apiFetch('/api/admin/codex-usage'),
-    ready
+    apiFetch(`/api/admin/usage/history?limit=${getHistoryLimit()}`),
+    apiFetch('/api/admin/codex-usage')
   ]);
-
-  if (
-    policyResponse.status === 401 ||
-    policyResponse.status === 403 ||
-    usageHistoryResponse.status === 401 ||
-    codexUsageResponse.status === 401
-  ) {
+  await pricingReady;
+  if (responses.some((response) => response.status === 401)) {
     setToken(null);
     showLoginView();
-    setLoginStatus('登入已過期，請重新登入。');
     return;
   }
-
-  if (
-    !policyResponse.ok ||
-    !overridesResponse.ok ||
-    !auditResponse.ok ||
-    !usageReportResponse.ok ||
-    !runtimeHealthResponse.ok ||
-    !usageHistoryResponse.ok ||
-    !codexUsageResponse.ok
-  ) {
+  if (responses.some((response) => !response.ok)) {
     throw new Error('Failed to fetch admin governance settings.');
   }
-
-  const policy = await policyResponse.json();
-  const overridesPayload = await overridesResponse.json();
-  const auditPayload = await auditResponse.json();
-  const usageReportPayload = await usageReportResponse.json();
-  const runtimeHealthPayload = await runtimeHealthResponse.json();
-  const usageHistoryPayload = await usageHistoryResponse.json();
-  const codexUsagePayload = await codexUsageResponse.json();
-
-  renderAdminPanel(
-    policy,
-    overridesPayload.overrides || [],
-    auditPayload.entries || [],
-    usageReportPayload,
-    runtimeHealthPayload,
-    usageHistoryPayload,
-    codexUsagePayload
-  );
+  renderAdminPanel(...await Promise.all(responses.map((response) => response.json())));
 };
+
+const refreshCodexWeeklyUsage = async () => {
+  if (!adminToken) return;
+  try {
+    const response = await apiFetch('/api/admin/codex-usage', { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) throw new Error('Usage unavailable');
+    renderCodexWeeklyUsage(await response.json());
+  } catch {
+    renderCodexWeeklyUsage({ status: 'unavailable' });
+  }
+};
+setInterval(refreshCodexWeeklyUsage, 60_000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refreshCodexWeeklyUsage();
+});
 
 elements.loginForm.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -853,26 +487,6 @@ elements.usageHistoryForm?.addEventListener('submit', async (event) => {
   }
 });
 
-elements.usageHistoryRows?.addEventListener('click', (event) => {
-  const button = event.target.closest('[data-job-id]');
-  if (button?.dataset.jobId) {
-    openJobModal(button.dataset.jobId, button);
-  }
-});
-
-elements.jobModal?.addEventListener('click', (event) => {
-  if (event.target === elements.jobModal) {
-    closeJobModal();
-  }
-});
-
-elements.jobModalClose?.addEventListener('click', closeJobModal);
-
-elements.jobModal?.addEventListener('cancel', (event) => {
-  event.preventDefault();
-  closeJobModal();
-});
-
 [
   elements.adminProviderSelect,
   elements.adminTranscriptionModelInput,
@@ -882,9 +496,7 @@ elements.jobModal?.addEventListener('cancel', (event) => {
   elements.adminLiveMeetingCapInput,
   elements.adminLocalTranscriptionInput,
   elements.adminCloudTranscriptionInput,
-  elements.adminLocalSummaryInput,
-  elements.adminOverrideSubmitterId,
-  elements.adminOverrideQuotaInput
+  elements.adminLocalSummaryInput
 ].forEach((element) => {
   element?.addEventListener('input', () => updateAdminProviderStatus());
   element?.addEventListener('change', () => updateAdminProviderStatus());
@@ -935,42 +547,6 @@ elements.adminProviderForm.addEventListener('submit', async (event) => {
     setBanner(error instanceof Error ? error.message : String(error));
   } finally {
     setFormBusy(elements.adminProviderForm, false);
-  }
-});
-
-elements.adminOverrideForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-
-  if (!adminProviderState) {
-    return;
-  }
-
-  try {
-    setFormBusy(elements.adminOverrideForm, true);
-    elements.adminSummaryModelStatus.textContent = '正在更新個人額度...';
-    const response = await apiFetch('/api/admin/cloud-quota/overrides', {
-      method: 'PUT',
-      headers: {
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        submitterId: elements.adminOverrideSubmitterId.value.trim(),
-        dailyQuotaUsd: twdQuotaToUsd(elements.adminOverrideQuotaInput.value)
-      })
-    });
-    const payload = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(payload?.error?.message ?? `Quota override update failed: ${response.status}`);
-    }
-
-    await fetchAdminPanel();
-    elements.adminSummaryModelStatus.textContent = '個人額度已更新。';
-  } catch (error) {
-    elements.adminSummaryModelStatus.textContent =
-      error instanceof Error ? error.message : String(error);
-  } finally {
-    setFormBusy(elements.adminOverrideForm, false);
   }
 });
 

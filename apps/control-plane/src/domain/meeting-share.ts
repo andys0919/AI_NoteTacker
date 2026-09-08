@@ -100,7 +100,9 @@ const hasReadableSummary = (artifact: SummaryArtifact | undefined): boolean =>
         artifact.structured?.summary.trim())
   );
 
-export const isMeetingShareEligible = (job: RecordingJob): boolean =>
+export const isMeetingShareEligible = (
+  job: Pick<RecordingJob, 'state' | 'transcriptArtifact' | 'summaryArtifact'>
+): boolean =>
   job.state === 'completed' &&
   (job.transcriptArtifact?.segments.some((segment) => toReadableTranscriptText(segment)) === true ||
     hasReadableSummary(job.summaryArtifact));

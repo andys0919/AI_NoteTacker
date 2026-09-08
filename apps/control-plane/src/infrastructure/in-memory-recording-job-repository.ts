@@ -13,6 +13,7 @@ import {
 import {
   recordingJobMatchesSearchQuery,
   toRecordingJobListItem,
+  toRecordingJobResultMetadata,
   type RecordingJobListItem
 } from '../domain/recording-job-list-item.js';
 import type {
@@ -187,6 +188,13 @@ export class InMemoryRecordingJobRepository implements RecordingJobRepository {
 
   async getMeetingShareLinkByJobId(jobId: string): Promise<MeetingShareLink | undefined> {
     return this.meetingShareLinks.get(jobId);
+  }
+
+  async listResultMetadataByIds(ids: string[]) {
+    return ids.flatMap((id) => {
+      const job = this.jobs.get(id);
+      return job ? [toRecordingJobResultMetadata(job)] : [];
+    });
   }
 
   async getMeetingShareLinkByShareId(shareId: string): Promise<MeetingShareLink | undefined> {

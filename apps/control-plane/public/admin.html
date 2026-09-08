@@ -7,7 +7,6 @@
     <link rel="stylesheet" href="/styles.css" />
     <link rel="modulepreload" href="/admin.js" />
     <link rel="modulepreload" href="/escape-html.js" />
-    <link rel="modulepreload" href="/artifact-reader.js" />
     <link rel="modulepreload" href="/currency-display.js" />
     <link rel="modulepreload" href="/dashboard-copy.js" />
     <link rel="modulepreload" href="/governance-panel.js" />
@@ -148,9 +147,6 @@
           <a href="#admin-provider-panel">模型與治理設定</a>
           <a href="#admin-codex-usage-panel">Codex 每週額度</a>
           <a href="#admin-runtime-health-panel">執行狀態</a>
-          <a href="#admin-quota-panel">個人額度</a>
-          <a href="#admin-audit-panel">治理異動</a>
-          <a href="#admin-usage-report-panel">今日使用報表</a>
         </nav>
         <div class="admin-rail-actions">
           <a class="toolbar-button" href="/">回主頁</a>
@@ -205,7 +201,7 @@
               </div>
             </div>
             <p id="admin-usage-history-copy" class="hero-text admin-provider-copy">
-              同一個工作合併為一筆，總消費包含完整轉寫分段與摘要；展開可查看每次請求。Local Codex 訂閱用量不列入 Azure API 費，無法精確核價的用量保留「未定價」狀態。
+              同一個工作合併為一筆，總消費包含完整轉寫分段與摘要；點選「查看結果」可閱讀使用者取得的完整文件。Local Codex 訂閱用量不列入 Azure API 費，無法精確核價的用量保留「未定價」狀態。
             </p>
             <p id="admin-currency-reference" class="admin-provider-status"></p>
             <form
@@ -249,7 +245,7 @@
                     <th scope="col">工作</th>
                     <th scope="col" class="usage-num">總消費 (TWD)</th>
                     <th scope="col">提交者</th>
-                    <th scope="col">請求明細</th>
+                    <th scope="col">最終結果</th>
                   </tr>
                 </thead>
                 <tbody id="admin-usage-history-rows">
@@ -470,125 +466,10 @@
             </div>
           </section>
 
-          <section class="admin-grid">
-            <section id="admin-quota-panel" class="panel admin-governance-panel">
-              <div class="section-heading">
-                <span class="section-heading-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                    <rect width="20" height="14" x="2" y="5" rx="2" />
-                    <line x1="2" x2="22" y1="10" y2="10" />
-                  </svg>
-                </span>
-                <div class="section-heading-text">
-                  <h2>個人額度</h2>
-                </div>
-              </div>
-              <form
-                id="admin-override-form"
-                class="stack-form admin-provider-form"
-                aria-busy="false"
-              >
-                <div class="admin-provider-controls">
-                  <label class="field admin-summary-model-field">
-                    <span>Submitter ID</span>
-                    <input
-                      id="admin-override-submitter-id"
-                      name="submitterId"
-                      type="text"
-                      placeholder="operator-user"
-                      autocomplete="off"
-                    />
-                  </label>
-                  <label class="field admin-summary-model-field">
-                    <span>個人每日額度 (TWD)</span>
-                    <input
-                      id="admin-override-quota-input"
-                      name="dailyQuotaUsd"
-                      type="number"
-                      inputmode="decimal"
-                      min="0"
-                      step="0.01"
-                    />
-                  </label>
-                  <button id="admin-override-submit" class="toolbar-button admin-action-primary" type="submit">
-                    更新個人額度
-                  </button>
-                </div>
-                <p
-                  id="admin-summary-model-status"
-                  class="admin-provider-status"
-                  role="status"
-                  aria-live="polite"
-                >
-                  尚未設定個人 quota override。
-                </p>
-              </form>
-            </section>
 
-            <section id="admin-audit-panel" class="panel admin-governance-panel">
-              <div class="section-heading">
-                <span class="section-heading-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                    <rect width="8" height="4" x="8" y="2" rx="1" ry="1" />
-                    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
-                    <path d="M12 11h4" />
-                    <path d="M12 16h4" />
-                    <path d="M8 11h.01" />
-                    <path d="M8 16h.01" />
-                  </svg>
-                </span>
-                <div class="section-heading-text">
-                  <h2>最近治理異動</h2>
-                </div>
-              </div>
-              <div id="admin-audit-list" class="admin-audit-list">
-                <p class="admin-provider-status">尚無治理異動紀錄。</p>
-              </div>
-            </section>
-          </section>
-
-          <section id="admin-usage-report-panel" class="panel admin-governance-panel">
-            <div class="section-heading">
-              <span class="section-heading-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />
-                </svg>
-              </span>
-              <div class="section-heading-text">
-                <h2>今日使用報表</h2>
-              </div>
-            </div>
-            <p
-              id="admin-usage-report-summary"
-              class="admin-provider-status"
-              role="status"
-              aria-live="polite"
-            >
-              尚無 cloud usage 資料。
-            </p>
-            <div id="admin-usage-report-list" class="admin-audit-list">
-              <p class="admin-provider-status">尚無 cloud usage 資料。</p>
-            </div>
-          </section>
         </section>
       </section>
     </main>
-
-    <dialog id="admin-job-modal" class="admin-job-modal" aria-labelledby="admin-job-modal-title">
-      <div
-        id="admin-job-modal-card"
-        class="admin-job-modal-card panel"
-        tabindex="-1"
-      >
-        <div class="admin-job-modal-head">
-          <h2 id="admin-job-modal-title">工作內容</h2>
-          <button id="admin-job-modal-close" class="toolbar-button compact" type="button">關閉</button>
-        </div>
-        <div id="admin-job-modal-body" class="admin-job-modal-body">
-          <p class="admin-provider-status">正在載入...</p>
-        </div>
-      </div>
-    </dialog>
 
     <script type="module" src="/admin.js"></script>
   </body>

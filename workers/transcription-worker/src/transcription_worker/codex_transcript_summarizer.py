@@ -12,6 +12,7 @@ from threading import Thread
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from urllib.parse import urljoin
 
 from transcription_worker.transcript_summary import (
     build_summary_prompt,
@@ -260,9 +261,30 @@ def codex_weekly_usage_from_rate_limits(
 def read_codex_weekly_usage(
     codex_cli_path: str = "codex",
     timeout_seconds: int | float = 15,
+    *,
+    api_url: str = "",
+    api_token: str = "",
 ) -> dict[str, Any]:
     checked_at = datetime.now(timezone.utc).isoformat()
-    payload = read_codex_rate_limits(codex_cli_path, timeout_seconds)
+    if api_url:
+        payload = None
+        try:
+            request = Request(urljoin(api_url, "/api/codex/usage"),
+                              headers={"Authorization": f"Bearer {api_token}"})
+            with urlopen(request, timeout=timeout_seconds) as response:
+                raw = response.read(65_537)
+            if len(raw) > 65_536:
+                raise ValueError("Usage response too large")
+            payload = json.loads(raw)
+            observed = datetime.fromisoformat(payload["checkedAt"].replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - observed).total_seconds()
+            if not 0 <= age <= 180 or payload.get("rateLimits") is None:
+                raise ValueError("Usage observation unavailable")
+            checked_at = observed.isoformat()
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            payload = None
+    else:
+        payload = read_codex_rate_limits(codex_cli_path, timeout_seconds)
     if payload is None:
         return {
             "status": "unavailable",

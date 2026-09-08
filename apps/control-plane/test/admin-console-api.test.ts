@@ -2,7 +2,8 @@ import request, { TEST_ADMIN_CONSOLE_PASSWORD } from './test-request.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createApp } from '../src/app.js';
-import { createRecordingJob, markRecordingJobFailed } from '../src/domain/recording-job.js';
+import { attachSummaryArtifact, attachTranscriptArtifact, createRecordingJob, markRecordingJobFailed } from '../src/domain/recording-job.js';
+import { toPublicMeeting } from '../src/domain/meeting-share.js';
 import { createAdminConsoleAuth } from '../src/infrastructure/admin-console-auth.js';
 import { InMemoryCloudUsageLedgerRepository } from '../src/infrastructure/in-memory-cloud-usage-ledger-repository.js';
 import { InMemoryRecordingJobRepository } from '../src/infrastructure/in-memory-recording-job-repository.js';
@@ -117,7 +118,7 @@ describe('admin console (username/password) API', () => {
 
   it('shows only the sanitized Codex weekly usage to an administrator', async () => {
     const app = buildApp();
-    const checkedAt = '2026-08-07T04:00:00.000Z';
+    const checkedAt = new Date().toISOString();
 
     expect((await request(app).get('/api/admin/codex-usage')).status).toBe(401);
 
@@ -150,6 +151,15 @@ describe('admin console (username/password) API', () => {
     });
     expect(response.body).not.toHaveProperty('accountId');
     expect(response.body).not.toHaveProperty('auth');
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 181_000);
+    try {
+      const stale = await request(app).get('/api/admin/codex-usage')
+        .set('authorization', `Bearer ${loginBody.token}`);
+      expect(stale.body.status).toBe('unavailable');
+      expect(stale.body).not.toHaveProperty('usedPercent');
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('accepts the token via the x-admin-console-token header too', async () => {
@@ -569,6 +579,38 @@ describe('admin console (username/password) API', () => {
         unmeteredRequestCount: 1
       })
     ]);
+  });
+
+  it('records lightweight final-result metadata and renders the user document for admins after hiding', async () => {
+    const repository = new InMemoryRecordingJobRepository();
+    const ledger = seedLedger();
+    const job = attachSummaryArtifact(attachTranscriptArtifact(createRecordingJob({
+      meetingUrl: 'uploaded://meeting.wav', platform: 'uploaded-audio', inputSource: 'uploaded-audio',
+      uploadedFileName: '專案會議.wav', submitterId: 'operator-result', summaryRequested: true
+    }), {
+      storageKey: 'transcript.json', contentType: 'application/json', language: 'zh-Hant',
+      segments: [{ startMs: 0, endMs: 1000, text: 'Speaker A：完成需求確認。' }]
+    }), { model: 'local-codex', text: '已確認需求。' });
+    await repository.save(job);
+    await ledger.append({ jobId: job.id, submitterId: job.submitterId, quotaDayKey: '2026-09-08',
+      stage: 'transcription', provider: 'azure-openai', model: 'test', pricingVersion: 'v1',
+      entryType: 'actual', pricingStatus: 'priced', costUsd: 0.25, usageQuantity: 1000, usageUnit: 'audio-ms' });
+    const app = createApp(repository, { adminConsoleAuth: buildAuth(), cloudUsageLedgerRepository: ledger });
+    const { body } = await login(app);
+    const resultPath = `/api/admin/jobs/${job.id}/result`;
+    expect((await request(app).get(resultPath)).status).toBe(401);
+    const history = await request(app).get('/api/admin/usage/history').set('authorization', `Bearer ${body.token}`);
+    expect(history.body.jobResults).toEqual([{ id: job.id, title: '專案會議.wav', state: 'completed', resultAvailable: true }]);
+    expect(JSON.stringify(history.body)).not.toContain('完成需求確認');
+    await repository.clearTerminalHistoryForSubmitter(job.submitterId);
+    expect(await repository.getById(job.id)).toBeUndefined();
+    const result = await request(app).get(resultPath).set('authorization', `Bearer ${body.token}`);
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual(toPublicMeeting(job));
+    expect(result.headers['cache-control']).toContain('no-store');
+    expect(await repository.getMeetingShareLinkByJobId(job.id)).toBeUndefined();
+    const missing = await request(app).get('/api/admin/jobs/missing/result').set('authorization', `Bearer ${body.token}`);
+    expect(missing.status).toBe(404);
   });
 
   it('keeps soft-deleted job content visible to the admin after an operator clears it', async () => {

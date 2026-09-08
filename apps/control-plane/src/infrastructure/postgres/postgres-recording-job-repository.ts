@@ -10,6 +10,7 @@ import type { MeetingShareLink } from '../../domain/meeting-share.js';
 import {
   buildSummaryPreview,
   buildTranscriptPreview,
+  toRecordingJobResultMetadata,
   type RecordingJobListItem
 } from '../../domain/recording-job-list-item.js';
 import type { SummaryProvider } from '../../domain/summary-provider.js';
@@ -28,6 +29,7 @@ import type {
   RecordingJobPage,
   RecordingJobPageCursor,
   RecordingJobRepository,
+  RecordingJobResultMetadata,
   RecordingJobStats
 } from '../../domain/recording-job-repository.js';
 import type { TranscriptionProvider } from '../../domain/transcription-provider.js';
@@ -1128,6 +1130,22 @@ export class PostgresRecordingJobRepository implements RecordingJobRepository {
     );
 
     return result.rows[0] ? mapRowToMeetingShareLink(result.rows[0]) : undefined;
+  }
+
+  async listResultMetadataByIds(ids: string[]): Promise<RecordingJobResultMetadata[]> {
+    if (!ids.length) return [];
+    const placeholders = ids.map((_, index) => `$${index + 1}`).join(', ');
+    // ponytail: exact readability scans artifacts; persist eligibility if archive queries become expensive.
+    const result = await this.database.query<Pick<RecordingJobRow,
+      'id' | 'state' | 'uploaded_file_name' | 'summary_artifact' | 'transcript_artifact'
+    >>(`
+      SELECT id, state, uploaded_file_name, summary_artifact, transcript_artifact
+      FROM recording_jobs WHERE id IN (${placeholders})`, ids);
+    return result.rows.map((row) => toRecordingJobResultMetadata({
+      id: row.id, state: row.state, uploadedFileName: row.uploaded_file_name ?? undefined,
+      summaryArtifact: row.summary_artifact ?? undefined,
+      transcriptArtifact: row.transcript_artifact ?? undefined
+    }));
   }
 
   async getMeetingShareLinkByShareId(shareId: string): Promise<MeetingShareLink | undefined> {

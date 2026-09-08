@@ -1,4 +1,6 @@
 import os
+from datetime import datetime, timezone, timedelta
+from io import BytesIO
 import json
 import subprocess
 import sys
@@ -14,6 +16,7 @@ from transcription_worker.codex_transcript_summarizer import (
     _terminate_process_group,
     codex_weekly_usage_from_rate_limits,
     is_codex_quota_exhausted,
+    read_codex_weekly_usage,
 )
 
 _API_URL = "http://codex-pty-agent:3001/api/prompt"
@@ -350,6 +353,24 @@ class CodexTranscriptSummarizerTests(unittest.TestCase):
             )["status"],
             "unavailable",
         )
+
+    def test_reads_remote_weekly_usage_without_local_oauth_and_rejects_stale_data(self) -> None:
+        observed = datetime.now(timezone.utc).isoformat()
+        payload = {"checkedAt": observed, "rateLimits": {"planType": "team", "secondary": {
+            "usedPercent": 37.5, "windowDurationMins": 10080, "resetsAt": 1800000000}}}
+        with patch("transcription_worker.codex_transcript_summarizer.read_codex_rate_limits") as local:
+            with patch("transcription_worker.codex_transcript_summarizer.urlopen",
+                       return_value=BytesIO(json.dumps(payload).encode())) as remote:
+                usage = read_codex_weekly_usage(api_url="http://runtime:3001/api/prompt", api_token="test-token")
+                self.assertEqual(usage["usedPercent"], 37.5)
+                self.assertEqual(usage["checkedAt"], observed)
+                self.assertEqual(remote.call_args.args[0].full_url, "http://runtime:3001/api/codex/usage")
+                self.assertEqual(remote.call_args.args[0].get_header("Authorization"), "Bearer test-token")
+            payload["checkedAt"] = (datetime.now(timezone.utc) - timedelta(minutes=4)).isoformat()
+            with patch("transcription_worker.codex_transcript_summarizer.urlopen",
+                       return_value=BytesIO(json.dumps(payload).encode())):
+                self.assertEqual(read_codex_weekly_usage(api_url="http://runtime/api/prompt")["status"], "unavailable")
+            local.assert_not_called()
 
     def test_process_group_termination_returns_promptly_after_clean_exit(self) -> None:
         process = subprocess.Popen(

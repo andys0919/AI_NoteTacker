@@ -15,7 +15,7 @@ describe('admin shell markup', () => {
 
     expect(html).toContain('AI 治理設定');
     expect(html).toContain('admin-provider-panel');
-    expect(html).toContain('admin-usage-report-list');
+    expect(html).not.toContain('admin-usage-report-list');
     expect(html).toContain('admin-runtime-health-panel');
     expect(html).toContain('admin-codex-usage-panel');
     expect(html).toContain('id="admin-codex-usage-progress"');
@@ -52,7 +52,7 @@ describe('admin shell markup', () => {
 
     expect(html).toContain('無法精確核價的用量保留「未定價」狀態');
     expect(html).toContain('總消費 (TWD)');
-    expect(html).toContain('<th scope="col">請求明細</th>');
+    expect(html).toContain('<th scope="col">最終結果</th>');
     expect(html).toContain('每日預設額度 (TWD)');
     expect(html).not.toContain('費用狀態 (USD)');
     expect(html).toContain('<span class="meta-label">所選工作總消費</span>');
@@ -93,7 +93,7 @@ describe('admin shell markup', () => {
     expect(javascript).not.toContain('adminSummaryProviderSelect');
   });
 
-  it('provides accessible table, modal, and asynchronous form state', () => {
+  it('provides accessible results and omits retired panels and requests', () => {
     const html = readFileSync(
       resolve(import.meta.dirname, '../public/admin.html'),
       'utf-8'
@@ -109,21 +109,18 @@ describe('admin shell markup', () => {
     expect(html).toContain('aria-label="工作總消費歷史紀錄，可左右捲動"');
     expect(html).toContain('aria-busy="false"');
     expect(html).toContain('id="admin-skip-link"');
-    expect(html).toContain('<dialog id="admin-job-modal"');
-    expect(html).toContain('id="admin-job-modal-card"');
-    expect(html).toContain('tabindex="-1"');
-    expect(javascript).toContain('elements.jobModal.showModal()');
-    expect(javascript).toContain('elements.jobModal.close()');
-    expect(javascript).toContain('elements.jobModalCard.focus()');
     expect(javascript).not.toContain('elements.adminContent.hidden');
     expect(javascript).toContain("elements.skipLink.href = '#admin-content'");
     expect(javascript).toContain('setFormBusy(elements.adminProviderForm');
-    expect(javascript).toContain('setFormBusy(elements.adminOverrideForm');
-    expect(javascript).toContain('sanitizeAnonymousSpeakerLabels');
-    expect(javascript).toContain("details.className = 'usage-request-details'");
-    expect(javascript).toContain("appendUsageDetail(list, 'Provider'");
-    expect(javascript).toContain("appendUsageDetail(list, 'Model'");
-    expect(javascript).toContain("buildModalSection('Provider request audit'");
+    expect(javascript).toContain('/admin/result?jobId=');
+    expect(javascript).not.toContain('buildUsageJobDetails');
+    for (const id of ['admin-quota-panel', 'admin-audit-panel', 'admin-usage-report-panel']) {
+      expect(html).not.toContain(id);
+    }
+    for (const route of ['/api/admin/cloud-quota/overrides', '/api/admin/audit-log', '/api/admin/cloud-usage/report']) {
+      expect(javascript).not.toContain(route);
+    }
+    expect(javascript).toContain('/api/admin/runtime-health');
   });
 
   it('keeps the administrator bearer token inside the current browser session', () => {

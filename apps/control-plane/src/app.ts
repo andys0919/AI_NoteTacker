@@ -2426,7 +2426,8 @@ export const createApp = (
     }
 
     return response.status(200).json(
-      latestCodexWeeklyUsage ?? {
+      latestCodexWeeklyUsage && Date.now() - Date.parse(latestCodexWeeklyUsage.checkedAt) <= 180_000
+        ? latestCodexWeeklyUsage : {
         status: 'unavailable',
         reason: 'not-reported',
         checkedAt: null
@@ -2734,6 +2735,9 @@ export const createApp = (
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 
     const submitterIds = [...new Set(entries.map((entry) => entry.submitterId))];
+    const jobResults = await repository.listResultMetadataByIds(
+      [...new Set(entries.map((entry) => entry.jobId))]
+    );
     const submitterEmails: Record<string, string> = {};
     await Promise.all(
       submitterIds.map(async (submitterId) => {
@@ -2869,8 +2873,19 @@ export const createApp = (
       totals,
       byModel,
       submitterEmails,
+      jobResults,
       entries
     });
+  });
+
+  app.get('/api/admin/jobs/:id/result', async (request, response) => {
+    setSharedMeetingHeaders(response);
+    if (!(await requireAdminOperator(request, response))) return;
+    const job = await repository.getByIdIncludingHidden(request.params.id);
+    if (!job || !isMeetingShareEligible(job)) {
+      return response.status(404).json(sharedMeetingUnavailableResponse);
+    }
+    return response.status(200).json(toPublicMeeting(job));
   });
 
   app.get('/api/admin/jobs/:id', async (request, response) => {
@@ -4694,6 +4709,11 @@ export const createApp = (
   app.use(uploadErrorHandler);
 
   app.get(['/share', '/share.html'], (_request, response) => {
+    setSharedMeetingHeaders(response);
+    response.sendFile(resolve(publicDir, 'share.html'));
+  });
+
+  app.get('/admin/result', (_request, response) => {
     setSharedMeetingHeaders(response);
     response.sendFile(resolve(publicDir, 'share.html'));
   });

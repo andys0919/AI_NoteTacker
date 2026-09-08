@@ -22,6 +22,13 @@ export type RecordingJobStats = {
   failedCount: number;
 };
 
+export type RecordingJobResultMetadata = {
+  id: string;
+  title: string;
+  state: RecordingJob['state'];
+  resultAvailable: boolean;
+};
+
 export interface RecordingJobRepository {
   save(job: RecordingJob): Promise<RecordingJob>;
   saveIfLeaseActive(
@@ -54,6 +61,7 @@ export interface RecordingJobRepository {
    * own history. Used by the admin console to audit hidden jobs.
    */
   getByIdIncludingHidden(id: string): Promise<RecordingJob | undefined>;
+  listResultMetadataByIds(ids: string[]): Promise<RecordingJobResultMetadata[]>;
   getMeetingShareLinkByJobId(jobId: string): Promise<MeetingShareLink | undefined>;
   getMeetingShareLinkByShareId(shareId: string): Promise<MeetingShareLink | undefined>;
   getOrCreateMeetingShareLink(link: MeetingShareLink): Promise<MeetingShareLink>;

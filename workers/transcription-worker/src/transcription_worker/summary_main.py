@@ -47,7 +47,10 @@ def main() -> None:
     while True:
         try:
             if time.monotonic() >= next_codex_usage_refresh_at:
-                codex_usage = read_codex_weekly_usage(codex_cli_path=codex_cli_path)
+                codex_usage = read_codex_weekly_usage(
+                    api_url=str(config["codex_pty_api_url"]),
+                    api_token=str(config["codex_pty_api_token"]),
+                )
                 next_codex_usage_refresh_at = time.monotonic() + 60
             result = run_summary_worker_iteration(
                 worker_id=str(config["worker_id"]),

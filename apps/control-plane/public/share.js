@@ -14,6 +14,15 @@ const transcriptSection = document.querySelector('#shared-transcript');
 const transcriptContent = document.querySelector('#shared-transcript-content');
 let activeToken = '';
 let loadGeneration = 0;
+const adminJobId = window.location.pathname === '/admin/result'
+  ? new URLSearchParams(window.location.search).get('jobId') : null;
+if (adminJobId) {
+  const back = document.createElement('a');
+  back.href = '/admin';
+  back.className = 'mini-button';
+  back.textContent = '回後台';
+  document.querySelector('#print-shared-meeting').before(back);
+}
 
 const formatDuration = (milliseconds) => {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
@@ -26,6 +35,10 @@ const formatDuration = (milliseconds) => {
 };
 
 const readShareLocation = () => {
+  if (adminJobId) {
+    return { token: window.sessionStorage.getItem('solomon-notetaker-admin-token') || '',
+      targetId: window.location.hash.slice(1) };
+  }
   const [encodedToken = '', encodedTarget = ''] = window.location.hash.slice(1).split('::', 2);
   try {
     return {
@@ -57,7 +70,7 @@ const prepareShareTargetLinks = (token) => {
     link.dataset.shareTarget = targetId;
     link.setAttribute(
       'href',
-      `#${encodeURIComponent(token)}::${encodeURIComponent(targetId)}`
+      adminJobId ? `#${targetId}` : `#${encodeURIComponent(token)}::${encodeURIComponent(targetId)}`
     );
   });
 };
@@ -65,7 +78,9 @@ const prepareShareTargetLinks = (token) => {
 const showUnavailable = () => {
   content.hidden = true;
   status.hidden = false;
-  status.textContent = '這份共享會議紀錄目前無法查看。';
+  status.textContent = adminJobId
+    ? '這份結果目前無法查看，請確認管理者登入狀態及工作是否已完成。'
+    : '這份共享會議紀錄目前無法查看。';
 };
 
 const renderSharedMeeting = (meeting, targetId) => {
@@ -128,7 +143,8 @@ const boot = async () => {
   status.textContent = '正在載入共享會議紀錄…';
 
   try {
-    const response = await fetch('/api/shared-meeting', {
+    const response = await fetch(adminJobId
+      ? `/api/admin/jobs/${encodeURIComponent(adminJobId)}/result` : '/api/shared-meeting', {
       headers: {
         Authorization: `Bearer ${token}`
       }
@@ -165,7 +181,8 @@ document.addEventListener('click', (event) => {
   }
 
   event.preventDefault();
-  const nextHash = `#${encodeURIComponent(activeToken)}::${encodeURIComponent(targetId)}`;
+  const nextHash = adminJobId ? `#${targetId}`
+    : `#${encodeURIComponent(activeToken)}::${encodeURIComponent(targetId)}`;
   if (window.location.hash === nextHash) {
     scrollToShareTarget(targetId);
   } else {

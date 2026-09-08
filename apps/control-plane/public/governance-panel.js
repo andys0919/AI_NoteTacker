@@ -29,7 +29,8 @@ export const getCodexWeeklyUsageViewModel = (
   payload = {},
   formatTimestamp = (value) => value
 ) => {
-  if (payload.status !== 'available') {
+  const ageMs = Date.now() - Date.parse(payload.checkedAt);
+  if (payload.status !== 'available' || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > 180_000) {
     return {
       available: false,
       headline: '暫時無法取得每週額度',
@@ -47,6 +48,7 @@ export const getCodexWeeklyUsageViewModel = (
 
   return {
     available: true,
+    expiresInMs: 180_000 - ageMs,
     headline: `本週剩餘 ${formatPercent(remainingPercent)}`,
     statusText: remainingPercent > 0 ? planLabel : '額度已用罄',
     usedPercent,

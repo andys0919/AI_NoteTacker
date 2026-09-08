@@ -44,6 +44,7 @@ describe('governance panel helpers', () => {
     });
   });
   it('formats provider-reported Codex weekly usage without inventing missing data', () => {
+    const checkedAt = new Date().toISOString();
     expect(
       getCodexWeeklyUsageViewModel(
         {
@@ -51,7 +52,7 @@ describe('governance panel helpers', () => {
           planType: 'team',
           usedPercent: 37.5,
           resetsAt: 1_786_680_000,
-          checkedAt: '2026-08-07T04:00:00.000Z'
+          checkedAt
         },
         (value) => value
       )
@@ -61,7 +62,7 @@ describe('governance panel helpers', () => {
       statusText: 'ChatGPT Business',
       usedText: '37.5%',
       remainingText: '62.5%',
-      checkedText: '2026-08-07T04:00:00.000Z'
+      checkedText: checkedAt
     });
 
     expect(getCodexWeeklyUsageViewModel({ status: 'unavailable' })).toMatchObject({
@@ -69,6 +70,10 @@ describe('governance panel helpers', () => {
       headline: '暫時無法取得每週額度',
       usedText: '—',
       remainingText: '—'
+    });
+    expect(getCodexWeeklyUsageViewModel({ status: 'available', usedPercent: 37.5,
+      checkedAt: new Date(Date.now() - 181_000).toISOString() })).toMatchObject({
+      available: false, usedText: '—', remainingText: '—'
     });
   });
 

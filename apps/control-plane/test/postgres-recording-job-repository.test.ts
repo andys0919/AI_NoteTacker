@@ -102,6 +102,10 @@ describe('PostgresRecordingJobRepository', () => {
     await repository.save(summarized);
 
     const reloaded = await repository.getById(summarized.id);
+    expect(await repository.listResultMetadataByIds([summarized.id, 'missing'])).toEqual([
+      { id: summarized.id, title: summarized.id, state: 'completed', resultAvailable: true }
+    ]);
+    expect(await repository.listResultMetadataByIds([])).toEqual([]);
 
     expect(reloaded).toBeDefined();
     expect(reloaded?.state).toBe('completed');
@@ -130,6 +134,21 @@ describe('PostgresRecordingJobRepository', () => {
     await repository.save(created);
 
     expect((await repository.getById(created.id))?.transcriptionGlossary).toEqual([]);
+  });
+
+  it('uses full readable transcript content for admin result availability', async () => {
+    for (const [segments, available] of [
+      [[...Array.from({ length: 6 }, () => ({ startMs: 0, endMs: 100, text: '' })),
+        { startMs: 600, endMs: 700, text: '', displayText: '可閱讀的完整內容' }], true],
+      [[{ startMs: 0, endMs: 100, text: 'Speaker A：' }], false]
+    ] as const) {
+      const job = attachTranscriptArtifact(createRecordingJob({
+        meetingUrl: 'uploaded://result.wav', platform: 'uploaded-audio', inputSource: 'uploaded-audio',
+        summaryRequested: false
+      }), { contentType: 'application/json', storageKey: 'transcript.json', language: 'zh', segments: [...segments] });
+      await repository.save(job);
+      expect((await repository.listResultMetadataByIds([job.id]))[0]?.resultAvailable).toBe(available);
+    }
   });
 
   it('persists one reusable meeting share link and atomically rotates or revokes it', async () => {
