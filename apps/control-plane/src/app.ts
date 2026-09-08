@@ -2630,10 +2630,8 @@ export const createApp = (
     }
 
     const limit = parsedQuery.data.limit ?? 500;
-    const [ledgerEntries, providerRequestAudits] = await Promise.all([
-      cloudUsageLedgerRepository.listRecentEntries(limit),
-      cloudUsageLedgerRepository.listRecentProviderRequests(limit)
-    ]);
+    const { ledgerEntries, providerRequestAudits } =
+      await cloudUsageLedgerRepository.listRecentJobUsage(limit);
 
     const legacyEntries = ledgerEntries.map((entry) => {
       const detail = entry.detail ?? {};
@@ -2733,8 +2731,7 @@ export const createApp = (
       };
     });
     const entries = [...legacyEntries, ...providerRequestEntries]
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .slice(0, limit);
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 
     const submitterIds = [...new Set(entries.map((entry) => entry.submitterId))];
     const submitterEmails: Record<string, string> = {};
@@ -2860,6 +2857,7 @@ export const createApp = (
     );
     const totals = {
       ...totalsBase,
+      jobCount: new Set(entries.map((entry) => entry.jobId)).size,
       totalCostUsd:
         totalsBase.unpricedEntryCount > 0 ? null : totalsBase.pricedCostUsd,
       hasUnpricedUsage: totalsBase.unpricedEntryCount > 0

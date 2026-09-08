@@ -317,6 +317,35 @@ describe('ensureCloudUsageLedgerSchema', () => {
       repository.finishProviderRequest({ ...finish, costUsd: 0.007 })
     ).rejects.toThrow(/conflict/i);
     await expect(repository.listProviderRequestsByJob('job-1')).resolves.toEqual([finished]);
-    await expect(repository.listRecentProviderRequests(10)).resolves.toEqual([finished]);
+    await expect(repository.listRecentJobUsage(10)).resolves.toEqual({
+      ledgerEntries: [], providerRequestAudits: [finished]
+    });
+  });
+
+  it('selects recent jobs across both ledgers before loading all their usage', async () => {
+    const repository = new PostgresCloudUsageLedgerRepository(pool);
+    await expect(repository.listRecentJobUsage(1)).resolves.toEqual({
+      ledgerEntries: [], providerRequestAudits: []
+    });
+    const legacy = await repository.append(pricedUsage());
+    await pool.query('UPDATE cloud_usage_ledger SET created_at = $1 WHERE id = $2',
+      ['2026-07-15T00:00:00.000Z', legacy.id]);
+    await repository.startProviderRequest(providerRequest({ requestId: 'chunk-1', jobId: 'job-2' }));
+    await repository.startProviderRequest(providerRequest({
+      requestId: 'chunk-2', jobId: 'job-2', startedAt: '2026-07-15T00:01:00.000Z'
+    }));
+    const recent = await repository.listRecentJobUsage(1);
+    expect(recent.ledgerEntries).toEqual([]);
+    expect(recent.providerRequestAudits.map((entry) => entry.requestId)).toEqual(['chunk-2', 'chunk-1']);
+
+    await pool.query('UPDATE cloud_usage_ledger SET created_at = $1 WHERE id = $2',
+      ['2026-07-16T00:00:00.000Z', legacy.id]);
+    const latestLegacy = await repository.listRecentJobUsage(1);
+    expect(latestLegacy.ledgerEntries.map((entry) => entry.id)).toEqual([legacy.id]);
+    expect(latestLegacy.providerRequestAudits).toEqual([]);
+    await repository.append(pricedUsage({
+      entryKey: 'estimate:job-1', entryType: 'estimate', costUsd: 10
+    }));
+    expect((await repository.listRecentJobUsage(2)).ledgerEntries).toHaveLength(1);
   });
 });

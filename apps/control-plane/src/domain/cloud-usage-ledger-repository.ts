@@ -201,11 +201,11 @@ export const isSameCloudUsageLedgerPayload = (
 export interface CloudUsageLedgerRepository {
   append(input: CloudUsageLedgerEntryInput): Promise<CloudUsageLedgerEntry>;
   listByQuotaDayKey(quotaDayKey: string): Promise<CloudUsageLedgerEntry[]>;
-  /**
-   * Returns the most recent ledger entries across all days, newest first. Used
-   * by the admin console to show the full historical usage / token report.
-   */
-  listRecentEntries(limit: number): Promise<CloudUsageLedgerEntry[]>;
+  /** Select recent jobs first, then return their complete actual usage. */
+  listRecentJobUsage(limit: number): Promise<{
+    ledgerEntries: CloudUsageLedgerEntry[];
+    providerRequestAudits: ProviderRequestAudit[];
+  }>;
   listBySubmitterAndDay(
     submitterId: string,
     quotaDayKey: string
@@ -220,6 +220,5 @@ export interface CloudUsageLedgerRepository {
     submitterId: string,
     quotaDayKey: string
   ): Promise<ProviderRequestAudit[]>;
-  listRecentProviderRequests(limit: number): Promise<ProviderRequestAudit[]>;
   summarizeActualCostByJobIds(jobIds: string[]): Promise<Record<string, CloudUsageCostSummary>>;
 }

@@ -112,6 +112,54 @@ const formatUsageEntryCost = (entry) => {
 const formatProviderRequestStatus = (status) =>
   status === 'succeeded' ? '成功' : status === 'failed' ? '失敗' : '進行中';
 
+export const getUsageHistoryJobViewModels = (entries = []) => {
+  const jobs = new Map();
+  for (const entry of entries) {
+    const job = jobs.get(entry.jobId) ?? {
+      jobId: entry.jobId,
+      submitterId: entry.submitterId,
+      createdAt: entry.createdAt,
+      latestAt: entry.createdAt,
+      audioMs: 0,
+      totalTokens: 0,
+      providerRequestCount: 0,
+      pricedCostUsd: 0,
+      hasUnpricedUsage: false,
+      hasPendingUsage: false,
+      entries: []
+    };
+    if (entry.createdAt < job.createdAt) job.createdAt = entry.createdAt;
+    if (entry.createdAt > job.latestAt) job.latestAt = entry.createdAt;
+    job.audioMs += Number(entry.audioMs) || 0;
+    job.totalTokens += Number(entry.totalTokens) || 0;
+    job.providerRequestCount += Number(entry.providerRequestCount) || 0;
+    job.pricedCostUsd = Math.round((job.pricedCostUsd + (entry.costUsd ?? 0)) * 1_000_000) / 1_000_000;
+    job.hasUnpricedUsage ||= entry.pricingStatus === 'unpriced';
+    job.hasPendingUsage ||= entry.pricingStatus === 'pending';
+    job.entries.push(entry);
+    jobs.set(entry.jobId, job);
+  }
+  return [...jobs.values()]
+    .sort((left, right) => right.latestAt.localeCompare(left.latestAt) || left.jobId.localeCompare(right.jobId))
+    .map((job) => {
+      const incomplete = job.hasUnpricedUsage || job.hasPendingUsage;
+      const totalCostUsd = incomplete ? null : job.pricedCostUsd;
+      let costLabel = getCloudCostDisplayModel({
+        totalCostUsd,
+        pricedCostUsd: job.pricedCostUsd,
+        hasUnpricedUsage: incomplete
+      }).value;
+      if (job.hasPendingUsage && !job.hasUnpricedUsage) {
+        costLabel = job.pricedCostUsd > 0
+          ? `${formatTwdFromUsd(job.pricedCostUsd)}（另有待結算）`
+          : '待結算';
+      } else if (job.hasPendingUsage) {
+        costLabel += '（另有待結算）';
+      }
+      return { ...job, totalCostUsd, costLabel };
+    });
+};
+
 export const getUsageHistoryCostViewModel = (payload = {}) => {
   const totals = payload.totals ?? {};
   const totalCost = getCloudCostDisplayModel({

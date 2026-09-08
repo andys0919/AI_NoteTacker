@@ -173,11 +173,11 @@
               <span id="session-email">-</span>
             </div>
             <div class="meta-card">
-              <span class="meta-label">歷史 Token 用量</span>
+              <span class="meta-label">所選工作 Token 用量</span>
               <strong id="admin-usage-history-total-tokens">0</strong>
             </div>
             <div class="meta-card">
-              <span class="meta-label">歷史費用</span>
+              <span class="meta-label">所選工作總消費</span>
               <strong id="admin-usage-history-total-cost">—</strong>
             </div>
             <div class="meta-card">
@@ -205,7 +205,7 @@
               </div>
             </div>
             <p id="admin-usage-history-copy" class="hero-text admin-provider-copy">
-              每一次模型請求都保留實際 provider、model、結果、音訊或 token 明細；Local Codex 訂閱用量不列入 Azure API 費，無法精確核價的 Azure 用量標示「未定價」。
+              同一個工作合併為一筆，總消費包含完整轉寫分段與摘要；展開可查看每次請求。Local Codex 訂閱用量不列入 Azure API 費，無法精確核價的用量保留「未定價」狀態。
             </p>
             <p id="admin-currency-reference" class="admin-provider-status"></p>
             <form
@@ -214,12 +214,12 @@
               aria-busy="false"
             >
               <label class="field admin-summary-model-field">
-                <span>顯示筆數</span>
+                <span>顯示工作數</span>
                 <select id="admin-usage-history-limit" name="limit">
-                  <option value="100" selected>最近 100 筆</option>
-                  <option value="500">最近 500 筆</option>
-                  <option value="1000">最近 1000 筆</option>
-                  <option value="5000">全部（上限 5000）</option>
+                  <option value="100" selected>最近 100 個工作</option>
+                  <option value="500">最近 500 個工作</option>
+                  <option value="1000">最近 1000 個工作</option>
+                  <option value="5000">最近 5000 個工作</option>
                 </select>
               </label>
               <button id="admin-usage-history-refresh" class="toolbar-button" type="submit">
@@ -238,29 +238,23 @@
             <div
               class="usage-history-table-wrap"
               role="region"
-              aria-label="雲端處理 Token 與費用歷史紀錄，可左右捲動"
+              aria-label="工作總消費歷史紀錄，可左右捲動"
               tabindex="0"
             >
               <table class="usage-history-table">
-                <caption class="sr-only">雲端處理 Token 與費用歷史紀錄</caption>
+                <caption class="sr-only">每個工作的用量與總消費</caption>
                 <thead>
                   <tr>
                     <th scope="col">時間</th>
-                    <th scope="col">階段</th>
-                    <th scope="col">Provider</th>
-                    <th scope="col">Model</th>
-                    <th scope="col" class="usage-num">Input Tokens</th>
-                    <th scope="col" class="usage-num">Output Tokens</th>
-                    <th scope="col" class="usage-num">Total Tokens</th>
-                    <th scope="col" class="usage-num">費用狀態 (TWD)</th>
-                    <th scope="col">請求明細</th>
-                    <th scope="col">提交者</th>
                     <th scope="col">工作</th>
+                    <th scope="col" class="usage-num">總消費 (TWD)</th>
+                    <th scope="col">提交者</th>
+                    <th scope="col">請求明細</th>
                   </tr>
                 </thead>
                 <tbody id="admin-usage-history-rows">
                   <tr>
-                    <td colspan="11" class="usage-history-empty">尚無使用紀錄。</td>
+                    <td colspan="5" class="usage-history-empty">尚無使用紀錄。</td>
                   </tr>
                 </tbody>
               </table>

@@ -1496,8 +1496,27 @@ summary {
 .usage-history-table {
   width: 100%;
   min-width: 980px;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.85rem;
+}
+
+.usage-history-table th:nth-child(1) { width: 13%; }
+.usage-history-table th:nth-child(2) { width: 22%; }
+.usage-history-table th:nth-child(3) { width: 17%; }
+.usage-history-table th:nth-child(4) { width: 22%; }
+.usage-history-table th:nth-child(5) { width: 26%; }
+
+.usage-history-table td {
+  overflow-wrap: anywhere;
+}
+
+.usage-history-table .usage-request-details {
+  min-width: 0;
+}
+
+.usage-history-table .usage-request-details > dl {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .usage-history-table thead th {
@@ -1519,7 +1538,7 @@ summary {
 
 .usage-history-table .usage-num {
   text-align: right;
-  white-space: nowrap;
+  white-space: normal;
   font-variant-numeric: tabular-nums;
 }
 

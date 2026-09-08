@@ -425,6 +425,46 @@ describe('admin console (username/password) API', () => {
     expect(response.status).toBe(401);
   });
 
+  it('limits history by whole jobs and includes every chunk in the job cost', async () => {
+    const ledger = seedLedger();
+    for (const [requestId, jobId, stage, startedAt] of [
+      ['old', 'job-old', 'transcription', '2026-09-06T00:00:00.000Z'],
+      ['chunk-1', 'job-chunked', 'transcription', '2026-09-07T09:22:00.000Z'],
+      ['chunk-2', 'job-chunked', 'transcription', '2026-09-07T09:22:01.000Z'],
+      ['summary', 'job-chunked', 'summary', '2026-09-07T09:22:02.000Z']
+    ] as const) {
+      const isSummary = stage === 'summary';
+      await ledger.startProviderRequest({
+        requestId, jobId, stage, startedAt,
+        submitterId: 'operator-user', quotaDayKey: '2026-09-07',
+        provider: isSummary ? 'local-codex' : 'azure-speech-mai-transcribe-1.5',
+        model: isSummary ? 'gpt-5.6-luna' : 'mai-transcribe-1.5',
+        billingClass: isSummary ? 'subscription' : 'metered-api',
+        pricingVersion: 'v1', leaseTokenHash: 'hash'
+      });
+      await ledger.finishProviderRequest({
+        requestId, status: 'succeeded', finishedAt: startedAt,
+        pricingStatus: isSummary ? 'not-applicable' : 'priced',
+        knownCostUsd: isSummary ? 0 : 0.003,
+        costUsd: isSummary ? null : 0.003,
+        detail: isSummary ? {} : { audioMs: 30_000, billedAudioMs: 30_000 }
+      });
+    }
+    const app = buildApp(ledger);
+    const { body } = await login(app);
+    const response = await request(app)
+      .get('/api/admin/usage/history?limit=1')
+      .set('authorization', `Bearer ${body.token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.entries).toHaveLength(3);
+    expect(new Set(response.body.entries.map((entry: { jobId: string }) => entry.jobId)))
+      .toEqual(new Set(['job-chunked']));
+    expect(response.body.totals).toMatchObject({
+      jobCount: 1, providerRequestCount: 3, billedAudioMs: 60_000, totalCostUsd: 0.006
+    });
+  });
+
   it('rejects the admin job detail endpoint without a token', async () => {
     const app = buildApp();
 

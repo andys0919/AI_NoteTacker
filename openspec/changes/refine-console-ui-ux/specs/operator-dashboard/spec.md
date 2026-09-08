@@ -104,7 +104,9 @@ The console SHALL retain a repeatable browser readiness benchmark and SHALL avoi
 - **THEN** the login surface does not wait for the public pricing reference
 - **AND** pricing-reference loading and stored-session validation do not create independent serial waits
 - **AND** protected governance requests still require a validated administrator session
-- **AND** the initial usage-history request defaults to the most recent 100 records while explicit 500, 1000, and 5000 record choices remain available
+- **AND** the initial usage-history request defaults to the most recent 100 jobs while explicit 500, 1000, and 5000 job choices remain available
+- **AND** each job appears once with its complete actual usage and total cost, including every transcription chunk and summary request regardless of the selected job limit
+- **AND** request-level provider, model, status, and usage remain available in expandable job details, with subscription usage excluded from Azure API spend and incomplete pricing kept explicit
 
 #### Scenario: Console performance is compared
 - **WHEN** a performance change is evaluated

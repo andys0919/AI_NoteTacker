@@ -318,19 +318,42 @@ export class PostgresCloudUsageLedgerRepository implements CloudUsageLedgerRepos
     return result.rows.map(mapRow);
   }
 
-  async listRecentEntries(limit: number): Promise<CloudUsageLedgerEntry[]> {
+  async listRecentJobUsage(limit: number) {
     const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 500;
-    const result = await this.database.query<LedgerRow>(
+    const jobs = await this.database.query<{ job_id: string }>(
       `
-        SELECT *
-        FROM cloud_usage_ledger
-        ORDER BY created_at DESC
+        SELECT job_id FROM (
+          SELECT job_id, MAX(created_at) AS latest_at
+          FROM cloud_usage_ledger WHERE entry_type = 'actual' GROUP BY job_id
+          UNION ALL
+          SELECT job_id, MAX(started_at) AS latest_at
+          FROM provider_request_ledger GROUP BY job_id
+        ) usage
+        GROUP BY job_id
+        ORDER BY MAX(latest_at) DESC, job_id ASC
         LIMIT $1
       `,
       [safeLimit]
     );
-
-    return result.rows.map(mapRow);
+    const jobIds = jobs.rows.map((row) => row.job_id);
+    if (!jobIds.length) return { ledgerEntries: [], providerRequestAudits: [] };
+    const placeholders = jobIds.map((_, index) => `$${index + 1}`).join(', ');
+    const [entries, requests] = await Promise.all([
+      this.database.query<LedgerRow>(
+        `SELECT * FROM cloud_usage_ledger
+         WHERE entry_type = 'actual' AND job_id IN (${placeholders}) ORDER BY created_at DESC`,
+        jobIds
+      ),
+      this.database.query<ProviderRequestRow>(
+        `SELECT * FROM provider_request_ledger
+         WHERE job_id IN (${placeholders}) ORDER BY started_at DESC`,
+        jobIds
+      )
+    ]);
+    return {
+      ledgerEntries: entries.rows.map(mapRow),
+      providerRequestAudits: requests.rows.map(mapProviderRequestRow)
+    };
   }
 
   async listBySubmitterAndDay(
@@ -526,21 +549,6 @@ export class PostgresCloudUsageLedgerRepository implements CloudUsageLedgerRepos
         ORDER BY started_at ASC
       `,
       [submitterId, quotaDayKey]
-    );
-
-    return result.rows.map(mapProviderRequestRow);
-  }
-
-  async listRecentProviderRequests(limit: number): Promise<ProviderRequestAudit[]> {
-    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 500;
-    const result = await this.database.query<ProviderRequestRow>(
-      `
-        SELECT *
-        FROM provider_request_ledger
-        ORDER BY started_at DESC
-        LIMIT $1
-      `,
-      [safeLimit]
     );
 
     return result.rows.map(mapProviderRequestRow);

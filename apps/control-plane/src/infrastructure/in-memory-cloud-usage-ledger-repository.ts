@@ -50,12 +50,18 @@ export class InMemoryCloudUsageLedgerRepository implements CloudUsageLedgerRepos
     return this.entries.filter((entry) => entry.quotaDayKey === quotaDayKey);
   }
 
-  async listRecentEntries(limit: number): Promise<CloudUsageLedgerEntry[]> {
-    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : this.entries.length;
-
-    return [...this.entries]
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .slice(0, safeLimit);
+  async listRecentJobUsage(limit: number) {
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 500;
+    const actualEntries = this.entries.filter((entry) => entry.entryType === 'actual');
+    const recentUsage = [
+      ...actualEntries.map((entry) => ({ jobId: entry.jobId, at: entry.createdAt })),
+      ...this.providerRequests.map((entry) => ({ jobId: entry.jobId, at: entry.startedAt }))
+    ].sort((left, right) => right.at.localeCompare(left.at) || left.jobId.localeCompare(right.jobId));
+    const jobIds = new Set([...new Set(recentUsage.map((entry) => entry.jobId))].slice(0, safeLimit));
+    return {
+      ledgerEntries: actualEntries.filter((entry) => jobIds.has(entry.jobId)),
+      providerRequestAudits: this.providerRequests.filter((entry) => jobIds.has(entry.jobId))
+    };
   }
 
   async listBySubmitterAndDay(
@@ -132,14 +138,6 @@ export class InMemoryCloudUsageLedgerRepository implements CloudUsageLedgerRepos
     return this.providerRequests.filter(
       (request) => request.submitterId === submitterId && request.quotaDayKey === quotaDayKey
     );
-  }
-
-  async listRecentProviderRequests(limit: number): Promise<ProviderRequestAudit[]> {
-    const safeLimit =
-      Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : this.providerRequests.length;
-    return [...this.providerRequests]
-      .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
-      .slice(0, safeLimit);
   }
 
   async summarizeActualCostByJobIds(

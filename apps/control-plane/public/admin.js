@@ -16,6 +16,7 @@ import {
   getCloudCostDisplayModel,
   getCodexWeeklyUsageViewModel,
   getUsageHistoryCostViewModel,
+  getUsageHistoryJobViewModels,
   getUsageReportRowViewModels
 } from '/governance-panel.js';
 import { getRuntimeHealthViewModel } from '/runtime-health-panel.js';
@@ -240,10 +241,13 @@ const buildUsageRequestDetails = (entry) => {
   details.className = 'usage-request-details';
   const summary = document.createElement('summary');
   const requestCount = Number(entry.providerRequestCount) || 0;
-  summary.textContent =
+  summary.textContent = [
+    entry.stageLabel,
+    entry.costLabel,
     entry.recordKind === 'provider-request'
       ? `${entry.requestStatusLabel || entry.requestStatus || '請求'} · 1 request`
-      : `彙總 · ${formatTokens(requestCount)} requests`;
+      : `彙總 · ${formatTokens(requestCount)} requests`
+  ].filter(Boolean).join(' · ');
 
   const list = document.createElement('dl');
   appendUsageDetail(list, 'Request audit ID', entry.recordKind === 'provider-request' ? entry.id : null);
@@ -279,25 +283,45 @@ const buildUsageRequestDetails = (entry) => {
   return details;
 };
 
+const buildUsageJobDetails = (job) => {
+  const details = document.createElement('details');
+  details.className = 'usage-request-details';
+  const summary = document.createElement('summary');
+  summary.textContent = job.providerRequestCount
+    ? `查看明細（${formatTokens(job.providerRequestCount)} 次請求）`
+    : `查看明細（${formatTokens(job.entries.length)} 筆用量）`;
+  details.append(summary);
+  details.addEventListener('toggle', () => {
+    if (!details.open || details.childElementCount > 1) return;
+    const list = document.createElement('div');
+    list.className = 'provider-request-audit-list';
+    const usage = document.createElement('p');
+    usage.textContent = `音訊 ${formatTokens(Math.round(job.audioMs / 1000))} 秒 / ${formatTokens(job.totalTokens)} tokens`;
+    list.append(usage, ...job.entries.map(buildUsageRequestDetails));
+    details.append(list);
+  });
+  return details;
+};
+
 const renderUsageHistory = (payload) => {
   const totals = payload?.totals ?? {};
   const costViewModel = getUsageHistoryCostViewModel(payload);
-  const entries = costViewModel.entries;
+  const jobs = getUsageHistoryJobViewModels(costViewModel.entries);
   const submitterEmails = payload?.submitterEmails ?? {};
 
   elements.usageHistoryTotalTokens.textContent = formatTokens(totals.totalTokens);
   elements.usageHistoryTotalCost.textContent = costViewModel.totalCostLabel;
 
-  if (!entries.length) {
+  if (!jobs.length) {
     elements.usageHistorySummary.textContent = '尚無使用紀錄。';
     elements.usageHistoryByModel.replaceChildren();
     elements.usageHistoryRows.innerHTML =
-      '<tr><td colspan="11" class="usage-history-empty">尚無使用紀錄。</td></tr>';
+      '<tr><td colspan="5" class="usage-history-empty">尚無使用紀錄。</td></tr>';
     return;
   }
 
   elements.usageHistorySummary.textContent =
-    `共 ${formatTokens(totals.entryCount)} 筆紀錄 / 輸入 ${formatTokens(totals.inputTokens)} tokens / ` +
+    `共 ${formatTokens(jobs.length)} 個工作 / 輸入 ${formatTokens(totals.inputTokens)} tokens / ` +
     `輸出 ${formatTokens(totals.outputTokens)} tokens / 合計 ${formatTokens(totals.totalTokens)} tokens / ` +
     `${formatTokens(totals.providerRequestCount)} 次 provider request / ` +
     `計費音訊 ${formatTokens(Math.round((totals.billedAudioMs || 0) / 1000))} 秒 / ` +
@@ -320,27 +344,15 @@ const renderUsageHistory = (payload) => {
   );
 
   elements.usageHistoryRows.replaceChildren(
-    ...entries.map((entry) => {
+    ...jobs.map((job) => {
       const row = document.createElement('tr');
-      const identity = submitterEmails[entry.submitterId] || entry.submitterId;
+      const identity = submitterEmails[job.submitterId] || job.submitterId;
       const cells = [
-        { text: formatJobTimestamp(entry.createdAt) },
-        { text: entry.stageLabel },
-        { text: formatProviderLabel(entry.provider) },
-        { text: entry.model || '-' },
-        { text: entry.stage !== 'transcription' ? formatTokens(entry.inputTokens) : '—', cls: 'usage-num' },
-        { text: entry.stage !== 'transcription' ? formatTokens(entry.outputTokens) : '—', cls: 'usage-num' },
-        {
-          text:
-            entry.stage === 'transcription'
-              ? `${formatTokens(Math.round((entry.audioMs || 0) / 1000))} 秒音訊`
-              : formatTokens(entry.totalTokens),
-          cls: 'usage-num'
-        },
-        { text: entry.costLabel, cls: 'usage-num' },
-        { node: buildUsageRequestDetails(entry) },
-        { text: identity, title: entry.submitterId },
-        { text: entry.jobId, title: entry.jobId, jobId: entry.jobId }
+        { text: formatJobTimestamp(job.createdAt) },
+        { text: job.jobId, title: job.jobId, jobId: job.jobId },
+        { text: job.costLabel, cls: 'usage-num' },
+        { text: identity, title: job.submitterId },
+        { node: buildUsageJobDetails(job) }
       ];
 
       for (const cell of cells) {
@@ -365,10 +377,6 @@ const renderUsageHistory = (payload) => {
           }
         }
         row.append(td);
-      }
-
-      if (entry.entryType !== 'actual') {
-        row.classList.add('usage-history-estimate');
       }
 
       return row;

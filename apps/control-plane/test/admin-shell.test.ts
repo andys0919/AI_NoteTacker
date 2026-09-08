@@ -29,7 +29,7 @@ describe('admin shell markup', () => {
     expect(html).not.toContain('admin-login-wave');
     expect(html).toContain('class="admin-main-heading"');
     expect(html).toContain('<link rel="modulepreload" href="/admin.js" />');
-    expect(html).toContain('<option value="100" selected>最近 100 筆</option>');
+    expect(html).toContain('<option value="100" selected>最近 100 個工作</option>');
     expect(html).not.toContain('<option value="500" selected>');
   });
 
@@ -50,12 +50,12 @@ describe('admin shell markup', () => {
       'utf-8'
     );
 
-    expect(html).toContain('無法精確核價的 Azure 用量標示「未定價」');
-    expect(html).toContain('費用狀態 (TWD)');
+    expect(html).toContain('無法精確核價的用量保留「未定價」狀態');
+    expect(html).toContain('總消費 (TWD)');
     expect(html).toContain('<th scope="col">請求明細</th>');
     expect(html).toContain('每日預設額度 (TWD)');
     expect(html).not.toContain('費用狀態 (USD)');
-    expect(html).toContain('<span class="meta-label">歷史費用</span>');
+    expect(html).toContain('<span class="meta-label">所選工作總消費</span>');
     expect(html).toContain('<strong id="admin-usage-history-total-cost">—</strong>');
     expect(html).not.toContain('<strong id="admin-usage-history-total-cost">$0.000</strong>');
   });
@@ -106,7 +106,7 @@ describe('admin shell markup', () => {
     expect(html).toContain('<caption class="sr-only">');
     expect(html).toContain('<th scope="col">');
     expect(html).toContain('role="region"');
-    expect(html).toContain('aria-label="雲端處理 Token 與費用歷史紀錄，可左右捲動"');
+    expect(html).toContain('aria-label="工作總消費歷史紀錄，可左右捲動"');
     expect(html).toContain('aria-busy="false"');
     expect(html).toContain('id="admin-skip-link"');
     expect(html).toContain('<dialog id="admin-job-modal"');

@@ -9,10 +9,40 @@ import {
   getCloudCostDisplayModel,
   getCodexWeeklyUsageViewModel,
   getUsageHistoryCostViewModel,
+  getUsageHistoryJobViewModels,
   getUsageReportRowViewModels
 } from '../public/governance-panel.js';
 
 describe('governance panel helpers', () => {
+  it('shows one row per job with total spend and expandable request entries', () => {
+    const entries = [
+      { id: 'summary', jobId: 'job-1', createdAt: '2026-09-07T09:22:44Z',
+        stage: 'summary', pricingStatus: 'not-applicable', costUsd: null, providerRequestCount: 1 },
+      { id: 'chunk-2', jobId: 'job-1', createdAt: '2026-09-07T09:22:43Z',
+        stage: 'transcription', pricingStatus: 'priced', costUsd: 0.0011,
+        audioMs: 11_000, providerRequestCount: 1 },
+      { id: 'chunk-1', jobId: 'job-1', createdAt: '2026-09-07T09:22:42Z',
+        stage: 'transcription', pricingStatus: 'priced', costUsd: 0.003,
+        audioMs: 30_000, providerRequestCount: 1 },
+      { id: 'other', jobId: 'job-2', createdAt: '2026-09-06T09:22:42Z',
+        pricingStatus: 'pending', costUsd: null }
+    ];
+    const rows = getUsageHistoryJobViewModels(entries);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      jobId: 'job-1', createdAt: '2026-09-07T09:22:42Z', audioMs: 41_000,
+      providerRequestCount: 3, totalCostUsd: 0.0041, costLabel: 'NT$0.13',
+      entries: entries.slice(0, 3)
+    });
+    expect(rows[1]).toMatchObject({ totalCostUsd: null, costLabel: '待結算' });
+    expect(getUsageHistoryJobViewModels([
+      ...entries.slice(0, 3),
+      { id: 'unknown', jobId: 'job-1', createdAt: '2026-09-07T09:22:45Z',
+        pricingStatus: 'unpriced', costUsd: null }
+    ])[0]).toMatchObject({
+      totalCostUsd: null, costLabel: 'NT$0.13（含未定價用量）'
+    });
+  });
   it('formats provider-reported Codex weekly usage without inventing missing data', () => {
     expect(
       getCodexWeeklyUsageViewModel(
