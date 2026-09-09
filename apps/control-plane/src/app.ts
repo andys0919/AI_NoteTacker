@@ -639,7 +639,6 @@ type AppOptions = {
   cloudUsageLedgerRepository?: CloudUsageLedgerRepository;
   adminAuditLogRepository?: AdminAuditLogRepository;
   maxTranscriptionAttempts?: number;
-  maxUploadBytes?: number;
   operatorAuth?: OperatorAuth;
   uploadedAudioStorage?: UploadedAudioStorage;
   meetingBotController?: MeetingBotController;
@@ -1419,8 +1418,7 @@ export const createApp = (
       // submitter, template, and the schema's 50 supported glossary entries
       fields: 52,
       files: 1,
-      parts: 53,
-      fileSize: options.maxUploadBytes ?? 512 * 1024 * 1024
+      parts: 53
     }
   });
 

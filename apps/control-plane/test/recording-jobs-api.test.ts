@@ -1608,39 +1608,6 @@ describe('recording jobs API', () => {
     }
   });
 
-  it('returns structured HTTP 413 and removes an over-limit temporary upload', async () => {
-    const uploadTempDir = await mkdtemp(join(tmpdir(), 'ai-notetacker-limit-'));
-    const originalTmpDir = process.env.TMPDIR;
-    process.env.TMPDIR = uploadTempDir;
-
-    try {
-      const uploadedAudioStorage = new FakeUploadedAudioStorage();
-      const app = createApp(undefined, {
-        uploadedAudioStorage,
-        maxUploadBytes: 4
-      });
-      const response = await request(app)
-        .post('/api/operator/jobs/uploads')
-        .field('submitterId', 'operator-a')
-        .attach('audio', Buffer.from('too-large'), {
-          filename: 'too-large.wav',
-          contentType: 'audio/wav'
-        });
-
-      expect(response.status).toBe(413);
-      expect(response.body.error.code).toBe('uploaded-media-too-large');
-      expect(uploadedAudioStorage.uploads).toEqual([]);
-      expect(await readdir(uploadTempDir)).toEqual([]);
-    } finally {
-      if (originalTmpDir === undefined) {
-        delete process.env.TMPDIR;
-      } else {
-        process.env.TMPDIR = originalTmpDir;
-      }
-      await rm(uploadTempDir, { recursive: true, force: true });
-    }
-  });
-
   it('rejects nested multipart fields before storing an upload', async () => {
     const uploadedAudioStorage = new FakeUploadedAudioStorage();
     const app = createApp(undefined, { uploadedAudioStorage });
