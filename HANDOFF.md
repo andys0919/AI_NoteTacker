@@ -602,12 +602,14 @@ transcription 與 Whisper 保留為 operator 可選 fallback。轉寫 worker 不
 
 摘要必填／預設設定：
 
-- `codex-pty-agent` 是 AI_NoteTacker 自己的 HTTP-only shared-runtime process；只用
-  既有 bearer-authenticated `POST /api/prompt`，request cap 為 1 MiB。
+- `shared-codex-runtime` 是主機唯一持有 ChatGPT OAuth 的 HTTP-only Codex
+  process；AI_NoteTacker 只用 bearer-authenticated `POST /api/prompt`，request cap
+  為 1 MiB。舊 `codex-pty-agent` 只保留在 `legacy-local-codex` profile，不得與中央
+  runtime 同時啟動。
 - `AGENT_PROVIDER=codex-pty`、`CODEX_MODEL=gpt-5.6-luna`，project slot effort
   固定 `max`，`PROVIDER_FAILOVER_ENABLED=false`。
-- `PTY_FRESH_SESSION_PER_TURN=true`、`MEMORY_FEATURES_ENABLED=false`、
-  `USER_PROFILING_ENABLED=false`。
+- AI target 在每次 request 前由中央 runtime 清除原生 session；
+  `MEMORY_FEATURES_ENABLED=false`、`USER_PROFILING_ENABLED=false`。
 - cwd 固定 `/workspace/codex-pty-workdir`，對應 host 空目錄
   `/home/solomon/Andy/AI_NoteTacker/.codex-pty-workdir`。
 - `CODEX_PTY_API_TOKEN` 是至少 32 bytes 的 dedicated secret，只存在 gitignored
@@ -616,16 +618,14 @@ transcription 與 Whisper 保留為 operator 可選 fallback。轉寫 worker 不
   timeout；`CONTROL_PLANE_TIMEOUT_SECONDS=30` 是 worker 對 control-plane 的 HTTP
   timeout。
 
-`ai_notetacker_codex_pty_home` 保存 agent 的 ChatGPT OAuth；
-`codex_pty_agent_state` 保存其 session/runtime state；PTY namespace 固定
-`ai-notetacker-codex-pty`。可與其他 bot 使用同一個 OAuth 帳號，但不得共用可寫
-`CODEX_HOME`、PTY 或 session volume。`ai_notetacker_summary_codex_home` 只留給
-summary worker 的 `account/rateLimits/read` weekly quota probe；summary generation
-不得再啟動 `codex exec`。
+`ai_notetacker_codex_pty_home` 由 `shared-codex-runtime` 獨占並保存 ChatGPT OAuth；
+summary-worker 不掛 `CODEX_HOME`，不再執行 weekly quota probe，也不得啟動
+`codex exec`。Portal／Mail／Accupick／FAE 只持有中央 Prompt API bearer file，沒有
+Codex credential mount 或 local Codex process。
 
 逐字稿是未受信任資料。summary worker 建立既有 prompt 後只送往內部
-`http://codex-pty-agent:3001/api/prompt`；Codex PTY 的 unrestricted surface 以 agent
-container 為隔離邊界。Prompt API authentication、transport、timeout、PTY、quota、
+`http://shared-codex-runtime:3001/api/prompt`；Codex PTY 的 unrestricted surface 以
+中央 container 的靜態五專案 mounts 為界。Prompt API authentication、transport、timeout、PTY、quota、
 schema 或不完整輸出一律沿 `summary-failed` 流程結束，heartbeat 不會永久續租。
 摘要 JSON 仍必須完整包含 `title`、`summary`、`topics`、`follow_up_groups`、
 `decisions`、`risks`、`open_questions` 與 `analysis_notes`；缺欄、錯型或空輸出均
@@ -786,17 +786,16 @@ forward order：
 1. 確認 gitignored `.env` 有至少 32 bytes 的 `CODEX_PTY_API_TOKEN`，
    `CLAUDE_TELEGRAM_SOURCE_DIR` 指向最新 shared runtime，且
    `.codex-pty-workdir` 存在、為空、可由 container 的 `bun` user 使用。
-2. 確認 `ai_notetacker_codex_pty_home`、`ai_notetacker_summary_codex_home` 已有同一
-   operator-selected ChatGPT OAuth；只比較或複製 credential file，不輸出 token。
-3. render Compose，確認 agent 為 Codex PTY/Luna/max、fresh/no-memory/no-failover、
-   1 MiB cap、bot-specific volumes；summary worker 指向內部 `/api/prompt`。Azure
+2. 確認只有 `shared-codex-runtime` 掛載 `ai_notetacker_codex_pty_home`；所有 active
+   consumer 均無 `auth.json`／`CODEX_HOME` credential mount。
+3. render Compose，確認舊 local agent 在 `legacy-local-codex` profile、summary worker
+   指向中央 `/api/prompt`。Azure
    summary endpoint/key 必須是空字串。
 4. 保存可回復的 DB backup 與前一版 image identifiers，執行 canonical deploy，
    再讀取 operator policy 確認
    `summary_provider='local-codex'` 已持久化。
-5. 驗證 agent/worker health、兩個 Codex login、unauthenticated Prompt API 401、
-   structured weekly quota、live structured summary、連續不同 native session ID、
-   Report/AI concurrency 與近期錯誤日誌。
+5. 驗證中央 health／login、unauthenticated Prompt API 401、五 target smoke、跨 Bot
+   並行、live structured summary、Report/AI 隔離與近期錯誤日誌。
 
 rollback：停止新 claim，保留 schema-aware control-plane，回復上一個已驗證的
 Codex PTY image/config；不要把 generation 接回 `codex exec` 或 Report endpoint。

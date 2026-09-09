@@ -156,6 +156,7 @@ services:
       start_period: 120s
 
   codex-pty-agent:
+    profiles: ["legacy-local-codex"]
     build:
       context: ${CLAUDE_TELEGRAM_SOURCE_DIR:-/home/solomon/docker-managed/sources/shared/claude-telegram-bot}
       dockerfile: Dockerfile.live-shared
@@ -223,7 +224,7 @@ services:
       AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS: ${AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS:-900}
       CODEX_CLI_PATH: ${CODEX_CLI_PATH:-codex}
       CODEX_PTY_API_TOKEN: ${CODEX_PTY_API_TOKEN:?Set CODEX_PTY_API_TOKEN to a dedicated secret of at least 32 bytes}
-      CODEX_PTY_API_URL: http://codex-pty-agent:3001/api/prompt
+      CODEX_PTY_API_URL: http://shared-codex-runtime:3001/api/prompt
       CONTROL_PLANE_BASE_URL: ${CONTROL_PLANE_BASE_URL:-http://control-plane:3000}
       CONTROL_PLANE_TIMEOUT_SECONDS: ${CONTROL_PLANE_TIMEOUT_SECONDS:-30}
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?Set INTERNAL_SERVICE_TOKEN to a dedicated secret of at least 32 bytes}
@@ -232,14 +233,12 @@ services:
       SUMMARY_REASONING_EFFORT: ${SUMMARY_REASONING_EFFORT:-max}
       SUMMARY_TIMEOUT_SECONDS: ${SUMMARY_TIMEOUT_SECONDS:-900}
       WORKER_ID: summarizer-alpha
-      CODEX_HOME: /codex-home
-    volumes:
-      - summary_codex_home:/codex-home
     depends_on:
-      codex-pty-agent:
-        condition: service_healthy
       control-plane:
         condition: service_healthy
+    networks:
+      - default
+      - shared_codex
 
   postgres:
     image: postgres@sha256:2586e2a95d1c9b31cb2967feb562948f7d364854453d703039b6efa45fe48417
@@ -279,3 +278,8 @@ volumes:
   qwen3_asr_cache:
     name: qwen3-asr-cache
   whisper_model_cache:
+
+networks:
+  shared_codex:
+    external: true
+    name: shared_codex_runtime
