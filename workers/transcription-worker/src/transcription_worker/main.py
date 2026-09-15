@@ -6,6 +6,7 @@ from transcription_worker.azure_openai_transcriber import AzureOpenAiTranscriber
 from transcription_worker.config import read_transcription_worker_config
 from transcription_worker.control_plane_client import ControlPlaneClient
 from transcription_worker.faster_whisper_engine import FasterWhisperTranscriber
+from transcription_worker.local_diarization import PyannoteDiarizer
 from transcription_worker.mai_transcriber import MaiTranscriber
 from transcription_worker.media_preparer import FFmpegMediaPreparer
 from transcription_worker.qwen_openai_transcriber import QwenOpenAiTranscriber
@@ -86,6 +87,13 @@ def main() -> None:
             model=str(config["qwen_asr_model"]),
             timeout_seconds=int(config["qwen_asr_timeout_seconds"]),
         )
+    diarizer = None
+    if config.get("diarization_model"):
+        diarizer = PyannoteDiarizer(
+            model=str(config["diarization_model"]),
+            device=str(config["diarization_device"]),
+            embedding_model=str(config["diarization_embedding_model"]),
+        )
     while True:
         try:
             result = run_transcription_worker_iteration(
@@ -95,6 +103,7 @@ def main() -> None:
                 media_preparer=media_preparer,
                 transcriber=transcriber,
                 transcriber_registry=transcriber_registry,
+                diarizer=diarizer,
             )
 
             if result["kind"] == "idle":

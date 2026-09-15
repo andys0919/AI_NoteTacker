@@ -355,14 +355,24 @@ export const calculateAzureResponsesKnownCost = (input: {
   );
 };
 
+// Every MAI-Transcribe model bills on the same Azure "Fast Transcription Speech To
+// Text" meter (e366297b-9194-5c2f-91f9-2b6472d890b3); the retail price list exposes no
+// model-specific transcription meter, and diarization is bundled at no extra charge.
+const MAI_TRANSCRIPTION_MODELS = new Set(['mai-transcribe-1.5', 'MAI-Transcribe-2']);
+
+const isMaiTranscriptionUsage = (
+  provider: string | undefined,
+  model: string | undefined
+): provider is 'azure-speech-mai-transcribe-1.5' =>
+  provider === 'azure-speech-mai-transcribe-1.5' && MAI_TRANSCRIPTION_MODELS.has(model ?? '');
+
 export const calculateAzureTranscriptionActualCost = (usage: {
   audioMs: number;
   provider?: TranscriptionProvider;
   model?: string;
   pricingVersion?: string;
 }): CloudUsagePricingResult =>
-  usage.provider === 'azure-speech-mai-transcribe-1.5' &&
-  usage.model === 'mai-transcribe-1.5' &&
+  isMaiTranscriptionUsage(usage.provider, usage.model) &&
   usage.pricingVersion === 'v1' &&
   Number.isFinite(usage.audioMs) &&
   usage.audioMs >= 0
@@ -400,10 +410,7 @@ export const resolveCloudUsageEntryCost = (
   entry: CloudUsageLedgerEntry
 ): ResolvedCloudUsageEntryCost => {
   const detail = entry.detail ?? {};
-  if (
-    entry.provider === 'azure-speech-mai-transcribe-1.5' &&
-    entry.model === 'mai-transcribe-1.5'
-  ) {
+  if (isMaiTranscriptionUsage(entry.provider, entry.model)) {
     const billedAudioMs = readUsageInteger(detail.billedAudioMs);
     const audioMs =
       billedAudioMs ??

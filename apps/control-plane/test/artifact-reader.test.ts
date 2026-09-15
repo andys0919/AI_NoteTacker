@@ -2,13 +2,136 @@ import { describe, expect, it } from 'vitest';
 
 import {
   configureSummaryNavigation,
+  renderArtifactReader,
   renderStructuredSummaryMarkup,
+  renderSpeakerFilterMarkup,
   renderTranscriptMarkup,
   sanitizeAnonymousSpeakerLabels,
-  wireArtifactTabs
+  readReaderState,
+  wireArtifactTabs,
+  wireSpeakerFilter,
+  wireTranscriptPlayback
 } from '../public/artifact-reader.js';
 
 describe('artifact reader', () => {
+  const filterSegments = [
+    { startMs: 0, endMs: 4_000, text: '先看流程。', speaker: 'Speaker 1', speakerSource: 'local-diarization' },
+    { startMs: 4_000, endMs: 5_000, text: '好。', speaker: 'Speaker 2', speakerSource: 'local-diarization' },
+    { startMs: 5_000, endMs: 9_000, text: '再來呢？', speaker: 'Speaker 1', speakerSource: 'local-diarization' }
+  ];
+
+  it('offers one filter control per speaker plus an all-speakers control', () => {
+    const markup = renderSpeakerFilterMarkup(filterSegments, {
+      speakerNames: { 'Speaker 1': '王經理' }
+    }).replace(/\s+/g, ' ');
+
+    expect(markup).toContain('role="group"');
+    expect(markup).toContain('aria-label="依說話者篩選逐字稿"');
+    // The all-speakers control is pressed to start and counts every segment.
+    expect(markup).toContain('data-speaker-filter="" aria-pressed="true"');
+    expect(markup).toContain('<span class="transcript-filter-name">全部</span><span class="transcript-filter-count">3</span>');
+    // Speaker controls carry the display name, their own count and their tone.
+    expect(markup).toContain('data-speaker-filter="Speaker 1" data-speaker-tone="1" aria-pressed="false"');
+    expect(markup).toContain('<span class="transcript-filter-name">王經理</span><span class="transcript-filter-count">2</span>');
+    expect(markup).toContain('data-speaker-filter="Speaker 2" data-speaker-tone="2"');
+    expect(markup).toContain('顯示全部 3 段');
+    expect(markup).toContain('role="status" aria-atomic="true"');
+  });
+
+  it('offers no filter when there is nothing to choose between', () => {
+    expect(renderSpeakerFilterMarkup([filterSegments[0]])).toBe('');
+    expect(renderSpeakerFilterMarkup([{ startMs: 0, endMs: 1_000, text: '一句。' }])).toBe('');
+    expect(renderSpeakerFilterMarkup([])).toBe('');
+  });
+
+  it('tags every turn with its speaker so the filter can hide the others', () => {
+    const markup = renderTranscriptMarkup(filterSegments, {});
+
+    expect(markup).toContain('data-speaker-label="Speaker 1"');
+    expect(markup).toContain('data-speaker-label="Speaker 2"');
+  });
+
+  it('hides the other speakers and reports what is left on screen', () => {
+    const chips = [
+      { filter: '', count: '3', pressed: 'true', classes: new Set(['is-active']) },
+      { filter: 'Speaker 1', count: '2', pressed: 'false', classes: new Set() }
+    ].map((chip) => ({
+      dataset: { speakerFilter: chip.filter },
+      classList: {
+        toggle(name: string, on: boolean) {
+          if (on) chip.classes.add(name);
+          else chip.classes.delete(name);
+        }
+      },
+      setAttribute(name: string, value: string) {
+        if (name === 'aria-pressed') chip.pressed = value;
+      },
+      querySelector: (selector: string) =>
+        selector === '.transcript-filter-count'
+          ? { textContent: chip.count }
+          : { textContent: chip.filter || '全部' },
+      state: chip
+    }));
+    const turns = [
+      { dataset: { speakerLabel: 'Speaker 1' }, hidden: false, querySelectorAll: () => [{}, {}] },
+      { dataset: { speakerLabel: 'Speaker 2' }, hidden: false, querySelectorAll: () => [{}] }
+    ];
+    const status = { textContent: '' };
+    const group = {
+      dataset: {} as Record<string, string>,
+      querySelectorAll: () => chips,
+      querySelector: (selector: string) =>
+        chips.find((chip) => selector.includes(`"${chip.dataset.speakerFilter}"`)) ?? null,
+      listeners: {} as Record<string, (event: unknown) => void>,
+      addEventListener(name: string, listener: (event: unknown) => void) {
+        this.listeners[name] = listener;
+      }
+    };
+    const card = {
+      querySelector: (selector: string) => {
+        if (selector === '.transcript-filter') return group;
+        if (selector === '.transcript-reader') return { querySelectorAll: () => turns };
+        if (selector === '[data-transcript-filter-status]') return status;
+        return null;
+      }
+    };
+
+    wireSpeakerFilter(card as never);
+    group.listeners.click({ target: { closest: () => chips[1] } });
+
+    expect(turns[0].hidden).toBe(false);
+    expect(turns[1].hidden).toBe(true);
+    expect(chips[0].state.pressed).toBe('false');
+    expect(chips[1].state.pressed).toBe('true');
+    expect(status.textContent).toBe('只顯示 Speaker 1 的 2 段，共 3 段');
+
+    group.listeners.click({ target: { closest: () => chips[0] } });
+
+    expect(turns[1].hidden).toBe(false);
+    expect(status.textContent).toBe('顯示全部 3 段');
+  });
+
+  it('carries the selected speaker through the state a re-render restores', () => {
+    const card = {
+      querySelector: (selector: string) => {
+        if (selector === '[data-artifact-tab][aria-selected="true"]') {
+          return { dataset: { artifactTab: 'transcript' } };
+        }
+        if (selector === '.transcript-reader') return { scrollTop: 420 };
+        if (selector === '.transcript-filter') {
+          return { dataset: { activeSpeakerFilter: 'Speaker 2' } };
+        }
+        return null;
+      }
+    };
+
+    expect(readReaderState(card as never)).toEqual({
+      tab: 'transcript',
+      transcriptScrollTop: 420,
+      speakerFilter: 'Speaker 2'
+    });
+  });
+
   it('links every visible summary level through stable semantic escaped markup', () => {
     const markup = renderStructuredSummaryMarkup(
       {
@@ -356,6 +479,204 @@ describe('artifact reader', () => {
     expect(markup).not.toContain('王小明');
     expect(markup).not.toContain('Speaker Alice');
     expect(markup).not.toContain('transcript-speaker');
+  });
+
+  it('groups provider-diarized lines into speaker turns with a participants strip', () => {
+    const segments = [
+      {
+        startMs: 240,
+        endMs: 28_000,
+        text: '留料一直去做，這中間不用檢查。',
+        speaker: 'Speaker 1',
+        speakerSource: 'provider-diarization'
+      },
+      {
+        startMs: 28_440,
+        endMs: 32_000,
+        text: '那你的脆盤是兩個都減對不對？',
+        speaker: 'Speaker 2',
+        speakerSource: 'provider-diarization'
+      },
+      {
+        startMs: 32_800,
+        endMs: 35_000,
+        text: '對的，它啟動的時候是兩個都減。',
+        speaker: 'Speaker 2',
+        speakerSource: 'provider-diarization'
+      },
+      { startMs: 35_320, endMs: 36_000, text: '是，是。', speaker: 'Speaker 1', speakerSource: 'provider-diarization' }
+    ];
+
+    const markup = renderTranscriptMarkup(segments);
+
+    // Three turns, not four rows: the two consecutive Speaker 2 lines share one chip.
+    expect(markup.match(/transcript-turn"/g)).toHaveLength(3);
+    expect(markup.match(/class="transcript-speaker"/g)).toHaveLength(3);
+    expect(markup).toContain('<span class="transcript-speaker" data-speaker-tone="1">Speaker 1</span>');
+    expect(markup).toContain('<span class="transcript-speaker" data-speaker-tone="2">Speaker 2</span>');
+    expect(markup).toContain('<span class="transcript-time">00:28</span>');
+    expect(markup).toContain('data-start-ms="32800">對的，它啟動的時候是兩個都減。</p>');
+  });
+
+  it('shows labels from the worker whole-recording diarization like provider labels', () => {
+    const markup = renderTranscriptMarkup([
+      { startMs: 0, endMs: 4_000, text: '先看流程。', speaker: 'Speaker 1', speakerSource: 'local-diarization' },
+      { startMs: 4_000, endMs: 5_000, text: '好。', speaker: 'Speaker 2', speakerSource: 'aligned' }
+    ]);
+
+    expect(markup).toContain('data-speaker-tone="1">Speaker 1</span>');
+    expect(markup).not.toContain('>Speaker 2<');
+  });
+
+  it('applies operator speaker names and offers a rename form only when editable', () => {
+    const segments = [
+      { startMs: 0, endMs: 4_000, text: '先看流程。', speaker: 'Speaker 1', speakerSource: 'provider-diarization' },
+      { startMs: 4_000, endMs: 5_000, text: '好。', speaker: 'Speaker 2', speakerSource: 'provider-diarization' }
+    ];
+    const speakerNames = { 'Speaker 1': '王經理' };
+
+    const readOnly = renderTranscriptMarkup(segments, { speakerNames });
+    const editable = renderTranscriptMarkup(segments, { speakerNames, editable: true });
+
+    expect(readOnly).toContain('data-speaker-tone="1">王經理</span>');
+    expect(readOnly).toContain('data-speaker-tone="2">Speaker 2</span>');
+    expect(readOnly).not.toContain('>Speaker 1<');
+    expect(readOnly).not.toContain('data-rename-label');
+    // Editable chips are buttons keyed by the provider label; no separate form or select.
+    expect(editable).toContain('data-rename-label="Speaker 1"');
+    expect(editable).toContain('data-rename-label="Speaker 2"');
+    expect(editable).toContain('>Speaker 2</button>');
+    expect(editable).toContain('>王經理</button>');
+    expect(editable).not.toContain('<form');
+    expect(editable).not.toContain('<select');
+  });
+
+  it('adds a per-segment play button spanning the whole turn only when playable', () => {
+    const segments = [
+      { startMs: 240, endMs: 28_000, text: '第一句。', speaker: 'Speaker 1', speakerSource: 'provider-diarization' },
+      { startMs: 28_440, endMs: 30_000, text: '第二句。', speaker: 'Speaker 1', speakerSource: 'provider-diarization' },
+      { startMs: 30_500, endMs: 31_000, text: '好。', speaker: 'Speaker 2', speakerSource: 'provider-diarization' }
+    ];
+
+    const playable = renderTranscriptMarkup(segments, { playable: true });
+    const readOnly = renderTranscriptMarkup(segments);
+    const legacy = renderTranscriptMarkup([{ startMs: 1_000, endMs: 2_500, text: '舊逐字稿' }], {
+      playable: true
+    });
+
+    // One button per turn, from the first line's start to the last line's end.
+    expect(playable.match(/class="transcript-play"/g)).toHaveLength(2);
+    expect(playable).toContain('data-play-start="0.24"');
+    expect(playable).toContain('data-play-end="30"');
+    expect(playable).toContain('aria-label="播放此段 00:00"');
+    expect(readOnly).not.toContain('transcript-play');
+    expect(legacy).toContain('data-play-start="1"');
+    expect(legacy).toContain('data-play-end="2.5"');
+  });
+
+  it('reassigns a segment to another voice and offers a per-turn select when editable', () => {
+    const segments = [
+      { startMs: 0, endMs: 40_000, text: '客戶第一位。', speaker: 'Speaker 1', speakerSource: 'provider-diarization' },
+      { startMs: 43_000, endMs: 57_000, text: '我方回答。', speaker: 'Speaker 2', speakerSource: 'provider-diarization' },
+      { startMs: 64_000, endMs: 88_000, text: '其實是客戶第二位。', speaker: 'Speaker 1', speakerSource: 'provider-diarization' }
+    ];
+    // The diarizer merged two customers into Speaker 1; the operator moved index 2 to
+    // a label the provider never emitted and named it.
+    const segmentSpeakers = { '2': 'Speaker 3' };
+    const speakerNames = { 'Speaker 1': 'AMT-1', 'Speaker 3': 'AMT-2' };
+
+    const markup = renderTranscriptMarkup(segments, { speakerNames, segmentSpeakers, editable: true });
+    const readOnly = renderTranscriptMarkup(segments, { speakerNames, segmentSpeakers });
+
+    // Editable chips render as buttons; the override label carries its own name.
+    expect(markup).toContain('>AMT-1</button>');
+    expect(markup).toContain('>AMT-2</button>');
+    expect(markup).toContain('data-rename-label="Speaker 3"');
+    expect(readOnly).toContain('>AMT-2</span>');
+  });
+
+  it('replaces the player with a notice and disables segment buttons when the recording is gone', () => {
+    const button = { disabled: false, title: '' };
+    const root = {
+      addEventListener: () => {},
+      querySelectorAll: (selector: string) => (selector === '.transcript-play' ? [button] : [])
+    };
+    const handlers = new Map<string, () => void>();
+    const audio = {
+      outerHTML: '<audio></audio>',
+      paused: true,
+      readyState: 0,
+      addEventListener: (type: string, handler: () => void) => handlers.set(type, handler)
+    };
+
+    wireTranscriptPlayback(root, audio);
+    handlers.get('error')?.();
+
+    expect(audio.outerHTML).toContain('class="transcript-audio-unavailable"');
+    expect(audio.outerHTML).toContain('錄音檔已不存在');
+    expect(button.disabled).toBe(true);
+  });
+
+  it('keeps the transcript tab selected when a re-render asks for it', () => {
+    const job = {
+      id: 'job_tab',
+      summaryArtifact: { text: '摘要內容' },
+      transcriptArtifact: { segments: [{ startMs: 0, endMs: 1_000, text: '一句。' }] }
+    };
+
+    const defaultMarkup = renderArtifactReader(job);
+    const transcriptMarkup = renderArtifactReader(job, { selectedTab: 'transcript' });
+
+    expect(defaultMarkup).toContain('data-artifact-tab="summary"');
+    expect(defaultMarkup).toMatch(/aria-selected="true"[^>]*data-artifact-tab="summary"/);
+    expect(transcriptMarkup).toMatch(/aria-selected="true"[^>]*data-artifact-tab="transcript"/);
+    expect(transcriptMarkup).toMatch(/data-artifact-panel="summary"\s+hidden/);
+    expect(transcriptMarkup).not.toMatch(/data-artifact-panel="transcript"\s+hidden/);
+  });
+
+  it('offers per-panel Markdown downloads only when the page can export', () => {
+    const job = {
+      id: 'job_export',
+      summaryArtifact: { text: '摘要內容' },
+      transcriptArtifact: {
+        segments: [{ startMs: 0, endMs: 1_000, text: '一句。', speaker: 'Speaker 1', speakerSource: 'provider-diarization' }]
+      }
+    };
+
+    const exportable = renderArtifactReader(job, { exportable: true });
+    const plain = renderArtifactReader(job);
+
+    expect(exportable).toContain('data-export-part="summary">下載摘要 MD</button>');
+    expect(exportable).toContain('data-export-part="transcript">下載逐字稿 MD（含姓名與時間）</button>');
+    // A copy-all icon button sits next to each download and reads as one for screen readers.
+    expect(exportable).toContain('data-copy-part="summary" aria-label="複製全部摘要"');
+    expect(exportable).toContain('data-copy-part="transcript" aria-label="複製全部逐字稿"');
+    expect(plain).not.toContain('data-export-part');
+    expect(plain).not.toContain('data-copy-part');
+  });
+
+  it('renders the public projection with canonical playback and export controls without editing', () => {
+    const job = {
+      id: 'shared-meeting',
+      summaryArtifact: { text: '摘要內容' },
+      transcriptArtifact: {
+        segments: [
+          { startMs: 0, endMs: 1_000, text: '公開內容', speaker: 'Speaker 1', speakerSource: 'local-diarization' }
+        ]
+      }
+    };
+    const markup = renderArtifactReader(job, {
+      detailLayout: true,
+      playable: true,
+      exportable: true,
+      readerId: 'shared'
+    });
+    expect(markup).toContain('class="artifact-reader artifact-reader--split"');
+    expect(markup).toContain('<audio class="transcript-audio" controls preload="none"');
+    expect(markup).toContain('class="transcript-speaker"');
+    expect(markup).toContain('data-export-part="summary"');
+    expect(markup).toContain('data-export-part="transcript"');
+    expect(markup).not.toContain('data-rename-label');
   });
 
   it('replaces anonymous speaker classifications in historical summary wording', () => {

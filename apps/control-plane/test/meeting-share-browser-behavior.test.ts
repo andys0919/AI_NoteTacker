@@ -44,9 +44,13 @@ describe('public meeting reader behavior', () => {
         'shared-summary-content',
         'shared-transcript',
         'shared-transcript-content',
+        'shared-reader',
         'print-shared-meeting'
       ].map((id) => [id, makeElement()])
     );
+    elements.get('shared-meeting-content')!.hidden = true;
+    elements.get('shared-meeting-status')!.hidden = true;
+    elements.get('shared-reader')!.hidden = true;
     const skipLink = {
       dataset: {} as Record<string, string>,
       hash: '#shared-meeting-content',
@@ -55,7 +59,7 @@ describe('public meeting reader behavior', () => {
         this.href = value;
       }
     };
-    const location = { hash: '#token-a' };
+    const location = { pathname: '/share', hash: '#token-a' };
     const document = {
       title: '共享會議紀錄',
       querySelector(selector: string) {
@@ -100,6 +104,8 @@ describe('public meeting reader behavior', () => {
       document,
       encodeURIComponent,
       fetch,
+      renderArtifactReader: () => '',
+      wireArtifactReader() {},
       renderStructuredSummaryMarkup: () => '',
       renderTranscriptMarkup: () => '',
       configureSummaryNavigation() {},

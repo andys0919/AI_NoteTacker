@@ -141,6 +141,17 @@ def read_transcription_worker_config(
         "azure_speech_mai_timeout_seconds": _read_positive_int(
             environment, "AZURE_SPEECH_MAI_TIMEOUT_SECONDS", 300
         ),
+        # Whole-recording speaker diarization on this host; an empty model disables it
+        # and jobs keep the provider's chunk-scoped speaker ids.
+        "diarization_model": (
+            environment.get("DIARIZATION_MODEL")
+            if "DIARIZATION_MODEL" in environment
+            else "pyannote-community/speaker-diarization-community-1"
+        )
+        or None,
+        "diarization_device": environment.get("DIARIZATION_DEVICE") or "auto",
+        "diarization_embedding_model": environment.get("DIARIZATION_EMBEDDING_MODEL")
+        or "/models/speaker-embedding.onnx",
     }
 
 
@@ -178,4 +189,6 @@ def read_summary_worker_config(
         "azure_openai_summary_timeout_seconds": _read_positive_int(
             environment, "AZURE_OPENAI_SUMMARY_TIMEOUT_SECONDS", 900
         ),
+        # "<model>@<provider>" retried through the same Codex PTY after Codex gave no answer
+        "codex_fallback_model": (environment.get("CODEX_FALLBACK_MODEL") or "").strip() or None,
     }

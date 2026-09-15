@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from transcription_worker.codex_transcript_summarizer import (
+    CodexNoAnswerError,
     CodexTranscriptSummarizer,
     _rate_limit_snapshot_is_exhausted,
     _terminate_process_group,
@@ -172,6 +173,56 @@ class CodexTranscriptSummarizerTests(unittest.TestCase):
         self.assertEqual([update["action"] for update in audit_updates], ["start", "finish"])
         self.assertEqual(audit_updates[-1]["status"], "failed")
         self.assertEqual(audit_updates[-1]["errorCode"], "response-validation-failed")
+
+    def test_retries_through_the_fallback_model_after_codex_gives_no_answer(self) -> None:
+        calls = []
+        audit_updates = []
+
+        def fake_requester(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return "⚠️ PTY 回合未擷取到結構化回應；以下為 codex 終端機畫面的實際內容：\n\n⚠ out of credits"
+            return json.dumps(
+                {
+                    "title": "T",
+                    "summary": "S",
+                    "topics": [],
+                    "follow_up_groups": [],
+                    "decisions": [],
+                    "risks": [],
+                    "open_questions": [],
+                    "analysis_notes": [],
+                }
+            )
+
+        summarizer = CodexTranscriptSummarizer(
+            model="gpt-5.6-luna",
+            reasoning_effort="max",
+            api_url=_API_URL,
+            api_token=_API_TOKEN,
+            requester=fake_requester,
+            fallback_model="gpt-5.6-luna@azure",
+        )
+        transcript = {"language": "zh", "segments": [{"start_ms": 0, "end_ms": 1000, "text": "測試"}]}
+
+        with self.assertRaisesRegex(CodexNoAnswerError, "out of credits"):
+            summarizer.summarize(transcript, on_provider_request=audit_updates.append)
+        summary = summarizer.summarize(
+            transcript, on_provider_request=audit_updates.append, use_fallback_model=True
+        )
+
+        self.assertEqual(summary["structured"]["title"], "T")
+        self.assertNotIn("model_override", calls[0])
+        self.assertEqual(calls[1]["model_override"], "gpt-5.6-luna@azure")
+        self.assertEqual(
+            [(u["action"], u.get("status"), u.get("errorCode")) for u in audit_updates],
+            [
+                ("start", None, None),
+                ("finish", "failed", "CodexNoAnswerError"),
+                ("start", None, None),
+                ("finish", "succeeded", None),
+            ],
+        )
 
     def test_surfaces_codex_pty_request_failures(self) -> None:
         def fake_requester(**_kwargs):

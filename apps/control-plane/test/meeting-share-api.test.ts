@@ -40,6 +40,7 @@ const createCompletedJob = () =>
             rawText: 'PRIVATE_RAW_TEXT',
             displayText: 'Speaker A：第一項決議',
             speaker: 'Speaker A',
+            speakerSource: 'local-diarization',
             reviewFlags: [
               {
                 reason: 'private-review',
@@ -138,6 +139,7 @@ describe('meeting share API', () => {
     expect(shared.body).toEqual({
       title: '與會者 專案會議',
       createdAt: job.createdAt,
+      recordingAvailable: false,
       durationMs: 11_500,
       summary: {
         structured: {
@@ -164,7 +166,8 @@ describe('meeting share API', () => {
           {
             startMs: 1_000,
             endMs: 8_000,
-            text: '第一項決議'
+            text: '第一項決議',
+            speaker: 'Speaker A',
           },
           {
             startMs: 8_000,
@@ -174,6 +177,20 @@ describe('meeting share API', () => {
         ]
       }
     });
+
+    const publicMarkdown = await request(app)
+      .get('/api/shared-meeting/export')
+      .set('Authorization', `Bearer ${first.body.token}`);
+    expect(publicMarkdown.status).toBe(200);
+    expect(publicMarkdown.headers['content-disposition']).toContain('.md');
+    expect(publicMarkdown.text).toContain('# 與會者 專案會議');
+    expect(publicMarkdown.text).toContain('## 摘要');
+    expect(publicMarkdown.text).toContain('與會者 完成第一項決議。');
+    expect(publicMarkdown.text).toContain('## 逐字稿');
+    expect(publicMarkdown.text).toContain('Speaker A：第一項決議');
+    expect(publicMarkdown.text).not.toContain('不公開模型分析');
+    expect(publicMarkdown.text).not.toContain(job.id);
+    expect(publicMarkdown.text).not.toContain('private-room');
 
     const serialized = JSON.stringify(shared.body);
     [
@@ -224,6 +241,16 @@ describe('meeting share API', () => {
       error: { code: 'shared-meeting-unavailable', message: 'This shared meeting is unavailable.' }
     });
 
+    const expectRouteUnavailable = async (path: string, token: string) => {
+      const response = await request(app)
+        .get(path)
+        .set('Authorization', `Bearer ${token}`);
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual(oldLink.body);
+    };
+    await expectRouteUnavailable('/api/shared-meeting/media', created.body.token);
+    await expectRouteUnavailable('/api/shared-meeting/export', created.body.token);
+
     const revoked = await request(app)
       .delete(`/api/operator/jobs/${job.id}/share`)
       .send({ submitterId: 'operator-share' });
@@ -243,6 +270,8 @@ describe('meeting share API', () => {
       .set('Authorization', `Bearer ${rotated.body.token}`);
     expect(revokedLink.status).toBe(404);
     expect(revokedLink.body).toEqual(oldLink.body);
+    await expectRouteUnavailable('/api/shared-meeting/media', rotated.body.token);
+    await expectRouteUnavailable('/api/shared-meeting/export', rotated.body.token);
 
     const recreated = await createShare(app, job.id);
     vi.setSystemTime(new Date('2026-08-30T08:00:00.001Z'));
@@ -251,6 +280,8 @@ describe('meeting share API', () => {
       .set('Authorization', `Bearer ${recreated.body.token}`);
     expect(expired.status).toBe(404);
     expect(expired.body).toEqual(oldLink.body);
+    await expectRouteUnavailable('/api/shared-meeting/media', recreated.body.token);
+    await expectRouteUnavailable('/api/shared-meeting/export', recreated.body.token);
 
     vi.setSystemTime(now);
     const activeAgain = await createShare(app, job.id);

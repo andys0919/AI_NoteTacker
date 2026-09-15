@@ -1,6 +1,7 @@
 import time
 import unittest
 
+from transcription_worker.local_diarization import assign_speaker_turns
 from transcription_worker.worker_loop import run_transcription_worker_iteration
 
 
@@ -658,6 +659,165 @@ class RunTranscriptionWorkerIterationTests(unittest.TestCase):
         self.assertEqual(result, {"kind": "failed", "job_id": "job_mai_model_mismatch"})
         self.assertEqual(mai_transcriber.inputs, [])
         self.assertIn("does not match", client.events[-1][1]["failure"]["message"])
+
+    def test_relabels_speakers_from_whole_recording_diarization(self) -> None:
+        mai_transcriber = FakeTranscriber(
+            {
+                "language": "zh",
+                "segments": [
+                    {"start_ms": 0, "end_ms": 900, "text": "早安", "timing_source": "provider", "speaker": "Speaker 1", "speaker_source": "provider-diarization"},
+                    {"start_ms": 1_000, "end_ms": 2_000, "text": "你好", "timing_source": "provider", "speaker": "Speaker 2", "speaker_source": "provider-diarization"},
+                    {"start_ms": 2_100, "end_ms": 3_000, "text": "開始吧", "timing_source": "provider", "speaker": "Speaker 3", "speaker_source": "provider-diarization"},
+                ],
+            }
+        )
+
+        class Diarizer:
+            label = "test-model"
+            inputs = []
+
+            def label_segments(self, local_audio_path, segments):
+                self.inputs.append(local_audio_path)
+                return assign_speaker_turns(
+                    segments,
+                    [
+                        {"start_ms": 0, "end_ms": 950, "speaker": 5},
+                        {"start_ms": 950, "end_ms": 2_050, "speaker": 2},
+                        {"start_ms": 2_050, "end_ms": 3_000, "speaker": 5},
+                    ],
+                )
+
+        diarizer = Diarizer()
+        client = FakeClient(
+            {
+                "id": "job_diarized",
+                "transcriptionProvider": "azure-speech-mai-transcribe-1.5",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_diarized/meeting.wav",
+                    "downloadUrl": "https://storage.example.test/meeting.wav",
+                    "contentType": "audio/wav",
+                },
+            }
+        )
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_diarized.wav"),
+            media_preparer=FakeMediaPreparer(local_audio_path="/tmp/job_diarized-prepared.wav"),
+            transcriber=mai_transcriber,
+            transcriber_registry=FakeTranscriberRegistry(
+                {"azure-speech-mai-transcribe-1.5": mai_transcriber}
+            ),
+            diarizer=diarizer,
+        )
+
+        self.assertEqual(result, {"kind": "processed", "job_id": "job_diarized"})
+        self.assertEqual(diarizer.inputs, ["/tmp/job_diarized-prepared.wav"])
+        self.assertIn(
+            "Running speaker diarization (test-model).",
+            [payload.get("processingMessage") for _job_id, payload in client.events],
+        )
+        artifact = client.events[-1][1]["transcriptArtifact"]
+        self.assertEqual(artifact["schemaVersion"], 3)
+        self.assertEqual(
+            [(segment["speaker"], segment["speakerSource"]) for segment in artifact["segments"]],
+            [
+                ("Speaker 1", "local-diarization"),
+                ("Speaker 2", "local-diarization"),
+                ("Speaker 1", "local-diarization"),
+            ],
+        )
+
+    def test_keeps_provider_speakers_when_local_diarization_fails(self) -> None:
+        mai_transcriber = FakeTranscriber(
+            {
+                "language": "zh",
+                "segments": [
+                    {"start_ms": 0, "end_ms": 900, "text": "早安", "timing_source": "provider", "speaker": "Speaker 1", "speaker_source": "provider-diarization"},
+                ],
+            }
+        )
+
+        class BrokenDiarizer:
+            label = "broken"
+
+            def label_segments(self, local_audio_path, segments):
+                raise RuntimeError("CUDA driver missing")
+
+        client = FakeClient(
+            {
+                "id": "job_diarizer_down",
+                "transcriptionProvider": "azure-speech-mai-transcribe-1.5",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_diarizer_down/meeting.wav",
+                    "downloadUrl": "https://storage.example.test/meeting.wav",
+                    "contentType": "audio/wav",
+                },
+            }
+        )
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_diarizer_down.wav"),
+            media_preparer=FakeMediaPreparer(),
+            transcriber=mai_transcriber,
+            transcriber_registry=FakeTranscriberRegistry(
+                {"azure-speech-mai-transcribe-1.5": mai_transcriber}
+            ),
+            diarizer=BrokenDiarizer(),
+        )
+
+        self.assertEqual(result, {"kind": "processed", "job_id": "job_diarizer_down"})
+        segment = client.events[-1][1]["transcriptArtifact"]["segments"][0]
+        self.assertEqual((segment["speaker"], segment["speakerSource"]), ("Speaker 1", "provider-diarization"))
+
+    def test_keeps_provider_speakers_when_relabelling_after_diarization_fails(self) -> None:
+        mai_transcriber = FakeTranscriber(
+            {
+                "language": "zh",
+                "segments": [
+                    {"start_ms": 0, "end_ms": 900, "text": "早安", "timing_source": "provider", "speaker": "Speaker 1", "speaker_source": "provider-diarization"},
+                ],
+            }
+        )
+
+        class MalformedTurnDiarizer:
+            label = "malformed"
+
+            def label_segments(self, local_audio_path, segments):
+                # A turn without end_ms blows up inside the real assignment, i.e. after
+                # the diarization pass itself produced turns.
+                return assign_speaker_turns(segments, [{"start_ms": 0, "speaker": 0}])
+
+        client = FakeClient(
+            {
+                "id": "job_relabel_boom",
+                "transcriptionProvider": "azure-speech-mai-transcribe-1.5",
+                "recordingArtifact": {
+                    "storageKey": "recordings/job_relabel_boom/meeting.wav",
+                    "downloadUrl": "https://storage.example.test/meeting.wav",
+                    "contentType": "audio/wav",
+                },
+            }
+        )
+
+        result = run_transcription_worker_iteration(
+            worker_id="transcriber-alpha",
+            client=client,
+            downloader=FakeDownloader("/tmp/job_relabel_boom.wav"),
+            media_preparer=FakeMediaPreparer(),
+            transcriber=mai_transcriber,
+            transcriber_registry=FakeTranscriberRegistry(
+                {"azure-speech-mai-transcribe-1.5": mai_transcriber}
+            ),
+            diarizer=MalformedTurnDiarizer(),
+        )
+
+        self.assertEqual(result, {"kind": "processed", "job_id": "job_relabel_boom"})
+        segment = client.events[-1][1]["transcriptArtifact"]["segments"][0]
+        self.assertEqual((segment["speaker"], segment["speakerSource"]), ("Speaker 1", "provider-diarization"))
 
     def test_posts_extended_transcript_segment_evidence_without_replacing_raw_text(self) -> None:
         transcriber = FakeTranscriber(

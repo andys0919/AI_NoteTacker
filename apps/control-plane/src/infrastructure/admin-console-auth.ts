@@ -22,7 +22,10 @@ export interface AdminConsoleAuth {
 }
 
 const DEFAULT_USERNAME = 'admin';
-const DEFAULT_SESSION_TTL_HOURS = 12;
+// One console, one trusted machine: a 12-hour session made an operator retype the
+// password most days. The token stays signed and this expiry is still checked on
+// every admin request, so shortening it again is a one-line configuration change.
+const DEFAULT_SESSION_TTL_HOURS = 24 * 30;
 const LEGACY_PASSWORD = 'solomonvbuandy';
 
 const base64UrlEncode = (value: string): string =>

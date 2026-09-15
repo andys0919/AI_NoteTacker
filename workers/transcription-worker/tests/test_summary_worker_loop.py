@@ -2,6 +2,7 @@ import time
 import unittest
 
 from transcription_worker.azure_openai_transcript_summarizer import AzureOpenAiSummaryError
+from transcription_worker.codex_transcript_summarizer import CodexNoAnswerError
 from transcription_worker.summary_worker_loop import run_summary_worker_iteration
 
 
@@ -354,6 +355,63 @@ class RunSummaryWorkerIterationTests(unittest.TestCase):
         self.assertEqual(client.events[0][1]["actualProvider"], "azure-openai")
         self.assertEqual(client.events[0][1]["usage"]["providerRequestCount"], 1)
         self.assertEqual(client.events[0][1]["usage"]["cacheWritePromptTokens"], 1)
+
+    def test_retries_through_the_codex_fallback_model_when_codex_gives_no_answer(self) -> None:
+        client = FakeSummaryClient(
+            {
+                "id": "job_summary_no_answer",
+                "leaseToken": "lease_summary_no_answer",
+                "summaryModel": "gpt-5.6-luna",
+                "transcriptArtifact": {
+                    "language": "zh",
+                    "segments": [{"startMs": 0, "endMs": 1000, "text": "沒回答測試"}],
+                },
+            }
+        )
+
+        class NoAnswerThenFallback(FakeSummarizer):
+            fallback_model = "gpt-5.6-luna@azure"
+
+            def __init__(self):
+                super().__init__(
+                    {
+                        "model": "gpt-5.6-luna",
+                        "reasoning_effort": "max",
+                        "text": "Fallback summary",
+                        "structured": {
+                            "summary": "Fallback summary",
+                            "key_points": [],
+                            "action_items": [],
+                            "decisions": [],
+                            "risks": [],
+                            "open_questions": [],
+                        },
+                    }
+                )
+                self.fallback_flags = []
+
+            def summarize(self, transcript_result, use_fallback_model=False, **kwargs):
+                self.fallback_flags.append(use_fallback_model)
+                if not use_fallback_model:
+                    raise CodexNoAnswerError("codex gave no answer: out of credits")
+                return super().summarize(transcript_result, **kwargs)
+
+        summarizer = NoAnswerThenFallback()
+        result = run_summary_worker_iteration(
+            worker_id="summary-alpha",
+            client=client,
+            summarizer=summarizer,
+            quota_is_exhausted=lambda: False,
+        )
+
+        self.assertEqual(result, {"kind": "processed", "job_id": "job_summary_no_answer"})
+        self.assertEqual(summarizer.fallback_flags, [False, True])
+        self.assertEqual(client.fallback_reservations, [])
+        progress = [e for _, e in client.events if e["type"] == "progress-updated"]
+        self.assertEqual(progress[0]["processingStage"], "generating-summary")
+        self.assertIn("gpt-5.6-luna@azure", progress[0]["processingMessage"])
+        self.assertEqual(client.events[-1][1]["type"], "summary-artifact-stored")
+        self.assertEqual(client.events[-1][1]["actualProvider"], "local-codex")
 
     def test_does_not_fall_back_after_a_generic_local_failure(self) -> None:
         client = FakeSummaryClient(

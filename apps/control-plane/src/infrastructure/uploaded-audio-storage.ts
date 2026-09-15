@@ -1,7 +1,21 @@
-import { DeleteObjectsCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  DeleteObjectsCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client
+} from '@aws-sdk/client-s3';
 import { createReadStream } from 'node:fs';
+import type { Readable } from 'node:stream';
 
 import type { RecordingArtifact } from '../domain/recording-job.js';
+
+export type StoredObjectStream = {
+  body: Readable;
+  contentType?: string;
+  contentLength?: number;
+  // Present only when a byte range was requested and honored, e.g. "bytes 0-99/1000".
+  contentRange?: string;
+};
 
 export type UploadedAudioStorageInput = {
   jobId: string;
@@ -15,7 +29,16 @@ export type UploadedAudioStorageInput = {
 export interface UploadedAudioStorage {
   storeUpload(input: UploadedAudioStorageInput): Promise<RecordingArtifact>;
   deleteObjects?(storageKeys: string[]): Promise<void>;
+  // Streams a stored recording so the browser can seek inside it; `range` is the
+  // raw HTTP Range header ("bytes=0-"), which object storage understands directly.
+  getObjectStream?(storageKey: string, range?: string): Promise<StoredObjectStream>;
 }
+
+const stripBucketPrefix = (bucketName: string, key: string): string => {
+  const normalized = key.replace(/^\/+/, '');
+  const bucketPrefix = `${bucketName}/`;
+  return normalized.startsWith(bucketPrefix) ? normalized.slice(bucketPrefix.length) : normalized;
+};
 
 const sanitizeFileName = (value: string): string => {
   const trimmed = value.trim();
@@ -63,11 +86,25 @@ export class S3UploadedAudioStorage implements UploadedAudioStorage {
     };
   }
 
+  async getObjectStream(storageKey: string, range?: string): Promise<StoredObjectStream> {
+    const result = await this.client.send(
+      new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: stripBucketPrefix(this.bucketName, storageKey),
+        ...(range ? { Range: range } : {})
+      })
+    );
+    return {
+      body: result.Body as Readable,
+      contentType: result.ContentType,
+      contentLength: result.ContentLength,
+      contentRange: result.ContentRange
+    };
+  }
+
   async deleteObjects(storageKeys: string[]): Promise<void> {
-    const bucketPrefix = `${this.bucketName}/`;
     const normalizedKeys = [...new Set(storageKeys)]
-      .map((key) => key.replace(/^\/+/, ''))
-      .map((key) => (key.startsWith(bucketPrefix) ? key.slice(bucketPrefix.length) : key))
+      .map((key) => stripBucketPrefix(this.bucketName, key))
       .filter(Boolean);
 
     for (let offset = 0; offset < normalizedKeys.length; offset += 1000) {

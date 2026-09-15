@@ -113,6 +113,7 @@ describe('admin shell markup', () => {
     expect(javascript).toContain("elements.skipLink.href = '#admin-content'");
     expect(javascript).toContain('setFormBusy(elements.adminProviderForm');
     expect(javascript).toContain('/admin/result?jobId=');
+    expect(javascript).toContain("jobIdLabel.className = 'usage-history-job-id'");
     expect(javascript).not.toContain('buildUsageJobDetails');
     for (const id of ['admin-quota-panel', 'admin-audit-panel', 'admin-usage-report-panel']) {
       expect(html).not.toContain(id);
@@ -123,17 +124,23 @@ describe('admin shell markup', () => {
     expect(javascript).toContain('/api/admin/runtime-health');
   });
 
-  it('keeps the administrator bearer token inside the current browser session', () => {
+  it('keeps one administrator session per device and never stores credentials', () => {
     const javascript = readFileSync(
       resolve(import.meta.dirname, '../public/admin.js'),
       'utf-8'
     );
 
-    expect(javascript).toContain('window.localStorage.removeItem(TOKEN_STORAGE_KEY)');
+    // Per device, so every tab shares one login instead of each asking again.
+    expect(javascript).toContain('window.localStorage.getItem(TOKEN_STORAGE_KEY)');
+    expect(javascript).toContain('window.localStorage.setItem(TOKEN_STORAGE_KEY, token)');
+    // A token left in the old per-tab location is adopted once, then removed there.
     expect(javascript).toContain('window.sessionStorage.getItem(TOKEN_STORAGE_KEY)');
-    expect(javascript).toContain('window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token)');
+    expect(javascript).toContain('window.localStorage.setItem(TOKEN_STORAGE_KEY, carried)');
+    // Logging out clears both locations.
+    expect(javascript).toContain('window.localStorage.removeItem(TOKEN_STORAGE_KEY)');
     expect(javascript).toContain('window.sessionStorage.removeItem(TOKEN_STORAGE_KEY)');
-    expect(javascript).not.toContain('window.localStorage.getItem(TOKEN_STORAGE_KEY)');
-    expect(javascript).not.toContain('window.localStorage.setItem(TOKEN_STORAGE_KEY, token)');
+    // Only the signed session token is ever stored.
+    expect(javascript).not.toContain('setItem(TOKEN_STORAGE_KEY, password');
+    expect(javascript).not.toMatch(/(local|session)Storage\.setItem\([^)]*password/i);
   });
 });

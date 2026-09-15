@@ -41,6 +41,31 @@ export const toReadableTranscriptText = (segment: TranscriptSegment): string => 
   return sanitizeAnonymousSpeakerLabels(withoutPrefix);
 };
 
+// Speaker labels worth showing: per-phrase provider diarization, or the worker's
+// whole-recording pass over the same phrases. Legacy alignment-era labels are excluded.
+export const isDiarizedSpeakerSource = (source: string | undefined): boolean =>
+  source === 'provider-diarization' || source === 'local-diarization';
+
+// Display name for a diarized segment: the operator's chosen name when one is stored,
+// otherwise the diarization label. Legacy alignment-era labels return nothing.
+export const resolveTranscriptSpeaker = (
+  artifact: RecordingJob['transcriptArtifact'],
+  segment: TranscriptSegment,
+  index?: number
+): string | undefined => {
+  if (!isDiarizedSpeakerSource(segment.speakerSource)) {
+    return undefined;
+  }
+  const override =
+    index === undefined ? undefined : artifact?.segmentSpeakers?.[String(index)]?.trim();
+  const label = override || segment.speaker?.trim();
+  if (!label) {
+    return undefined;
+  }
+  const name = artifact?.speakerNames?.[label]?.trim();
+  return name || label;
+};
+
 const sanitizeStringList = (value: string[] | undefined): string[] =>
   (value ?? []).map(sanitizeAnonymousSpeakerLabels);
 
@@ -139,11 +164,15 @@ export const verifyMeetingShareToken = (
 
 export const toPublicMeeting = (job: RecordingJob) => {
   const segments = (job.transcriptArtifact?.segments ?? [])
-    .map((segment) => ({
-      startMs: segment.startMs,
-      endMs: segment.endMs,
-      text: toReadableTranscriptText(segment)
-    }))
+    .map((segment, index) => {
+      const speaker = resolveTranscriptSpeaker(job.transcriptArtifact, segment, index);
+      return {
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+        text: toReadableTranscriptText(segment),
+        ...(speaker ? { speaker } : {})
+      };
+    })
     .filter((segment) => segment.text);
   const durationMs = segments.length
     ? Math.max(...segments.map((segment) => segment.endMs)) -
@@ -156,6 +185,7 @@ export const toPublicMeeting = (job: RecordingJob) => {
       ? sanitizeAnonymousSpeakerLabels(structured.title)
       : '會議紀錄',
     createdAt: job.createdAt,
+    recordingAvailable: Boolean(job.recordingArtifact),
     ...(durationMs === undefined ? {} : { durationMs }),
     ...(job.summaryArtifact
       ? {

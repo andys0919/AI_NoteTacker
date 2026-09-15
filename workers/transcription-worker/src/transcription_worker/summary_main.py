@@ -29,6 +29,7 @@ def main() -> None:
         api_url=str(config["codex_pty_api_url"]),
         api_token=str(config["codex_pty_api_token"]),
         timeout_seconds=int(config["summary_timeout_seconds"]),
+        fallback_model=config["codex_fallback_model"],
     )
     azure_fallback_summarizer = None
     if config.get("azure_openai_summary_endpoint") and config.get(
@@ -41,6 +42,7 @@ def main() -> None:
             reasoning_effort=str(config["summary_reasoning_effort"]),
             timeout_seconds=int(config["azure_openai_summary_timeout_seconds"]),
         )
+    quota_is_exhausted = partial(is_codex_quota_exhausted, codex_cli_path=codex_cli_path)
 
     codex_usage = None
     next_codex_usage_refresh_at = 0.0
@@ -57,9 +59,7 @@ def main() -> None:
                 client=client,
                 summarizer=summarizer,
                 azure_fallback_summarizer=azure_fallback_summarizer,
-                quota_is_exhausted=partial(
-                    is_codex_quota_exhausted, codex_cli_path=codex_cli_path
-                ),
+                quota_is_exhausted=quota_is_exhausted,
                 codex_usage=codex_usage,
             )
 

@@ -48,6 +48,8 @@ import {
   isMeetingShareLinkActive,
   isMeetingShareSecretConfigured,
   parseMeetingShareToken,
+  isDiarizedSpeakerSource,
+  resolveTranscriptSpeaker,
   sanitizeAnonymousSpeakerLabels,
   toReadableTranscriptText,
   toPublicMeeting,
@@ -214,11 +216,32 @@ const readFiniteNumber = (value: unknown): number =>
 
 const operatorJobExportQuerySchema = z.object({
   submitterId: z.string().trim().min(1).max(120).optional(),
-  format: z.enum(['markdown', 'txt', 'srt', 'json'])
+  format: z.enum(['markdown', 'txt', 'srt', 'json']),
+  // Markdown/TXT can be limited to one half so the reader can offer "summary only"
+  // and "transcript only" downloads; SRT/JSON ignore it.
+  part: z.enum(['all', 'summary', 'transcript']).default('all')
 });
+
+const sharedMarkdownExportQuerySchema = z.object({
+  part: z.enum(['all', 'summary', 'transcript']).default('all')
+});
+
+type JobExportPart = z.infer<typeof operatorJobExportQuerySchema>['part'];
 
 const operatorStopRequestSchema = z.object({
   submitterId: z.string().trim().min(1).max(120).optional()
+});
+
+// speakerNames keys are labels ("Speaker 1"); an empty value clears that name.
+// segmentSpeakers keys are segment indices; the value is the label that segment
+// should carry instead of the provider's, and may introduce a brand-new label.
+const operatorSpeakerNamesSchema = operatorStopRequestSchema.extend({
+  speakerNames: z
+    .record(z.string().trim().min(1).max(60), z.string().trim().max(40))
+    .default({}),
+  segmentSpeakers: z
+    .record(z.string().regex(/^\d+$/), z.string().trim().min(1).max(60))
+    .default({})
 });
 
 const updateTranscriptionProviderSchema = z.object({
@@ -283,9 +306,12 @@ const transcriptSegmentSchema = z.object({
 });
 
 const transcriptArtifactSchema = recordingArtifactSchema.extend({
-  schemaVersion: z.literal(2).optional(),
+  // v2 added raw/display evidence; v3 adds provider speaker attribution per segment.
+  schemaVersion: z.union([z.literal(2), z.literal(3)]).optional(),
   language: z.string().min(2),
   segments: z.array(transcriptSegmentSchema),
+  speakerNames: z.record(z.string().min(1), z.string().min(1).max(40)).optional(),
+  segmentSpeakers: z.record(z.string().regex(/^\d+$/), z.string().min(1).max(60)).optional(),
   speakerAttribution: z
     .object({
       provider: z.literal('azure-openai'),
@@ -1057,7 +1083,17 @@ const formatSrtTimestamp = (milliseconds: number): string => {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')},${String(remainingMs).padStart(3, '0')}`;
 };
 
-const renderMarkdownExport = (job: RecordingJob): string => {
+const exportTranscriptLine = (
+  job: RecordingJob,
+  segment: NonNullable<RecordingJob['transcriptArtifact']>['segments'][number],
+  index: number
+): string => {
+  const speaker = resolveTranscriptSpeaker(job.transcriptArtifact, segment, index);
+  const text = toReadableTranscriptText(segment);
+  return speaker ? `${speaker}：${text}` : text;
+};
+
+const renderMarkdownExport = (job: RecordingJob, part: JobExportPart = 'all'): string => {
   const parts = [
     '# AI NoteTacker Export',
     '',
@@ -1068,7 +1104,7 @@ const renderMarkdownExport = (job: RecordingJob): string => {
     `- Updated: ${new Date(job.updatedAt).toISOString()}`
   ];
 
-  if (job.summaryArtifact?.text) {
+  if (part !== 'transcript' && job.summaryArtifact?.text) {
     const summaryText = sanitizeAnonymousSpeakerLabels(job.summaryArtifact.text).trim();
     parts.push('');
 
@@ -1081,14 +1117,14 @@ const renderMarkdownExport = (job: RecordingJob): string => {
     parts.push(summaryText);
   }
 
-  if (job.transcriptArtifact?.segments.length) {
+  if (part !== 'summary' && job.transcriptArtifact?.segments.length) {
     parts.push(
       '',
       '## Transcript',
       '',
       ...job.transcriptArtifact.segments.map(
-        (segment) =>
-          `- [${formatSrtTimestamp(segment.startMs).replace(',', '.')}] ${toReadableTranscriptText(segment)}`
+        (segment, index) =>
+          `- [${formatSrtTimestamp(segment.startMs).replace(',', '.')}] ${exportTranscriptLine(job, segment, index)}`
       )
     );
   }
@@ -1096,7 +1132,66 @@ const renderMarkdownExport = (job: RecordingJob): string => {
   return parts.join('\n');
 };
 
-const renderTextExport = (job: RecordingJob): string => {
+const renderPublicMarkdownExport = (job: RecordingJob, part: JobExportPart = 'all'): string => {
+  const meeting = toPublicMeeting(job);
+  const parts = [
+    `# ${meeting.title}`,
+    '',
+    `- 建立時間：${meeting.createdAt}`,
+    ...(typeof meeting.durationMs === 'number' ? [`- 長度：${meeting.durationMs} ms`] : [])
+  ];
+
+  const addList = (heading: string, items: string[] = []) => {
+    if (!items.length) {
+      return;
+    }
+    parts.push('', `### ${heading}`, ...items.map((item) => `- ${item}`));
+  };
+
+  if (part !== 'transcript' && meeting.summary) {
+    parts.push('', '## 摘要');
+    if (meeting.summary.structured) {
+      const structured = meeting.summary.structured;
+      parts.push(structured.summary);
+      for (const topic of structured.topics ?? []) {
+        parts.push('', `### ${topic.title}`);
+        addList('重點', topic.points);
+        for (const subtopic of topic.subtopics ?? []) {
+          parts.push('', `#### ${subtopic.title}`);
+          addList('細節', subtopic.details);
+        }
+        if (topic.conclusion) parts.push('', `結論：${topic.conclusion}`);
+      }
+      for (const group of structured.followUpGroups ?? []) {
+        parts.push('', `### ${group.title}`);
+        addList('待辦', group.items);
+      }
+      addList('會議重點', structured.keyPoints);
+      addList('後續安排', structured.actionItems);
+      addList('已確認決議', structured.decisions);
+      addList('風險與提醒', structured.risks);
+      addList('待確認問題', structured.openQuestions);
+    } else {
+      parts.push(meeting.summary.text);
+    }
+  }
+
+  if (part !== 'summary' && meeting.transcript?.segments.length) {
+    parts.push(
+      '',
+      '## 逐字稿',
+      '',
+      ...meeting.transcript.segments.map(
+        (segment) =>
+          `- [${formatSrtTimestamp(segment.startMs).replace(',', '.')}] ${segment.speaker ? `${segment.speaker}：` : ''}${segment.text}`
+      )
+    );
+  }
+
+  return `${parts.join('\n')}\n`;
+};
+
+const renderTextExport = (job: RecordingJob, part: JobExportPart = 'all'): string => {
   const parts = [
     'AI NoteTacker Export',
     '',
@@ -1106,17 +1201,17 @@ const renderTextExport = (job: RecordingJob): string => {
     `Join Name: ${job.requestedJoinName}`
   ];
 
-  if (job.summaryArtifact?.text) {
+  if (part !== 'transcript' && job.summaryArtifact?.text) {
     parts.push('', 'Summary', sanitizeAnonymousSpeakerLabels(job.summaryArtifact.text));
   }
 
-  if (job.transcriptArtifact?.segments.length) {
+  if (part !== 'summary' && job.transcriptArtifact?.segments.length) {
     parts.push(
       '',
       'Transcript',
       ...job.transcriptArtifact.segments.map(
-        (segment) =>
-          `[${formatSrtTimestamp(segment.startMs)}] ${toReadableTranscriptText(segment)}`
+        (segment, index) =>
+          `[${formatSrtTimestamp(segment.startMs)}] ${exportTranscriptLine(job, segment, index)}`
       )
     );
   }
@@ -1128,7 +1223,7 @@ const renderSrtExport = (job: RecordingJob): string =>
   (job.transcriptArtifact?.segments ?? [])
     .map(
       (segment, index) =>
-        `${index + 1}\n${formatSrtTimestamp(segment.startMs)} --> ${formatSrtTimestamp(segment.endMs)}\n${toReadableTranscriptText(segment)}`
+        `${index + 1}\n${formatSrtTimestamp(segment.startMs)} --> ${formatSrtTimestamp(segment.endMs)}\n${exportTranscriptLine(job, segment, index)}`
     )
     .join('\n\n');
 
@@ -1308,7 +1403,7 @@ export const createApp = (
   const defaultLocalTranscriptionModel = process.env.WHISPER_MODEL ?? 'large-v3';
   const defaultQwenTranscriptionModel = process.env.QWEN_ASR_MODEL ?? 'qwen3-asr-1.7b';
   const defaultMaiTranscriptionModel =
-    process.env.AZURE_SPEECH_MAI_MODEL ?? 'mai-transcribe-1.5';
+    process.env.AZURE_SPEECH_MAI_MODEL ?? 'MAI-Transcribe-2';
   const defaultCloudTranscriptionModel =
     process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-4o-transcribe';
   const defaultTranscriptionModel =
@@ -1461,7 +1556,7 @@ export const createApp = (
     response.set({
       'Cache-Control': 'private, no-store',
       'Content-Security-Policy':
-        "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'none'; frame-ancestors 'none'; img-src 'none'; object-src 'none'; script-src 'self'; style-src 'self'",
+        "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; form-action 'none'; frame-ancestors 'none'; img-src 'none'; media-src 'self' blob:; object-src 'none'; script-src 'self'; style-src 'self'",
       'Referrer-Policy': 'no-referrer',
       'X-Content-Type-Options': 'nosniff',
       'X-Robots-Tag': 'noindex, nofollow, noarchive'
@@ -1764,6 +1859,38 @@ export const createApp = (
           message: 'Only completed meetings with transcript or summary content can be shared.'
         }
       });
+      return undefined;
+    }
+
+    return job;
+  };
+
+  const resolveSharedMeetingJob = async (
+    request: express.Request,
+    response: express.Response
+  ): Promise<RecordingJob | undefined> => {
+    setSharedMeetingHeaders(response);
+    const token = request.headers.authorization?.match(/^Bearer\s+(\S+)$/i)?.[1];
+    const parsedToken = token ? parseMeetingShareToken(token) : undefined;
+
+    if (!meetingShareSecretConfigured || !token || !parsedToken) {
+      response.status(404).json(sharedMeetingUnavailableResponse);
+      return undefined;
+    }
+
+    const link = await repository.getMeetingShareLinkByShareId(parsedToken.shareId);
+    if (
+      !link ||
+      !isMeetingShareLinkActive(link) ||
+      !verifyMeetingShareToken(token, link, meetingShareSecret)
+    ) {
+      response.status(404).json(sharedMeetingUnavailableResponse);
+      return undefined;
+    }
+
+    const job = await repository.getById(link.jobId);
+    if (!job || !isMeetingShareEligible(job)) {
+      response.status(404).json(sharedMeetingUnavailableResponse);
       return undefined;
     }
 
@@ -3182,28 +3309,10 @@ export const createApp = (
   });
 
   app.get('/api/shared-meeting', async (request, response) => {
-    setSharedMeetingHeaders(response);
-    const token = request.headers.authorization?.match(/^Bearer\s+(\S+)$/i)?.[1];
-    const parsedToken = token ? parseMeetingShareToken(token) : undefined;
-
-    if (!meetingShareSecretConfigured || !token || !parsedToken) {
-      return response.status(404).json(sharedMeetingUnavailableResponse);
+    const job = await resolveSharedMeetingJob(request, response);
+    if (!job) {
+      return;
     }
-
-    const link = await repository.getMeetingShareLinkByShareId(parsedToken.shareId);
-    if (
-      !link ||
-      !isMeetingShareLinkActive(link) ||
-      !verifyMeetingShareToken(token, link, meetingShareSecret)
-    ) {
-      return response.status(404).json(sharedMeetingUnavailableResponse);
-    }
-
-    const job = await repository.getById(link.jobId);
-    if (!job || !isMeetingShareEligible(job)) {
-      return response.status(404).json(sharedMeetingUnavailableResponse);
-    }
-
     return response.status(200).json(toPublicMeeting(job));
   });
 
@@ -3361,6 +3470,73 @@ export const createApp = (
     });
   });
 
+  const sendJobExport = (
+    job: RecordingJob,
+    query: z.infer<typeof operatorJobExportQuerySchema>,
+    response: express.Response
+  ) => {
+    const baseName = buildExportBaseName(job);
+    const partSuffix = query.part === 'all' ? '' : `-${query.part}`;
+
+    if (query.format === 'markdown') {
+      response.setHeader('Content-Disposition', `attachment; filename="${baseName}${partSuffix}.md"`);
+      response.type('text/markdown; charset=utf-8');
+      return response.status(200).send(renderMarkdownExport(job, query.part));
+    }
+
+    if (query.format === 'txt') {
+      response.setHeader('Content-Disposition', `attachment; filename="${baseName}${partSuffix}.txt"`);
+      response.type('text/plain; charset=utf-8');
+      return response.status(200).send(renderTextExport(job, query.part));
+    }
+
+    if (query.format === 'srt') {
+      if (!job.transcriptArtifact?.segments.length) {
+        return response.status(409).json({
+          error: {
+            code: 'archive-export-unavailable',
+            message: 'SRT export requires transcript segments.'
+          }
+        });
+      }
+
+      response.setHeader('Content-Disposition', `attachment; filename="${baseName}.srt"`);
+      response.type('application/x-subrip; charset=utf-8');
+      return response.status(200).send(renderSrtExport(job));
+    }
+
+    response.setHeader('Content-Disposition', `attachment; filename="${baseName}.json"`);
+    response.type('application/json; charset=utf-8');
+    return response.status(200).send({
+      job: toApiRecordingJob(job),
+      summary: job.summaryArtifact ?? null,
+      transcript: job.transcriptArtifact ?? null
+    });
+  };
+
+  app.get('/api/shared-meeting/export', async (request, response) => {
+    setSharedMeetingHeaders(response);
+    const parsedQuery = sharedMarkdownExportQuerySchema.safeParse(request.query);
+    if (!parsedQuery.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedQuery.error.issues[0]?.message ?? 'The request query is invalid.'
+        }
+      });
+    }
+    const job = await resolveSharedMeetingJob(request, response);
+    if (!job) {
+      return;
+    }
+    const publicMeeting = toPublicMeeting(job);
+    const baseName = sanitizeExportBaseName(publicMeeting.title);
+    const partSuffix = parsedQuery.data.part === 'all' ? '' : `-${parsedQuery.data.part}`;
+    response.setHeader('Content-Disposition', `attachment; filename="${baseName}${partSuffix}.md"`);
+    response.type('text/markdown; charset=utf-8');
+    return response.status(200).send(renderPublicMarkdownExport(job, parsedQuery.data.part));
+  });
+
   app.get('/api/operator/jobs/:id/export', async (request, response) => {
     const parsedQuery = operatorJobExportQuerySchema.safeParse(request.query);
 
@@ -3398,42 +3574,241 @@ export const createApp = (
       });
     }
 
-    const baseName = buildExportBaseName(job);
+    return sendJobExport(job, parsedQuery.data, response);
+  });
 
-    if (parsedQuery.data.format === 'markdown') {
-      response.setHeader('Content-Disposition', `attachment; filename="${baseName}.md"`);
-      response.type('text/markdown; charset=utf-8');
-      return response.status(200).send(renderMarkdownExport(job));
+  // Same export for the admin result page; the session header authenticates it.
+  app.get('/api/admin/jobs/:id/export', async (request, response) => {
+    if (!(await requireAdminOperator(request, response))) {
+      return;
+    }
+    const parsedQuery = operatorJobExportQuerySchema.safeParse(request.query);
+    if (!parsedQuery.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedQuery.error.issues[0]?.message ?? 'The request query is invalid.'
+        }
+      });
+    }
+    const job = await repository.getByIdIncludingHidden(request.params.id);
+    if (!job) {
+      return response.status(404).json(notFoundResponse(request.params.id));
+    }
+    if (!job.transcriptArtifact && !job.summaryArtifact) {
+      return response.status(409).json({
+        error: {
+          code: 'archive-export-unavailable',
+          message: 'This job does not have exportable transcript or summary data yet.'
+        }
+      });
+    }
+    return sendJobExport(job, parsedQuery.data, response);
+  });
+
+  // Playback of the original recording. Byte ranges are forwarded so the browser can
+  // seek straight to a transcript segment without downloading the file.
+  const streamRecordingMedia = async (
+    job: RecordingJob,
+    request: express.Request,
+    response: express.Response,
+    cacheControl = 'private, max-age=0'
+  ) => {
+    if (!job.recordingArtifact || !uploadedAudioStorage?.getObjectStream) {
+      return response.status(404).json({
+        error: {
+          code: 'recording-media-unavailable',
+          message: 'The recording for this job is not available for playback.'
+        }
+      });
     }
 
-    if (parsedQuery.data.format === 'txt') {
-      response.setHeader('Content-Disposition', `attachment; filename="${baseName}.txt"`);
-      response.type('text/plain; charset=utf-8');
-      return response.status(200).send(renderTextExport(job));
-    }
-
-    if (parsedQuery.data.format === 'srt') {
-      if (!job.transcriptArtifact?.segments.length) {
-        return response.status(409).json({
+    const range = typeof request.headers.range === 'string' ? request.headers.range : undefined;
+    let stream: Awaited<ReturnType<NonNullable<UploadedAudioStorage['getObjectStream']>>>;
+    try {
+      stream = await uploadedAudioStorage.getObjectStream(job.recordingArtifact.storageKey, range);
+    } catch (error) {
+      const name = error instanceof Error ? error.name : '';
+      if (name === 'InvalidRange') {
+        return response.status(416).end();
+      }
+      if (name === 'NoSuchKey' || name === 'NotFound') {
+        return response.status(404).json({
           error: {
-            code: 'archive-export-unavailable',
-            message: 'SRT export requires transcript segments.'
+            code: 'recording-media-unavailable',
+            message: 'The recording for this job is no longer stored.'
           }
         });
       }
-
-      response.setHeader('Content-Disposition', `attachment; filename="${baseName}.srt"`);
-      response.type('application/x-subrip; charset=utf-8');
-      return response.status(200).send(renderSrtExport(job));
+      throw error;
     }
 
-    response.setHeader('Content-Disposition', `attachment; filename="${baseName}.json"`);
-    response.type('application/json; charset=utf-8');
-    return response.status(200).send({
-      job: toApiRecordingJob(job),
-      summary: job.summaryArtifact ?? null,
-      transcript: job.transcriptArtifact ?? null
+    response.status(stream.contentRange ? 206 : 200);
+    response.setHeader('Accept-Ranges', 'bytes');
+    response.setHeader('Cache-Control', cacheControl);
+    response.setHeader(
+      'Content-Type',
+      stream.contentType || job.recordingArtifact.contentType || 'application/octet-stream'
+    );
+    if (stream.contentLength !== undefined) {
+      response.setHeader('Content-Length', String(stream.contentLength));
+    }
+    if (stream.contentRange) {
+      response.setHeader('Content-Range', stream.contentRange);
+    }
+    request.on('close', () => stream.body.destroy());
+    stream.body.on('error', () => response.destroy());
+    stream.body.pipe(response);
+  };
+
+  app.get('/api/shared-meeting/media', async (request, response) => {
+    const job = await resolveSharedMeetingJob(request, response);
+    if (!job) {
+      return;
+    }
+    return streamRecordingMedia(job, request, response, 'private, no-store');
+  });
+
+  // Speaker edits shared by the owner and admin routes: validates against the stored
+  // transcript, persists, and answers with the updated job (or an error response).
+  const applySpeakerEdits = async (
+    job: RecordingJob,
+    data: z.infer<typeof operatorSpeakerNamesSchema>,
+    response: express.Response
+  ) => {
+    const parsedRequest = { data };
+    const artifact = job.transcriptArtifact;
+    const segments = artifact?.segments ?? [];
+    const diarized = (index: number) =>
+      isDiarizedSpeakerSource(segments[index]?.speakerSource) && Boolean(segments[index].speaker);
+    if (!artifact || !segments.some((_segment, index) => diarized(index))) {
+      return response.status(409).json({
+        error: {
+          code: 'speaker-names-unavailable',
+          message: 'This transcript has no speaker labels to rename.'
+        }
+      });
+    }
+
+    const badIndex = Object.keys(parsedRequest.data.segmentSpeakers).find(
+      (key) => !diarized(Number(key))
+    );
+    if (badIndex !== undefined) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: `Segment ${badIndex} has no provider speaker to reassign.`
+        }
+      });
+    }
+
+    // A reassignment back to the provider's own label is just a cleared override.
+    const segmentSpeakers = Object.fromEntries(
+      Object.entries({ ...artifact.segmentSpeakers, ...parsedRequest.data.segmentSpeakers }).filter(
+        ([index, label]) => label !== segments[Number(index)]?.speaker?.trim()
+      )
+    );
+
+    // Labels that may carry a name: every provider label plus every reassigned label.
+    const knownLabels = new Set([
+      ...segments.filter((_segment, index) => diarized(index)).map((segment) => segment.speaker!.trim()),
+      ...Object.values(segmentSpeakers)
+    ]);
+    const unknownLabel = Object.keys(parsedRequest.data.speakerNames).find(
+      (label) => !knownLabels.has(label)
+    );
+    if (unknownLabel) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: `Unknown speaker label: ${unknownLabel}`
+        }
+      });
+    }
+
+    // Names are operator display metadata: the segments keep the provider label as
+    // evidence, and a blank or label-identical value simply drops the override.
+    const speakerNames = Object.fromEntries(
+      Object.entries({ ...artifact.speakerNames, ...parsedRequest.data.speakerNames }).filter(
+        ([label, name]) => name.length > 0 && name !== label && knownLabels.has(label)
+      )
+    );
+    const savedJob = await repository.save({
+      ...job,
+      transcriptArtifact: {
+        ...artifact,
+        speakerNames: Object.keys(speakerNames).length > 0 ? speakerNames : undefined,
+        segmentSpeakers: Object.keys(segmentSpeakers).length > 0 ? segmentSpeakers : undefined
+      }
     });
+    return response.status(200).json(toApiRecordingJob(savedJob));
+  };
+
+  app.get('/api/operator/jobs/:id/media', async (request, response) => {
+    const job = await resolveOwnedJob(
+      request,
+      response,
+      typeof request.query.submitterId === 'string' ? request.query.submitterId : undefined
+    );
+    if (!job) {
+      return;
+    }
+    return streamRecordingMedia(job, request, response);
+  });
+
+  app.put('/api/operator/jobs/:id/speakers', async (request, response) => {
+    const parsedRequest = operatorSpeakerNamesSchema.safeParse(request.body);
+    if (!parsedRequest.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedRequest.error.issues[0]?.message ?? 'The request payload is invalid.'
+        }
+      });
+    }
+
+    const job = await resolveOwnedJob(request, response, parsedRequest.data.submitterId);
+    if (!job) {
+      return;
+    }
+    return applySpeakerEdits(job, parsedRequest.data, response);
+  });
+
+  // Admin result page: the <audio> element cannot send the console session header, so
+  // this one route also accepts the same token as a query parameter.
+  app.get('/api/admin/jobs/:id/media', async (request, response) => {
+    const queryToken = typeof request.query.token === 'string' ? request.query.token : undefined;
+    const allowed =
+      (queryToken && adminConsoleAuth.verifyToken(queryToken)) ||
+      (await requireAdminOperator(request, response));
+    if (!allowed) {
+      return;
+    }
+    const job = await repository.getByIdIncludingHidden(request.params.id);
+    if (!job) {
+      return response.status(404).json(notFoundResponse(request.params.id));
+    }
+    return streamRecordingMedia(job, request, response);
+  });
+
+  app.put('/api/admin/jobs/:id/speakers', async (request, response) => {
+    if (!(await requireAdminOperator(request, response))) {
+      return;
+    }
+    const parsedRequest = operatorSpeakerNamesSchema.safeParse(request.body);
+    if (!parsedRequest.success) {
+      return response.status(400).json({
+        error: {
+          code: 'invalid-request',
+          message: parsedRequest.error.issues[0]?.message ?? 'The request payload is invalid.'
+        }
+      });
+    }
+    const job = await repository.getByIdIncludingHidden(request.params.id);
+    if (!job) {
+      return response.status(404).json(notFoundResponse(request.params.id));
+    }
+    return applySpeakerEdits(job, parsedRequest.data, response);
   });
 
   app.post('/api/operator/jobs/:id/share', async (request, response) => {
@@ -4718,8 +5093,12 @@ export const createApp = (
 
   app.use(express.static(publicDir));
 
+  // The owner note page IS the result page the admin console uses: one document,
+  // one stylesheet, one reader. The script inside distinguishes the two by path and
+  // authenticates the note with the operator's own identity.
   app.get('/notes/:id', (_request, response) => {
-    response.sendFile(resolve(publicDir, 'index.html'));
+    setSharedMeetingHeaders(response);
+    response.sendFile(resolve(publicDir, 'share.html'));
   });
 
   app.get('/admin', (_request, response) => {

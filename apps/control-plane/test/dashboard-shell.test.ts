@@ -355,15 +355,20 @@ describe('dashboard shell markup', () => {
       'utf-8'
     );
 
-    expect(javascript).toContain('class="transcript-reader"');
-    expect(javascript).toContain('完整逐字稿，可上下捲動');
-    expect(javascript).toContain('role="tablist"');
-    expect(javascript).toContain('data-artifact-tab="summary"');
-    expect(javascript).toContain('data-artifact-tab="transcript"');
-    expect(javascript).toContain('data-artifact-panel="summary"');
-    expect(javascript).toContain('data-artifact-panel="transcript"');
-    expect(javascript).toContain('保留時間與逐字內容');
-    expect(transcriptRenderer).not.toContain('transcript-speaker');
+    // The reader markup is shared with the admin result page, so it lives in
+    // artifact-reader.js; the dashboard only mounts it.
+    expect(javascript).toContain('renderArtifactReader(job');
+    expect(transcriptRenderer).toContain('class="transcript-reader"');
+    expect(transcriptRenderer).toContain('完整逐字稿，可上下捲動');
+    expect(transcriptRenderer).toContain('role="tablist"');
+    expect(transcriptRenderer).toContain('data-artifact-tab="summary"');
+    expect(transcriptRenderer).toContain('data-artifact-tab="transcript"');
+    expect(transcriptRenderer).toContain('data-artifact-panel="summary"');
+    expect(transcriptRenderer).toContain('data-artifact-panel="transcript"');
+    expect(transcriptRenderer).toContain('保留時間與逐字內容');
+    // Speakers render only for provider-diarized segments; legacy artifacts stay
+    // speaker-free, so the renderer must gate on speakerSource rather than presence.
+    expect(transcriptRenderer).toContain("speakerSource !== 'provider-diarization'");
     expect(transcriptRenderer).toContain("['ArrowLeft', 'ArrowRight', 'Home', 'End']");
     expect(javascript).not.toContain('data-action="view-details"');
     expect(javascript).not.toContain('fetchJobDetails');
@@ -409,7 +414,9 @@ describe('dashboard shell markup', () => {
       'utf-8'
     );
 
-    expect(javascript).toContain('renderStructuredSummaryMarkup');
+    // The dashboard mounts the shared reader, which renders the structured summary.
+    expect(javascript).toContain('renderArtifactReader(job');
+    expect(artifactReader).toContain('renderStructuredSummaryMarkup(');
     expect(artifactReader).toContain('summary-topic-card');
     expect(artifactReader).toContain("confirmed: '已確認'");
     expect(artifactReader).toContain("mixed: '部分確認'");
@@ -420,7 +427,9 @@ describe('dashboard shell markup', () => {
       "{ key: 'analysis', title: 'AI 分析', items: structured.analysisNotes }"
     );
     expect(artifactReader).toContain('class="summary-toc" aria-label="摘要目錄"');
-    expect(javascript).toContain('configureSummaryNavigation(card)');
+    // Summary navigation is configured by the shared reader wiring.
+    expect(javascript).toContain('wireArtifactReader(card, job');
+    expect(artifactReader).toContain('configureSummaryNavigation(card)');
     expect(artifactReader).toContain('.filter((section) => section.items.length)');
     expect(artifactReader).toContain('sanitizeAnonymousSpeakerLabels');
     expect(artifactReader).not.toContain('<p>目前沒有。</p>');

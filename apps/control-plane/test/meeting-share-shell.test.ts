@@ -8,6 +8,35 @@ import { createApp } from '../src/app.js';
 const readPublicFile = (name: string) =>
   readFileSync(resolve(import.meta.dirname, `../public/${name}`), 'utf-8');
 
+describe('owner note page', () => {
+  it('is the same document the admin result uses, differing only in the back action', () => {
+    const application = readFileSync(
+      resolve(import.meta.dirname, '../src/app.ts'),
+      'utf-8'
+    );
+    const javascript = readFileSync(
+      resolve(import.meta.dirname, '../public/share.js'),
+      'utf-8'
+    );
+
+    // One page serves both result views.
+    expect(application).toMatch(/app.get\('\/notes\/:id'[\s\S]{0,220}share\.html/);
+    // The note authenticates with the operator's own identity, never the admin session.
+    expect(javascript).toContain("window.localStorage.getItem('solomon-notetaker-operator-id')");
+    expect(javascript).toContain('/api/operator/jobs/');
+    expect(javascript).toContain('submitterId=${encodeURIComponent(operatorId)}');
+    // The only visible difference is where "back" goes.
+    expect(javascript).toContain("adminJobId ? '回後台' : '回工作台'");
+    // A note whose job is still running says so instead of failing silently.
+    expect(javascript).toContain('這場會議還在處理中');
+    expect(readPublicFile('share.html')).toContain('share-publish-button');
+    expect(javascript).toContain('發布並複製分享網址');
+    expect(javascript).toContain("'/api/operator/jobs/' + encodeURIComponent(ownerJobId) + '/share'");
+    expect(readPublicFile('share.html')).toContain('aria-label="複製分享網址"');
+    expect(javascript).toContain('copyShareButton?.addEventListener');
+  });
+});
+
 describe('meeting detail and public share shells', () => {
   it('opens every archive item in a dedicated owner tab and provides share lifecycle actions', () => {
     const javascript = readPublicFile('app.js');
@@ -41,8 +70,10 @@ describe('meeting detail and public share shells', () => {
     const app = createApp(undefined, { meetingShareSecret: 'test-share-secret' });
 
     expect(html).toContain('id="shared-meeting-content"');
-    expect(html).toContain('id="shared-summary"');
-    expect(html).toContain('id="shared-transcript"');
+    expect(html).toContain('id="shared-reader"');
+    expect(html).toContain('id="copy-shared-meeting"');
+    expect(html).not.toContain('id="shared-summary"');
+    expect(html).not.toContain('id="shared-transcript"');
     expect(html).toContain('class="shared-meeting-shell" tabindex="-1"');
     expect(html).toContain('class="shared-meeting-heading"');
     expect(html).toContain('<link rel="modulepreload" href="/share.js" />');
@@ -55,9 +86,14 @@ describe('meeting detail and public share shells', () => {
     expect(html).not.toContain('編輯');
     expect(javascript).toContain('window.location.hash.slice(1)');
     expect(javascript).toContain("Authorization: `Bearer ${token}`");
-    expect(javascript).toContain("renderStructuredSummaryMarkup");
-    expect(javascript).toContain("configureSummaryNavigation(summaryContent)");
-    expect(javascript).toContain("renderTranscriptMarkup");
+    expect(javascript).toContain("renderArtifactReader");
+    expect(javascript).toContain("wireArtifactReader(readerSection, readerJob, {");
+    expect(javascript).toContain("readerId: 'shared'");
+    expect(javascript).toContain('playable: meeting.recordingAvailable === true');
+    expect(javascript).toContain('exportable: true');
+    expect(javascript).toContain("'/api/shared-meeting/media'");
+    expect(javascript).toContain("`/api/shared-meeting/export?part=${encodeURIComponent(part)}`");
+    expect(javascript).toContain('複製分享網址');
     expect(javascript).toContain("split('::', 2)");
     expect(javascript).toContain('token === activeToken');
     expect(javascript).toContain('encodeURIComponent(activeToken)');
@@ -79,6 +115,7 @@ describe('meeting detail and public share shells', () => {
       expect(response.headers['referrer-policy']).toBe('no-referrer');
       expect(response.headers['x-robots-tag']).toContain('noindex');
       expect(response.headers['content-security-policy']).toContain("default-src 'self'");
+      expect(response.headers['content-security-policy']).toContain("media-src 'self' blob:");
       expect(response.text).not.toContain('fonts.googleapis.com');
     }
   });
@@ -99,7 +136,10 @@ describe('meeting detail and public share shells', () => {
     expect(css).not.toContain('--bg: #000000;');
     expect(css).toContain('.meeting-detail-page');
     expect(css).toContain('.shared-meeting-page');
-    expect(css).toContain('.meeting-detail-page .artifact-reader');
+    // Both detail pages style the reader through ONE shared class, so the owner
+    // note page and the admin result page cannot drift apart again.
+    expect(css).toContain('.artifact-reader.artifact-reader--split');
+    expect(css).not.toContain('.meeting-detail-page .artifact-reader ');
     expect(css).toContain('.summary-toc-disclosure > ol');
     expect(css).toContain('max-width: 75ch;');
     expect(css).toContain('@media print');

@@ -895,6 +895,125 @@ summary {
   display: none;
 }
 
+/* Detail pages read the summary as one article: no table-of-contents block. */
+.artifact-reader.artifact-reader--split .summary-toc {
+  display: none;
+}
+
+/* Detail pages (owner /notes and admin result) use the whole viewport on wide
+   screens: transcript on the left, summary on the right, both visible at once.
+   The tabs only exist for narrow screens. Colors are untouched; only layout. */
+@media (min-width: 1280px) {
+  .artifact-reader.artifact-reader--split {
+    display: grid;
+    grid-template-columns: minmax(0, 11fr) minmax(0, 9fr);
+    gap: 0 clamp(1.5rem, 3vw, 3rem);
+    align-items: start;
+    border: 0;
+    overflow: visible;
+  }
+
+  /* The page shells were sized for one reading column; two columns use the whole
+     viewport with only a thin gutter. */
+  .meeting-detail-page .shell,
+  .shared-meeting-page .shared-meeting-shell:has(.shared-reader:not([hidden])) {
+    width: auto;
+    max-width: none;
+    margin: 0;
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+
+  .shared-meeting-page .shared-reader,
+  .artifact-reader.artifact-reader--split > .artifact-panel {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .artifact-reader.artifact-reader--split > .artifact-tablist {
+    display: none;
+  }
+
+  .artifact-reader.artifact-reader--split > [data-artifact-panel="transcript"] {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .artifact-reader.artifact-reader--split > [data-artifact-panel="summary"] {
+    grid-column: 2;
+    grid-row: 1;
+    position: sticky;
+    top: 1rem;
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 0.5rem;
+  }
+
+  /* Each column already bounds its line length, so the inner 76rem caps only
+     shrink the content further; let the columns own the width. */
+  .artifact-reader.artifact-reader--split .artifact-panel-heading,
+  .artifact-reader.artifact-reader--split .transcript-reader,
+  .artifact-reader.artifact-reader--split .transcript-audio,
+  .artifact-reader.artifact-reader--split .artifact-panel-tools,
+  .artifact-reader.artifact-reader--split .transcript-filter,
+  .artifact-reader.artifact-reader--split .transcript-filter-status,
+  .artifact-reader.artifact-reader--split .transcript-audio-unavailable {
+    max-width: none;
+  }
+
+  .artifact-reader.artifact-reader--split .transcript-reader {
+    max-height: calc(100vh - 12rem);
+  }
+
+  .artifact-reader.artifact-reader--split .transcript-segment-text {
+    max-width: none;
+  }
+
+  /* Conversation rows: speaker, time, play and reassign on one line above the
+     text, instead of a tall stacked side column. */
+  .artifact-reader.artifact-reader--split .transcript-turn {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.45rem;
+    padding: 0.85rem 0;
+  }
+
+  .artifact-reader.artifact-reader--split .transcript-turn > .transcript-segment-context {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+  }
+
+  .artifact-reader.artifact-reader--split .transcript-turn .transcript-play {
+    width: 36px;
+    height: 36px;
+  }
+
+
+  /* Same header height in both columns, so the content below starts level. */
+  .artifact-reader.artifact-reader--split > .artifact-panel {
+    padding-top: 0;
+  }
+
+  .artifact-reader.artifact-reader--split .artifact-panel-heading {
+    min-height: 5.5rem;
+    margin-bottom: 1.25rem;
+  }
+
+  /* The summary keeps its table of contents, but stacked above the text: a
+     side-by-side TOC does not fit next to the transcript column. */
+  .artifact-reader.artifact-reader--split .summary-reader-layout {
+    display: block;
+    max-width: none;
+  }
+
+  .artifact-reader.artifact-reader--split .summary-toc {
+    position: static;
+    margin-bottom: 1.25rem;
+  }
+}
+
 .artifact-panel-heading {
   display: flex;
   align-items: flex-end;
@@ -913,27 +1032,32 @@ summary {
   color: var(--text);
 }
 
-.artifact-panel-heading > p {
-  max-width: 30rem;
+.artifact-panel-heading h2 {
   margin: 0;
+  font-size: clamp(1.35rem, 2.5vw, 1.9rem);
+  line-height: 1.35;
+  color: var(--text);
+}
+
+/* Note under the title; the download button takes the right side of the row. */
+.artifact-panel-heading > div > p {
+  max-width: 34rem;
+  margin: 0.35rem 0 0;
   color: var(--muted);
   font-size: 0.82rem;
   line-height: 1.65;
-  text-align: right;
 }
 
-[data-artifact-panel="summary"] > .artifact-panel-heading {
-  display: grid;
-  grid-template-columns: minmax(0, 72ch) minmax(15rem, 18rem);
-  gap: clamp(2rem, 4vw, 4rem);
-  justify-content: center;
-  max-width: 82rem;
-}
-
-[data-artifact-panel="summary"] > .artifact-panel-heading > p {
+.artifact-panel-heading > .artifact-panel-tools {
+  flex: 0 0 auto;
   max-width: none;
-  padding-left: 1.9rem;
-  text-align: left;
+  margin: 0;
+}
+
+/* Icon-only "copy all" next to the download; same height, square. */
+.artifact-copy {
+  width: 44px;
+  padding: 0;
 }
 
 .transcript-reader {
@@ -981,6 +1105,227 @@ summary {
   font-family: 'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace;
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
+}
+
+/* Speaker chip: the name is the identifier; the tone only helps the eye track one
+   voice down the page, so it stays inside the monochrome theme and never carries
+   meaning on its own. */
+.transcript-speaker {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.5rem;
+  max-width: 100%;
+  padding: 0.1rem 0.55rem;
+  border: 1px solid var(--speaker-border, #3a3a3a);
+  border-radius: 999px;
+  background: var(--speaker-bg, var(--panel-raised));
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.transcript-speaker[data-speaker-tone="1"] { --speaker-bg: #2a2a2a; --speaker-border: #4a4a4a; }
+.transcript-speaker[data-speaker-tone="2"] { --speaker-bg: #1c1c1c; --speaker-border: #5c5c5c; }
+.transcript-speaker[data-speaker-tone="3"] { --speaker-bg: #343434; --speaker-border: #343434; }
+.transcript-speaker[data-speaker-tone="4"] { --speaker-bg: #161616; --speaker-border: #6e6e6e; }
+.transcript-speaker[data-speaker-tone="5"] { --speaker-bg: #3e3e3e; --speaker-border: #262626; }
+.transcript-speaker[data-speaker-tone="6"] { --speaker-bg: #202020; --speaker-border: #8a8a8a; }
+
+/* Speaker filter: chips wrap onto as many rows as they need — clipping them would
+   hide the very voice someone is looking for — and each label stays on one line so
+   a name never breaks in half. The pressed chip inverts rather than just changing
+   hue, so the selection survives a monochrome or colour-blind reading. */
+.transcript-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  max-width: 76rem;
+  margin: 0 auto 0.6rem;
+}
+
+.transcript-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 44px;
+  min-width: 0;
+  padding: 0.4rem 0.85rem;
+  border: 1px solid var(--speaker-border, var(--panel-border));
+  border-radius: 999px;
+  background: var(--speaker-bg, var(--panel));
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.transcript-filter-chip[data-speaker-tone="1"] { --speaker-bg: #2a2a2a; --speaker-border: #4a4a4a; }
+.transcript-filter-chip[data-speaker-tone="2"] { --speaker-bg: #1c1c1c; --speaker-border: #5c5c5c; }
+.transcript-filter-chip[data-speaker-tone="3"] { --speaker-bg: #343434; --speaker-border: #343434; }
+.transcript-filter-chip[data-speaker-tone="4"] { --speaker-bg: #161616; --speaker-border: #6e6e6e; }
+.transcript-filter-chip[data-speaker-tone="5"] { --speaker-bg: #3e3e3e; --speaker-border: #262626; }
+.transcript-filter-chip[data-speaker-tone="6"] { --speaker-bg: #202020; --speaker-border: #8a8a8a; }
+
+/* The label stays on one line. It is allowed a generous width before the ellipsis so
+   a real name is not cut off; the full value is on the button's title and accessible
+   name, and the same name is spelled out on every turn in the transcript below. */
+.transcript-filter-name {
+  min-width: 0;
+  max-width: 18rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.transcript-filter-count {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.transcript-filter-chip:hover {
+  border-color: #6d5dfc;
+}
+
+.transcript-filter-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.transcript-filter-chip.is-active {
+  border-color: var(--text);
+  background: var(--text);
+  color: #0b0b0b;
+  font-weight: 700;
+}
+
+.transcript-filter-chip.is-active .transcript-filter-count {
+  color: #3a3a3a;
+}
+
+.transcript-filter-status {
+  max-width: 76rem;
+  margin: 0 auto 0.9rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.6;
+}
+
+.transcript-turn .transcript-segment-text + .transcript-segment-text {
+  margin-top: 0.45rem;
+}
+
+/* Per-segment playback. The native player sits above the reader; each row's button
+   seeks into it. 44px keeps the target usable on touch inside the narrow context
+   column. */
+.transcript-audio {
+  display: block;
+  width: 100%;
+  max-width: 76rem;
+  margin: 0 auto 1rem;
+  border-radius: 999px;
+  background: var(--panel-strong);
+}
+
+.artifact-panel-tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  max-width: 76rem;
+  margin: 0 auto 0.75rem;
+}
+
+.transcript-audio-unavailable {
+  max-width: 76rem;
+  margin: 0 auto 1rem;
+  padding: 0.6rem 0.9rem;
+  border: 1px dashed var(--panel-border);
+  border-radius: 0.7rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.transcript-play:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.transcript-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+
+.transcript-play:hover {
+  border-color: var(--accent);
+  background: var(--panel-strong);
+}
+
+.transcript-play:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+
+.transcript-play[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.transcript-segment.is-playing {
+  background: linear-gradient(to right, var(--panel-strong), transparent 60%);
+}
+
+
+/* Click-to-rename chips (owner/admin pages). The chip becomes this input in place. */
+.transcript-speaker--editable {
+  cursor: text;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-decoration: underline dotted transparent;
+  text-underline-offset: 0.2em;
+  transition: text-decoration-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+
+.transcript-speaker--editable:hover,
+.transcript-speaker--editable:focus-visible {
+  border-color: var(--accent);
+  text-decoration-color: var(--muted);
+}
+
+.transcript-speaker--editable:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+
+.transcript-speaker-input {
+  width: 10rem;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 600;
 }
 
 .transcript-segment-body {
@@ -1489,6 +1834,34 @@ summary {
   margin-bottom: 0.9rem;
 }
 
+/* 各模型用量:精簡小卡,只作參考,不佔版面(不影響執行狀態卡片) */
+#admin-usage-history-by-model {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr));
+  gap: 0.5rem;
+}
+
+#admin-usage-history-by-model .runtime-health-card {
+  gap: 0.1rem;
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.6rem;
+}
+
+#admin-usage-history-by-model .meta-label {
+  margin-bottom: 0;
+  font-size: 0.75rem;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+#admin-usage-history-by-model strong {
+  font-size: 0.92rem;
+}
+
+#admin-usage-history-by-model small {
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
 .usage-history-table-wrap {
   width: 100%;
   max-height: 520px;
@@ -1506,13 +1879,21 @@ summary {
 }
 
 .usage-history-table th:nth-child(1) { width: 13%; }
-.usage-history-table th:nth-child(2) { width: 22%; }
+.usage-history-table th:nth-child(2) { width: 28%; }
 .usage-history-table th:nth-child(3) { width: 17%; }
 .usage-history-table th:nth-child(4) { width: 22%; }
-.usage-history-table th:nth-child(5) { width: 26%; }
+.usage-history-table th:nth-child(5) { width: 20%; }
 
 .usage-history-table td {
   overflow-wrap: anywhere;
+}
+
+.usage-history-job-id {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-family: 'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
 }
 
 
@@ -2000,8 +2381,14 @@ summary:focus-visible {
   box-shadow: none;
 }
 
+/* The reader must have no clipping ancestor on this page. `.job-card` is normally
+   `overflow: hidden`, which would make it the scrollport for the sticky summary
+   column: the summary would then scroll away with the card instead of staying in
+   view, leaving the split layout showing one column. The admin result page has no
+   card, so leaving this out made the two pages read differently. */
 .meeting-detail-page .queue-panel,
-.meeting-detail-page .artifact-reader {
+.meeting-detail-page .job-card,
+.artifact-reader.artifact-reader--split {
   overflow: visible;
 }
 
@@ -2092,6 +2479,26 @@ summary:focus-visible {
 .shared-transcript-reader {
   max-width: 75ch;
   margin: 0 auto;
+}
+
+/* Admin result page hosts the full owner reader; the notice replaces the dashboard banner. */
+.shared-reader {
+  padding: 0;
+}
+
+.shared-meeting-notice {
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 0.7rem;
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.shared-meeting-notice[data-kind="error"] {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .shared-summary-overview {
@@ -2643,6 +3050,19 @@ select,
   width: min(1160px, calc(100vw - 3rem));
 }
 
+/* One reading column is capped above for comfort, but the split layout puts two
+   columns side by side and needs the viewport. This has to sit after that cap:
+   both selectors weigh the same, so the later rule is the one that applies. */
+@media (min-width: 1280px) {
+  .meeting-detail-page .shell {
+    width: auto;
+    max-width: none;
+    margin: 0;
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+}
+
 .meeting-detail-page .dashboard-topbar {
   min-height: 10rem;
 }
@@ -2656,7 +3076,7 @@ select,
   display: none;
 }
 
-.meeting-detail-page .artifact-reader {
+.artifact-reader.artifact-reader--split {
   margin-top: 1.5rem;
 }
 
@@ -3990,4 +4410,76 @@ body,
     background: #ffffff;
     box-shadow: none;
   }
+}
+
+/* Detail pages get a flat top bar instead of the tall hero header: one row with the
+   mark, the title and its meta, and the actions. Colors stay on the theme tokens. */
+.shared-meeting-page:has(.shared-reader:not([hidden])) .shared-meeting-header {
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 0.9rem;
+  background: var(--panel);
+  box-shadow: none;
+  animation: none;
+}
+
+.shared-meeting-page:has(.shared-reader:not([hidden])) .shared-meeting-heading {
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.shared-meeting-page:has(.shared-reader:not([hidden])) .shared-meeting-heading > div {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+  min-width: 0;
+}
+
+.shared-meeting-page:has(.shared-reader:not([hidden])) .shared-meeting-header .brand-mark {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.6rem;
+}
+
+.shared-meeting-page:has(.shared-reader:not([hidden])) .shared-meeting-header .brand-mark svg {
+  width: 1rem;
+}
+
+.shared-meeting-page:has(.shared-reader:not([hidden])) .brand-name {
+  display: none;
+}
+
+.shared-meeting-page:has(.shared-reader:not([hidden])) #shared-title {
+  max-width: none;
+  margin: 0;
+  font-size: 1.15rem;
+  line-height: 1.3;
+  text-wrap: nowrap;
+  overflow-wrap: normal;
+}
+
+.shared-meeting-page:has(.shared-reader:not([hidden])) .shared-meeting-meta {
+  margin: 0;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.shared-meeting-page:has(.shared-reader:not([hidden])) .shared-reader {
+  margin-top: 0.75rem;
+}
+
+.meeting-detail-page .dashboard-topbar {
+  min-height: auto;
+  padding: 0.6rem 1rem;
+}
+
+.meeting-detail-page .dashboard-topbar h1 {
+  font-size: 1.15rem;
+  line-height: 1.3;
 }

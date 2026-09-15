@@ -43,8 +43,25 @@ class ReadTranscriptionWorkerConfigTests(unittest.TestCase):
                 "azure_speech_mai_api_key": None,
                 "azure_speech_mai_api_version": "2025-10-15",
                 "azure_speech_mai_timeout_seconds": 300,
+                "diarization_model": "pyannote-community/speaker-diarization-community-1",
+                "diarization_device": "auto",
+                "diarization_embedding_model": "/models/speaker-embedding.onnx",
             },
         )
+
+    def test_empty_diarization_model_disables_local_diarization(self) -> None:
+        config = read_transcription_worker_config(
+            {
+                "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+                "WORKER_ID": "transcriber-alpha",
+                "WHISPER_MODEL": "small",
+                "DIARIZATION_MODEL": "",
+                "DIARIZATION_DEVICE": "cpu",
+            }
+        )
+
+        self.assertIsNone(config["diarization_model"])
+        self.assertEqual(config["diarization_device"], "cpu")
 
     def test_reads_optional_azure_openai_transcription_config(self) -> None:
         config = read_transcription_worker_config(
@@ -232,6 +249,7 @@ class ReadSummaryWorkerConfigTests(unittest.TestCase):
                 "azure_openai_summary_endpoint": None,
                 "azure_openai_summary_api_key": None,
                 "azure_openai_summary_timeout_seconds": 900,
+                "codex_fallback_model": None,
             },
         )
 
@@ -265,6 +283,21 @@ class ReadSummaryWorkerConfigTests(unittest.TestCase):
             }
         )
         self.assertEqual(config["azure_openai_summary_timeout_seconds"], 45)
+
+    def test_reads_the_codex_fallback_model(self) -> None:
+        base = {
+            "CONTROL_PLANE_BASE_URL": "http://127.0.0.1:3000",
+            "CODEX_PTY_API_TOKEN": "test-only-token",
+            "CODEX_PTY_API_URL": "http://codex-pty-agent:3001/api/prompt",
+            "WORKER_ID": "summarizer-alpha",
+        }
+        self.assertIsNone(read_summary_worker_config(base)["codex_fallback_model"])
+        self.assertEqual(
+            read_summary_worker_config({**base, "CODEX_FALLBACK_MODEL": " gpt-5.6-luna@azure "})[
+                "codex_fallback_model"
+            ],
+            "gpt-5.6-luna@azure",
+        )
 
 
 if __name__ == "__main__":

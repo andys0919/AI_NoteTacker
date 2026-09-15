@@ -85,9 +85,16 @@ export type TranscriptReviewFlag = {
 };
 
 export type TranscriptArtifact = RecordingArtifact & {
-  schemaVersion?: 2;
+  schemaVersion?: 2 | 3;
   language: string;
   segments: TranscriptSegment[];
+  // Operator-chosen display names keyed by the provider label ("Speaker 1"). The
+  // segments keep the provider label as evidence; names are applied when rendering.
+  speakerNames?: Record<string, string>;
+  // Operator reassignment of single segments (keyed by index in `segments`) to another
+  // label, for lines the diarizer attributed to the wrong voice. The label may be one
+  // the provider never emitted ("Speaker 11") when the operator adds a new person.
+  segmentSpeakers?: Record<string, string>;
   speakerAttribution?: {
     provider: 'azure-openai';
     model: string;

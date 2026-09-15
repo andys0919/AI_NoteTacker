@@ -294,16 +294,32 @@ def read_codex_weekly_usage(
     return codex_weekly_usage_from_rate_limits(payload, checked_at=checked_at)
 
 
+class CodexNoAnswerError(RuntimeError):
+    """The Codex PTY ran but produced no assistant text (out of credits, at capacity, ...)."""
+
+
+# The shared Codex runtime answers HTTP 200 with a terminal dump instead of
+# assistant text when Codex never replied; both phrasings come from pty-session.ts.
+_NO_ANSWER_MARKERS = (
+    "PTY 回合未擷取到結構化回應",
+    "PTY route ran but no structured response was captured",
+)
+
+
 def _request_codex_pty(
     *,
     api_url: str,
     api_token: str,
     prompt: str,
     timeout_seconds: int | float,
+    model_override: str | None = None,
 ) -> str:
+    body_dict: dict[str, str] = {"prompt": prompt}
+    if model_override:
+        body_dict["modelOverride"] = model_override
     request = Request(
         api_url,
-        data=json.dumps({"prompt": prompt}).encode("utf-8"),
+        data=json.dumps(body_dict).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json",
@@ -342,6 +358,7 @@ class CodexTranscriptSummarizer:
         api_token: str,
         timeout_seconds: int = 900,
         requester=None,
+        fallback_model: str | None = None,
     ) -> None:
         self._model = model
         self._reasoning_effort = reasoning_effort
@@ -349,6 +366,9 @@ class CodexTranscriptSummarizer:
         self._api_token = api_token
         self._timeout_seconds = timeout_seconds
         self._requester = requester or _request_codex_pty
+        # e.g. "gpt-5.6-luna@azure": same Codex PTY, other model provider, used
+        # only after Codex itself gave no answer.
+        self.fallback_model = fallback_model or None
 
     def summarize(
         self,
@@ -356,10 +376,16 @@ class CodexTranscriptSummarizer:
         summary_profile: str = "general",
         model_override: str | None = None,
         on_provider_request=None,
+        use_fallback_model: bool = False,
     ) -> dict[str, Any]:
         prompt = build_summary_prompt(transcript_result, summary_profile=summary_profile)
         model = self._model
         request_id = uuid.uuid4().hex
+        request_kwargs: dict[str, Any] = {}
+        if use_fallback_model:
+            if not self.fallback_model:
+                raise RuntimeError("codex fallback model is not configured")
+            request_kwargs["model_override"] = self.fallback_model
         if on_provider_request is not None:
             on_provider_request(
                 {
@@ -376,7 +402,11 @@ class CodexTranscriptSummarizer:
                 api_token=self._api_token,
                 prompt=prompt,
                 timeout_seconds=self._timeout_seconds,
+                **request_kwargs,
             )
+            if any(marker in summary_text for marker in _NO_ANSWER_MARKERS):
+                detail = " ".join(summary_text.split())[:160]
+                raise CodexNoAnswerError(f"codex gave no answer: {detail}")
         except Exception as error:
             if on_provider_request is not None:
                 on_provider_request(

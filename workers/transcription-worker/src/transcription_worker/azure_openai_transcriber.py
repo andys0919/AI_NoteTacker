@@ -74,6 +74,9 @@ class AzureOpenAiTranscriber:
         timeout_seconds: int = 300,
         normalizer=None,
         max_chunk_duration_ms: int = DEFAULT_MAX_CHUNK_DURATION_MS,
+        chunk_overlap_ms: int = 0,
+        max_upload_bytes: int = MAX_AUDIO_UPLOAD_BYTES,
+        chunk_audio_format: str = "mp3",
         independent_chunk_max_workers: int = 1,
         provider_label: str = "Azure OpenAI",
         provider: str = "azure-openai-gpt-4o-transcribe",
@@ -94,6 +97,12 @@ class AzureOpenAiTranscriber:
         self.timeout_seconds = timeout_seconds
         self.normalizer = normalizer or TranscriptNormalizer()
         self.max_chunk_duration_ms = max(1, max_chunk_duration_ms)
+        # Speaker ids are scoped to one provider request, so chunked diarization needs
+        # a shared window to link them across the seam. Zero keeps the historical
+        # non-overlapping plan for every provider that returns no speaker.
+        self.chunk_overlap_ms = max(0, min(chunk_overlap_ms, self.max_chunk_duration_ms - 1))
+        self.max_upload_bytes = max(1, max_upload_bytes)
+        self.chunk_audio_format = chunk_audio_format
         self.independent_chunk_max_workers = max(1, independent_chunk_max_workers)
         self.provider_label = provider_label
         self.provider = provider
@@ -108,8 +117,8 @@ class AzureOpenAiTranscriber:
     ) -> dict:
         resolved_context = resolve_transcription_context(workflow_context)
         upload_plan = self.upload_plan_builder(local_audio_path)
-        total_ms = upload_plan[-1]["end_ms"] if upload_plan else 0
-        collected_segments = []
+        total_ms = max((part["end_ms"] for part in upload_plan), default=0)
+        part_segment_groups: list[list[dict]] = []
         detected_language = "unknown"
         successful_audio_ms = 0
         billed_audio_ms = 0
@@ -158,7 +167,7 @@ class AzureOpenAiTranscriber:
                     if part_result.get("language") and detected_language == "unknown":
                         detected_language = part_result["language"]
 
-                    collected_segments.extend(part_result["segments"])
+                    part_segment_groups.append(part_result["segments"])
                     previous_transcript = (
                         f"{previous_transcript} {part_result['text']}".strip()[
                             -PREVIOUS_TRANSCRIPT_CONTEXT_CHARS:
@@ -234,7 +243,7 @@ class AzureOpenAiTranscriber:
                 for part_result in part_results:
                     if part_result.get("language") and detected_language == "unknown":
                         detected_language = part_result["language"]
-                    collected_segments.extend(part_result["segments"])
+                    part_segment_groups.append(part_result["segments"])
         finally:
             for part in upload_plan:
                 if part.get("cleanup"):
@@ -242,6 +251,8 @@ class AzureOpenAiTranscriber:
                         self.remove_file(part["path"])
                     except OSError:
                         pass
+
+        collected_segments = self._merge_part_segments(part_segment_groups)
 
         usage = {"audio_ms": successful_audio_ms}
         if has_billed_audio_ms:
@@ -277,6 +288,7 @@ class AzureOpenAiTranscriber:
                     request_prompt=prompt,
                     on_provider_request=on_provider_request,
                     request_usage=request_usage,
+                    workflow_context=workflow_context,
                 )
             except TranscriptionUsageError as error:
                 if on_transcription_usage is not None:
@@ -388,7 +400,12 @@ class AzureOpenAiTranscriber:
                     glossary=context.get("glossary", []),
                 )
                 segments.append(
-                    self._build_evidence_segment(start_ms, end_ms, normalized)
+                    self._build_evidence_segment(
+                        start_ms,
+                        end_ms,
+                        normalized,
+                        speaker=segment.get("speaker"),
+                    )
                 )
             return {
                 "language": language,
@@ -419,7 +436,139 @@ class AzureOpenAiTranscriber:
             "text": text,
         }
 
-    def _build_evidence_segment(self, start_ms: int, end_ms: int, normalized: dict) -> dict:
+    def _merge_part_segments(self, groups: list[list[dict]]) -> list[dict]:
+        """Join per-chunk segments into one transcript.
+
+        Without overlap this is a plain concatenation. With overlap it drops the
+        duplicated half of each shared window and, when the provider returned
+        request-scoped speaker ids, links those ids across the seam so one person
+        keeps one label for the whole recording.
+        """
+        if not groups:
+            return []
+        if self.chunk_overlap_ms <= 0 or len(groups) == 1:
+            merged = [segment for group in groups for segment in group]
+            return self._apply_speaker_labels(merged, {})
+
+        labels: dict[tuple[int, int], int] = {}
+        next_label = 0
+        for index in {segment["speaker_index"] for segment in groups[0] if "speaker_index" in segment}:
+            labels[(0, index)] = index
+            next_label = max(next_label, index + 1)
+
+        for position in range(1, len(groups)):
+            previous, current = groups[position - 1], groups[position]
+            overlap_start = min((s["start_ms"] for s in current), default=0)
+            overlap_end = max((s["end_ms"] for s in previous), default=0)
+            votes: dict[tuple[int, int], int] = {}
+            for segment in current:
+                if "speaker_index" not in segment or segment["start_ms"] >= overlap_end:
+                    continue
+                for other in previous:
+                    if "speaker_index" not in other or other["end_ms"] <= overlap_start:
+                        continue
+                    shared = min(segment["end_ms"], other["end_ms"]) - max(
+                        segment["start_ms"], other["start_ms"]
+                    )
+                    if shared > 0:
+                        key = (segment["speaker_index"], other["speaker_index"])
+                        votes[key] = votes.get(key, 0) + shared
+
+            matched_current: set[int] = set()
+            matched_previous: set[int] = set()
+            for (current_index, previous_index), _shared in sorted(
+                votes.items(), key=lambda item: (-item[1], item[0])
+            ):
+                if current_index in matched_current or previous_index in matched_previous:
+                    continue
+                labels[(position, current_index)] = labels.get(
+                    (position - 1, previous_index), previous_index
+                )
+                matched_current.add(current_index)
+                matched_previous.add(previous_index)
+
+            for index in sorted(
+                {s["speaker_index"] for s in current if "speaker_index" in s}
+            ):
+                if index in matched_current:
+                    continue
+                # ponytail: a speaker silent through the whole overlap cannot be linked
+                # by time alone and becomes a new label. Voice-embedding matching is the
+                # upgrade path if operators report too many labels on long recordings.
+                labels[(position, index)] = next_label
+                next_label += 1
+            next_label = max(next_label, max(labels.values(), default=-1) + 1)
+
+        # Split each shared window down its actual middle so every span is kept once.
+        # Deriving the cut from the returned times (not the configured overlap) keeps
+        # a plan whose parts do not really overlap as a plain concatenation.
+        boundaries: list[int | None] = []
+        for position in range(len(groups) - 1):
+            previous_end = max((s["end_ms"] for s in groups[position]), default=0)
+            next_start = min((s["start_ms"] for s in groups[position + 1]), default=0)
+            boundaries.append(
+                (next_start + previous_end) // 2 if next_start < previous_end else next_start
+            )
+        boundaries.append(None)
+
+        merged: list[dict] = []
+        for position, group in enumerate(groups):
+            lower = boundaries[position - 1] if position > 0 else None
+            upper = boundaries[position]
+            kept = [
+                segment
+                for segment in group
+                if (lower is None or segment["start_ms"] >= lower)
+                and (upper is None or segment["start_ms"] < upper)
+            ]
+            # Trimming only ever removes the duplicated overlap; a chunk that would lose
+            # everything has broken timings, and losing 25 minutes of speech is far
+            # worse than a few duplicated lines.
+            if not kept and group:
+                kept = list(group)
+            merged.extend({**segment, "_part": position} for segment in kept)
+        merged.sort(key=lambda segment: (segment["start_ms"], segment["end_ms"]))
+        return self._apply_speaker_labels(merged, labels)
+
+    @staticmethod
+    def _apply_speaker_labels(
+        segments: list[dict], labels: dict, source: str = "provider-diarization"
+    ) -> list[dict]:
+        # Number voices by first appearance so the reader sees Speaker 1, 2, 3… with no
+        # gaps, whatever ids the provider or the cross-chunk linking produced.
+        ordered = sorted(
+            segments,
+            # Two phrases can share a span when speakers overlap; without the third key
+            # their display numbers would depend on chunk completion order.
+            key=lambda segment: (
+                segment["start_ms"],
+                segment["end_ms"],
+                segment.get("speaker_index", -1),
+            ),
+        )
+        display_numbers: dict[int, int] = {}
+        for segment in ordered:
+            index = segment.get("speaker_index")
+            if index is None:
+                continue
+            global_label = labels.get((segment.get("_part", 0), index), index)
+            display_numbers.setdefault(global_label, len(display_numbers) + 1)
+
+        result = []
+        for segment in segments:
+            segment = {**segment}
+            index = segment.pop("speaker_index", None)
+            part = segment.pop("_part", 0)
+            if index is not None:
+                global_label = labels.get((part, index), index)
+                segment["speaker"] = f"Speaker {display_numbers[global_label]}"
+                segment["speaker_source"] = source
+            result.append(segment)
+        return result
+
+    def _build_evidence_segment(
+        self, start_ms: int, end_ms: int, normalized: dict, speaker=None
+    ) -> dict:
         segment = {
             "start_ms": start_ms,
             "end_ms": end_ms,
@@ -428,6 +577,10 @@ class AzureOpenAiTranscriber:
         }
         segment.pop("timing_source", None)
         segment["timing_source"] = normalized["timing_source"]
+        if speaker is not None:
+            # Provider speaker ids are request-scoped integers; keep the raw id here and
+            # let transcribe() relabel it once every chunk in the job is known.
+            segment["speaker_index"] = int(speaker)
         return segment
 
     def _attach_blob_evidence(self, display_segments: list[dict], normalized: dict) -> list[dict]:
@@ -508,7 +661,7 @@ class AzureOpenAiTranscriber:
 
         for offset_ms in range(0, part_duration_ms, retry_chunk_duration_ms):
             duration_ms = min(retry_chunk_duration_ms, part_duration_ms - offset_ms)
-            chunk_path = self._new_temp_audio_path(".mp3")
+            chunk_path = self._new_temp_audio_path(f".{self.chunk_audio_format}")
             self._transcode_for_upload(
                 part["path"],
                 chunk_path,
@@ -656,6 +809,7 @@ class AzureOpenAiTranscriber:
         request_prompt: str = "",
         on_provider_request=None,
         request_usage: dict | None = None,
+        workflow_context=None,
     ) -> dict:
         boundary = f"----AINoteTacker{uuid.uuid4().hex}"
         content_type = mimetypes.guess_type(upload_path)[0] or "application/octet-stream"
@@ -817,7 +971,7 @@ class AzureOpenAiTranscriber:
         total_duration_ms = self.duration_resolver(local_audio_path)
 
         if (
-            os.path.getsize(local_audio_path) <= MAX_AUDIO_UPLOAD_BYTES
+            os.path.getsize(local_audio_path) <= self.max_upload_bytes
             and total_duration_ms <= self.max_chunk_duration_ms
         ):
             return [
@@ -830,9 +984,9 @@ class AzureOpenAiTranscriber:
             ]
 
         if total_duration_ms <= self.max_chunk_duration_ms:
-            compressed_path = self._new_temp_audio_path(".mp3")
+            compressed_path = self._new_temp_audio_path(f".{self.chunk_audio_format}")
             self._transcode_for_upload(local_audio_path, compressed_path)
-            if os.path.getsize(compressed_path) <= MAX_AUDIO_UPLOAD_BYTES:
+            if os.path.getsize(compressed_path) <= self.max_upload_bytes:
                 return [
                     {
                         "path": compressed_path,
@@ -844,9 +998,14 @@ class AzureOpenAiTranscriber:
             self.remove_file(compressed_path)
 
         upload_plan = []
-        for start_ms in range(0, total_duration_ms, self.max_chunk_duration_ms):
+        stride_ms = self.max_chunk_duration_ms - self.chunk_overlap_ms
+        for start_ms in range(0, total_duration_ms, stride_ms):
+            # With overlap the previous chunk can already reach the end; a further
+            # start would upload (and bill) audio that is fully covered already.
+            if upload_plan and upload_plan[-1]["end_ms"] >= total_duration_ms:
+                break
             duration_ms = min(self.max_chunk_duration_ms, total_duration_ms - start_ms)
-            chunk_path = self._new_temp_audio_path(".mp3")
+            chunk_path = self._new_temp_audio_path(f".{self.chunk_audio_format}")
             self._transcode_for_upload(
                 local_audio_path,
                 chunk_path,
@@ -932,20 +1091,16 @@ class AzureOpenAiTranscriber:
         if duration_ms is not None:
             command.extend(["-t", f"{duration_ms / 1000:.3f}"])
 
-        command.extend(
-            [
-                "-ar",
-                "16000",
-                "-ac",
-                "1",
-                "-b:a",
-                DEFAULT_AZURE_MP3_BITRATE,
-                "-f",
-                "mp3",
-                output_path,
-                "-y",
-            ]
-        )
+        command.extend(["-ar", "16000", "-ac", "1"])
+
+        if self.chunk_audio_format == "wav":
+            # Lossy chunks were measured to cost transcription and diarization quality
+            # on this workload; providers with a large upload limit keep 16 kHz PCM.
+            command.extend(["-acodec", "pcm_s16le", "-f", "wav"])
+        else:
+            command.extend(["-b:a", DEFAULT_AZURE_MP3_BITRATE, "-f", "mp3"])
+
+        command.extend([output_path, "-y"])
 
         result = subprocess.run(command, capture_output=True, text=True, check=False)
 

@@ -70,8 +70,19 @@ const elements = {
   adminProviderSubmit: document.querySelector('#admin-provider-submit')
 };
 
-window.localStorage.removeItem(TOKEN_STORAGE_KEY);
-let adminToken = window.sessionStorage.getItem(TOKEN_STORAGE_KEY);
+// The session lives per device, not per tab: a result link opened in a new tab used
+// to land on the login form. A token left in the old per-tab location is adopted
+// once so an operator mid-session is not logged out by this change.
+const readStoredToken = () => {
+  const carried = window.sessionStorage.getItem(TOKEN_STORAGE_KEY);
+  if (carried) {
+    window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    window.localStorage.setItem(TOKEN_STORAGE_KEY, carried);
+    return carried;
+  }
+  return window.localStorage.getItem(TOKEN_STORAGE_KEY);
+};
+let adminToken = readStoredToken();
 let adminUsername = null;
 let adminProviderState = null;
 let codexUsageExpiryTimer;
@@ -79,11 +90,20 @@ let codexUsageExpiryTimer;
 const tokenFormatter = new Intl.NumberFormat('en-US');
 const formatTokens = (value) => tokenFormatter.format(Math.round(Number(value) || 0));
 
+// A result page opened in a new tab has no session; it sends the admin here with
+// `next` so login lands back on that result. Only same-origin result paths qualify.
+const nextAfterLogin = () => {
+  const next = new URLSearchParams(window.location.search).get('next') || '';
+  return next.startsWith('/admin/result?') ? next : '';
+};
+
 const setToken = (token) => {
   adminToken = token;
   if (token) {
-    window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+    window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
   } else {
+    // Clear both locations: logging out must not leave a stale token anywhere.
+    window.localStorage.removeItem(TOKEN_STORAGE_KEY);
     window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
   }
 };
@@ -209,9 +229,16 @@ const renderUsageHistory = (payload) => {
           : result.state === 'completed' ? '沒有結果'
             : result.state === 'failed' ? '處理失敗' : '處理中';
       }
+      // The job ID is visible text, not a tooltip, so Ctrl+F on an ID lands on its row.
+      const jobIdLabel = document.createElement('small');
+      jobIdLabel.className = 'usage-history-job-id';
+      jobIdLabel.textContent = job.jobId;
+      const jobLabel = document.createDocumentFragment();
+      if (result?.title && result.title !== job.jobId) jobLabel.append(result.title);
+      jobLabel.append(jobIdLabel);
       const cells = [
         { text: formatJobTimestamp(job.createdAt) },
-        { text: result?.title || job.jobId, title: job.jobId },
+        { node: jobLabel },
         { text: job.costLabel, cls: 'usage-num' },
         { text: identity, title: job.submitterId },
         { node: action }
@@ -450,6 +477,10 @@ elements.loginForm.addEventListener('submit', async (event) => {
     adminUsername = payload.username ?? elements.loginUsername.value.trim();
     elements.loginPassword.value = '';
     setLoginStatus('');
+    if (nextAfterLogin()) {
+      window.location.assign(nextAfterLogin());
+      return;
+    }
     showAdminView();
     await fetchAdminPanel();
   } catch (error) {
@@ -585,6 +616,11 @@ const boot = async () => {
     if (!sessionResponse.ok) {
       setToken(null);
       showLoginView();
+      return;
+    }
+
+    if (nextAfterLogin()) {
+      window.location.assign(nextAfterLogin());
       return;
     }
 

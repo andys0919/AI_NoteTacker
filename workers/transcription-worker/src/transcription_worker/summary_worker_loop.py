@@ -1,3 +1,4 @@
+from transcription_worker.codex_transcript_summarizer import CodexNoAnswerError
 from transcription_worker.heartbeat import start_lease_heartbeat
 from threading import Lock
 
@@ -171,11 +172,35 @@ def run_summary_worker_iteration(
                 **summary_options,
             )
         else:
-            summary_result = summarizer.summarize(
-                transcript_result,
-                on_provider_request=report_provider_request,
-                **summary_options,
-            )
+            try:
+                summary_result = summarizer.summarize(
+                    transcript_result,
+                    on_provider_request=report_provider_request,
+                    **summary_options,
+                )
+            except CodexNoAnswerError as error:
+                fallback_model = getattr(summarizer, "fallback_model", None)
+                if not fallback_model:
+                    raise
+                # Same Codex PTY, other model provider (e.g. Azure); one retry.
+                client.post_job_event(
+                    claimed_job["id"],
+                    {
+                        "type": "progress-updated",
+                        "processingStage": "generating-summary",
+                        "processingMessage": (
+                            f"Codex gave no answer ({error}); retrying through the "
+                            f"Codex PTY with model {fallback_model}."
+                        ),
+                    },
+                    lease_token=claimed_job.get("leaseToken"),
+                )
+                summary_result = summarizer.summarize(
+                    transcript_result,
+                    on_provider_request=report_provider_request,
+                    use_fallback_model=True,
+                    **summary_options,
+                )
         summary_generated = True
 
         summary_event = {

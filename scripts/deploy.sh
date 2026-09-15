@@ -13,6 +13,7 @@
 #   scripts/deploy.sh up              # same as above
 #   scripts/deploy.sh up --no-build   # recreate without rebuilding images
 #   scripts/deploy.sh restart         # recreate without rebuilding (quick restart)
+#   scripts/deploy.sh build [service] # build images only (deploy later with up --no-build)
 #   scripts/deploy.sh down            # stop and remove the stack
 #   scripts/deploy.sh logs [service]  # follow logs (all services or one)
 #   scripts/deploy.sh ps              # show stack status
@@ -81,6 +82,11 @@ case "$action" in
     echo "[deploy] Recreating production stack without rebuild..."
     exec docker compose "${PROD_FILES[@]}" up -d --remove-orphans "$@"
     ;;
+  build)
+    prepare_existing_host_secrets
+    echo "[deploy] Building images without recreating containers..."
+    exec docker compose "${PROD_FILES[@]}" build "$@"
+    ;;
   down)
     prepare_existing_host_secrets
     echo "[deploy] Stopping the stack..."
@@ -105,7 +111,7 @@ case "$action" in
     ;;
   *)
     echo "Unknown action: $action" >&2
-    echo "Valid actions: up | deploy | restart | down | logs | ps | config | smoke" >&2
+    echo "Valid actions: up | deploy | restart | build | down | logs | ps | config | smoke" >&2
     exit 2
     ;;
 esac

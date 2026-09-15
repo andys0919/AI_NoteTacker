@@ -12,7 +12,10 @@ import {
 import {
   configureSummaryNavigation,
   renderStructuredSummaryMarkup,
-  renderTranscriptMarkup,
+  renderArtifactReader,
+  restoreReaderState,
+  saveResponseAsFile,
+  wireArtifactReader,
   sanitizeAnonymousSpeakerLabels,
   wireArtifactTabs
 } from '/artifact-reader.js';
@@ -259,9 +262,10 @@ const extractDownloadFilename = (response, fallback) => {
   return match?.[1] || fallback;
 };
 
-const downloadJobExport = async (jobId, format) => {
+const downloadJobExport = async (jobId, format, part = 'all') => {
   const url = new URL(`/api/operator/jobs/${jobId}/export`, window.location.origin);
   url.searchParams.set('format', format);
+  url.searchParams.set('part', part);
   url.searchParams.set('submitterId', currentSubmitterId);
 
   const response = await apiFetch(url);
@@ -271,17 +275,8 @@ const downloadJobExport = async (jobId, format) => {
     throw new Error(payload?.error?.message ?? `Export failed: ${response.status}`);
   }
 
-  const blob = await response.blob();
-  const fallbackName = `${jobId}.${format === 'markdown' ? 'md' : format}`;
-  const downloadName = extractDownloadFilename(response, fallbackName);
-  const objectUrl = window.URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = objectUrl;
-  link.download = downloadName;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  window.URL.revokeObjectURL(objectUrl);
+  const fallbackName = `${jobId}${part === 'all' ? '' : `-${part}`}.${format === 'markdown' ? 'md' : format}`;
+  await saveResponseAsFile(response, fallbackName);
 };
 
 const createActionBlock = (job, runtimeState) => {
@@ -433,122 +428,21 @@ if (meetingDetailJobId) {
   window.addEventListener('hashchange', scrollToOwnerDeepLink);
 }
 
-const createArtifactReader = (job) => {
-  const hasSummary = Boolean(job.summaryArtifact);
-  const hasTranscript = Boolean(job.transcriptArtifact);
+// The reader itself lives in artifact-reader.js so the admin result page shows the
+// same thing; only the media route and its auth differ per page.
+// Reader state captured before an edit-triggered refresh, consumed by the next render.
+const pendingReaderState = new Map();
 
-  if (!hasSummary && !hasTranscript) {
-    return '';
-  }
-
-  const readerId = `artifact-${toDomId(job.id)}`;
-  const selectedKind = hasSummary ? 'summary' : 'transcript';
-  const panelHeading = meetingDetailJobId ? 'h2' : 'h4';
-  const tabs = [];
-  const panels = [];
-
-  if (hasSummary) {
-    const tabId = `${readerId}-summary-tab`;
-    const panelId = `${readerId}-summary-panel`;
-    tabs.push(`
-      <button
-        class="artifact-tab${selectedKind === 'summary' ? ' active' : ''}"
-        id="${tabId}"
-        type="button"
-        role="tab"
-        aria-controls="${panelId}"
-        aria-selected="${selectedKind === 'summary'}"
-        tabindex="${selectedKind === 'summary' ? '0' : '-1'}"
-        data-artifact-tab="summary"
-      >摘要</button>
-    `);
-    panels.push(`
-      <section
-        class="artifact-panel"
-        id="${panelId}"
-        role="tabpanel"
-        aria-labelledby="${tabId}"
-        data-artifact-panel="summary"
-        ${selectedKind === 'summary' ? '' : 'hidden'}
-      >
-        ${
-          meetingDetailJobId && job.summaryArtifact.structured
-            ? ''
-            : `
-              <header class="artifact-panel-heading">
-                <div>
-                  <${panelHeading}>會議摘要</${panelHeading}>
-                </div>
-                <p>依逐字稿整理，只顯示有內容的段落。</p>
-              </header>
-            `
-        }
-        ${
-          job.summaryArtifact.structured
-            ? renderStructuredSummaryMarkup(
-                job.summaryArtifact.structured,
-                `${readerId}-summary`,
-                {
-                  headingLevel: meetingDetailJobId ? 2 : 4,
-                  showTitle: !meetingDetailJobId
-                }
-              )
-            : `<pre class="summary-text">${escapeHtml(sanitizeAnonymousSpeakerLabels(job.summaryArtifact.text))}</pre>`
-        }
-      </section>
-    `);
-  }
-
-  if (hasTranscript) {
-    const tabId = `${readerId}-transcript-tab`;
-    const panelId = `${readerId}-transcript-panel`;
-    const transcriptMarkup = renderTranscriptMarkup(job.transcriptArtifact.segments);
-    tabs.push(`
-      <button
-        class="artifact-tab${selectedKind === 'transcript' ? ' active' : ''}"
-        id="${tabId}"
-        type="button"
-        role="tab"
-        aria-controls="${panelId}"
-        aria-selected="${selectedKind === 'transcript'}"
-        tabindex="${selectedKind === 'transcript' ? '0' : '-1'}"
-        data-artifact-tab="transcript"
-      >逐字稿</button>
-    `);
-    panels.push(`
-      <section
-        class="artifact-panel"
-        id="${panelId}"
-        role="tabpanel"
-        aria-labelledby="${tabId}"
-        data-artifact-panel="transcript"
-        ${selectedKind === 'transcript' ? '' : 'hidden'}
-      >
-        <header class="artifact-panel-heading">
-          <div>
-            <${panelHeading}>逐字稿</${panelHeading}>
-          </div>
-          <p>${job.transcriptArtifact.segments.length} 段 · 保留時間與逐字內容</p>
-        </header>
-        <div
-          class="transcript-reader"
-          role="region"
-          aria-label="完整逐字稿，可上下捲動"
-          tabindex="0"
-        >${transcriptMarkup}</div>
-      </section>
-    `);
-  }
-
-  return `
-    <section class="artifact-reader" aria-label="會議內容閱讀器">
-      <div class="artifact-tablist" role="tablist" aria-label="選擇會議內容" data-artifact-tabs>
-        ${tabs.join('')}
-      </div>
-      ${panels.join('')}
-    </section>
-  `;
-};
+const createArtifactReader = (job) =>
+  renderArtifactReader(job, {
+    detailLayout: Boolean(meetingDetailJobId),
+    mediaUrl: job.recordingArtifact
+      ? `/api/operator/jobs/${encodeURIComponent(job.id)}/media?submitterId=${encodeURIComponent(currentSubmitterId)}`
+      : '',
+    editable: true,
+    exportable: true,
+    selectedTab: pendingReaderState.get(job.id)?.tab || ''
+  });
 
 const createJobCard = (job) => {
   const card = document.createElement('article');
@@ -682,8 +576,38 @@ const createJobCard = (job) => {
     `
       : `${operationalMarkup}${artifactReader}`;
 
-  configureSummaryNavigation(card);
-  wireArtifactTabs(card);
+  wireArtifactReader(card, job, {
+    save: async (body) => {
+      const response = await apiFetch(`/api/operator/jobs/${job.id}/speakers`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ submitterId: currentSubmitterId, ...body })
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error?.message || '無法儲存說話者變更。');
+      }
+    },
+    onSaved: async (readerState) => {
+      pendingReaderState.set(job.id, readerState);
+      await refreshJobsView(job.id);
+    },
+    fetchExport: async (part) => {
+      const url = new URL(`/api/operator/jobs/${job.id}/export`, window.location.origin);
+      url.searchParams.set('format', 'markdown');
+      url.searchParams.set('part', part);
+      url.searchParams.set('submitterId', currentSubmitterId);
+      const response = await apiFetch(url);
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload?.error?.message ?? `Export failed: ${response.status}`);
+      }
+      return response;
+    },
+    notify: setBanner
+  });
+  restoreReaderState(card, pendingReaderState.get(job.id));
+  pendingReaderState.delete(job.id);
 
   const stopButton = card.querySelector('[data-action="stop-current"]');
   if (stopButton) {

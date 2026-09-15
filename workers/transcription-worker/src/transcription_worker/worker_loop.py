@@ -1,6 +1,7 @@
 import os
 from threading import Lock
 
+from transcription_worker.azure_openai_transcriber import AzureOpenAiTranscriber
 from transcription_worker.heartbeat import start_lease_heartbeat
 
 
@@ -72,6 +73,8 @@ def _to_artifact_segment(segment: dict) -> dict:
         ("language", "language"),
         ("language_confidence", "languageConfidence"),
         ("timing_source", "timingSource"),
+        ("speaker", "speaker"),
+        ("speaker_source", "speakerSource"),
     ):
         if source in segment:
             result[target] = segment[source]
@@ -90,6 +93,7 @@ def run_transcription_worker_iteration(
     transcriber,
     transcriber_registry=None,
     heartbeat_interval_ms=30_000,
+    diarizer=None,
 ):
     claimed_job = client.claim_next_job(worker_id)
 
@@ -267,6 +271,39 @@ def run_transcription_worker_iteration(
             )
         transcription_completed = True
 
+        if diarizer is not None and all(
+            segment.get("timing_source", "provider") != "estimated"
+            for segment in transcript_result["segments"]
+        ):
+            # One pass over the whole recording replaces the request-scoped provider
+            # ids, so a person keeps one label across every 25-minute chunk. Speaker
+            # evidence must never cost the transcript: any failure keeps what the
+            # provider returned.
+            _post_progress(
+                client,
+                claimed_job["id"],
+                "transcribing-audio",
+                f"Running speaker diarization ({diarizer.label}).",
+                lease_token=claimed_job.get("leaseToken"),
+            )
+            try:
+                labelled = diarizer.label_segments(
+                    prepared_audio["local_audio_path"], transcript_result["segments"]
+                )
+                if any("speaker_index" in segment for segment in labelled):
+                    # Relabelling stays inside the guard: it builds the new list before
+                    # binding it, so a failure here also leaves the provider transcript
+                    # exactly as it was.
+                    transcript_result["segments"] = AzureOpenAiTranscriber._apply_speaker_labels(
+                        labelled, {}, source="local-diarization"
+                    )
+            except Exception as error:  # noqa: BLE001
+                print(
+                    f"speaker diarization failed for {claimed_job['id']}, "
+                    f"keeping provider speakers: {error}",
+                    flush=True,
+                )
+
         artifact_segments = [
             _to_artifact_segment(segment) for segment in transcript_result["segments"]
         ]
@@ -277,7 +314,11 @@ def run_transcription_worker_iteration(
             "language": transcript_result["language"],
             "segments": artifact_segments,
         }
-        if any("rawText" in segment for segment in artifact_segments):
+        if any("speaker" in segment for segment in artifact_segments):
+            # v3 carries provider speaker attribution; readers keep hiding v2 labels,
+            # which came from the retired alignment-gated pipeline.
+            transcript_artifact["schemaVersion"] = 3
+        elif any("rawText" in segment for segment in artifact_segments):
             transcript_artifact["schemaVersion"] = 2
 
         transcript_event = {
